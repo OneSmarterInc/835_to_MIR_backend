@@ -16,9 +16,10 @@ if len(SECRET_KEY) < 50 or SECRET_KEY.startswith("django-insecure-"):
     if not DEBUG:
         raise ValueError("Insecure SECRET_KEY detected in production!")
 
-ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS", "127.0.0.1,localhost,*").split(",") if host.strip()]
+ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS",
+        "127.0.0.1,localhost,mir.onesmarter.com,50.17.152.89,api.onesmarter.com").split(",") if host.strip()]
 
-CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000").split(",") if origin.strip()]
+CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://mir.onesmarter.com").split(",") if origin.strip()]
 
 SECURE_SSL_REDIRECT = not DEBUG
 SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
@@ -61,10 +62,11 @@ INSTALLED_APPS = [
 # ============================================================
 
 MIDDLEWARE = [
-    "django.middleware.security.SecurityMiddleware",
+  
+  "django.middleware.security.SecurityMiddleware",
+	"corsheaders.middleware.CorsMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
-    "corsheaders.middleware.CorsMiddleware",
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
@@ -204,15 +206,15 @@ LOGOUT_REDIRECT_URL = "/accounts/login/"
 # ============================================================
 
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SECURE = not DEBUG
-CSRF_COOKIE_SECURE = not DEBUG
+SESSION_COOKIE_SECURE = True
+CSRF_COOKIE_SECURE = True
 
 # For cross-origin requests between Vercel and AWS, cookie SameSite must be "None" if Secure is enabled
-SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax" if DEBUG else "None")
-CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax" if DEBUG else "None")
+SESSION_COOKIE_SAMESITE = "None"
+CSRF_COOKIE_SAMESITE = "None"
 
 CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000").split(",") if origin.strip()
+    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://835-to-mir-frontend.vercel.app").split(",") if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
 # Django CSRF Trusted Origins for CORS POST requests
