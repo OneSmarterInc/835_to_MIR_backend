@@ -1,0 +1,21 @@
+{% extends "base.html" %}
+
+{% block title %}Verify 2FA — MIR Relay{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>Two-Factor Verification</h1>
+        <p class="sub">Enter the 6-digit code from your authenticator app.</p>
+
+        <form method="post">
+            {% csrf_token %}
+            <div>
+                <label>Authenticator Code</label>
+                <input type="text" name="code" placeholder="123456" autocomplete="off" required maxlength="6" autofocus>
+            </div>
+            <button type="submit" class="btn-primary">Verify Authentication</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

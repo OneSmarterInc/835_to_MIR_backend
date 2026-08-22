@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}MIR Relay — Project835{% endblock %}</title>
+  <style>
+    :root {
+      --ink: #16202E;
+      --ink-2: #42556B;
+      --ink-3: #7A8AA0;
+      --paper: #E7ECF1;
+      --surface: #FFFFFF;
+      --line: #C7D2DE;
+      --line-soft: #DFE6ED;
+      --ochre: #A7761A;
+      --ochre-bg: #F7EFDE;
+      --teal: #0E6C5B;
+      --teal-bg: #E2F0EC;
+      --brick: #9A362C;
+      --brick-bg: #F6E5E2;
+      --display: ui-monospace, SFMono-Regular, "Cascadia Mono", Menlo, Consolas, monospace;
+      --body: Inter, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--paper);
+      color: var(--ink);
+      font-family: var(--body);
+      font-size: 14px;
+      line-height: 1.55;
+      -webkit-font-smoothing: antialiased;
+      min-height: 100vh;
+    }
+
+    button {
+      font-family: inherit;
+      font-size: inherit;
+      color: inherit;
+      cursor: pointer;
+      border: none;
+      background: none;
+    }
+
+    .eyebrow {
+      font-family: var(--display);
+      font-size: 10px;
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--ink-3);
+    }
+
+    .mono {
+      font-family: var(--display);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .btn-drawer-toggle {
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      width: 22px;
+      height: 16px;
+      background: transparent;
+      border: none;
+      cursor: pointer;
+      padding: 0;
+      margin-right: 6px;
+    }
+
+    .btn-drawer-toggle span {
+      display: block;
+      width: 100%;
+      height: 2px;
+      background-color: #ffffff;
+      border-radius: 2px;
+      transition: all 0.25s ease;
+    }
+
+    .btn-drawer-toggle:hover span {
+      background-color: var(--teal-bg);
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+      padding: 0 20px;
+      height: 56px;
+      background: var(--ink);
+      color: #fff;
+      position: sticky;
+      top: 0;
+      z-index: 40;
+    }
+
+    .wordmark {
+      font-family: var(--display);
+      font-size: 13px;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    .wordmark span {
+      color: var(--ink-3);
+      font-weight: 400;
+    }
+
+    .tenant {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin-left: 6px;
+      padding: 5px 11px;
+      border-radius: 2px;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .14);
+      font-size: 13px;
+      font-weight: 500;
+    }
+
+    .tenant .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #4FD1A5;
+      flex: none;
+    }
+
+    .topbar .spacer {
+      flex: 1;
+    }
+
+    .env {
+      font-family: var(--display);
+      font-size: 10px;
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      padding: 4px 9px;
+      border: 1px solid var(--ochre);
+      color: #E9C879;
+      border-radius: 2px;
+    }
+
+    .clock {
+      font-family: var(--display);
+      font-size: 11px;
+      color: var(--ink-3);
+      letter-spacing: .06em;
+    }
+
+    .btn-topbar-logout {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #fca5a5;
+      text-decoration: none;
+      padding: 6px;
+      border: 1px solid rgba(239, 68, 68, .4);
+      background: rgba(239, 68, 68, .15);
+      border-radius: 4px;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .btn-topbar-logout:hover {
+      background: rgba(239, 68, 68, .35);
+      color: #ffffff;
+    }
+
+    .auth-container {
+      width: 100%;
+      max-width: 440px;
+      margin: 60px auto;
+      padding: 0 1rem;
+    }
+
+    .auth-card {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      padding: 26px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+    }
+
+    .auth-card h1 {
+      font-size: 20px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+
+    .auth-card p.sub {
+      color: var(--ink-2);
+      font-size: 13px;
+      margin-bottom: 20px;
+    }
+
+    .auth-card label {
+      display: block;
+      font-size: 11px;
+      font-family: var(--display);
+      text-transform: uppercase;
+      letter-spacing: 0.1em;
+      color: var(--ink-3);
+      margin-bottom: 4px;
+    }
+
+    .auth-card input[type="text"],
+    .auth-card input[type="email"],
+    .auth-card input[type="password"] {
+      width: 100%;
+      padding: 9px 12px;
+      border: 1px solid var(--line);
+      border-radius: 2px;
+      font-family: var(--body);
+      font-size: 13px;
+      outline: none;
+      background: var(--surface);
+      color: var(--ink);
+      margin-bottom: 14px;
+    }
+
+    .auth-card input:focus {
+      border-color: var(--ink-2);
+    }
+
+    .btn-primary {
+      display: inline-block;
+      width: 100%;
+      text-align: center;
+      background: var(--ink);
+      color: #fff;
+      border: 1px solid var(--ink);
+      padding: 10px 16px;
+      font-size: 13px;
+      font-weight: 500;
+      border-radius: 2px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-primary:hover {
+      background: #0E1724;
+    }
+
+    .error-msg {
+      background: var(--brick-bg);
+      border-left: 3px solid var(--brick);
+      color: var(--brick);
+      padding: 10px 12px;
+      font-size: 12.5px;
+      margin-bottom: 14px;
+    }
+
+    .success-msg {
+      background: var(--teal-bg);
+      border-left: 3px solid var(--teal);
+      color: var(--teal);
+      padding: 10px 12px;
+      font-size: 12.5px;
+      margin-bottom: 14px;
+    }
+
+    .center {
+      text-align: center;
+    }
+
+    a.link {
+      color: var(--ink);
+      font-weight: 600;
+      text-decoration: underline;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="topbar">
+    <button type="button" class="btn-drawer-toggle" id="btnDrawerToggle" title="Toggle Navigation Menu">
+      <span></span>
+      <span></span>
+      <span></span>
+    </button>
+    <div class="wordmark">MIR Relay <span>/ Project835</span></div>
+    <div class="spacer"></div>
+    {% if user.is_authenticated %}
+    <div style="display: flex; align-items: center; gap: 10px;">
+      <div class="tenant">
+        <span class="dot"></span>
+        <span>{{ user.name }}</span>
+      </div>
+      <a href="{% url 'logout' %}" class="btn-topbar-logout" title="Logout">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18.36 6.64a9 9 0 1 1-12.73 0"></path>
+          <line x1="12" y1="2" x2="12" y2="12"></line>
+        </svg>
+      </a>
+    </div>
+    {% endif %}
+  </div>
+
+  {% if messages %}
+  <div style="max-width: 980px; margin: 16px auto 0; padding: 0 16px;">
+    {% for message in messages %}
+    <div class="{% if message.tags == 'error' %}error-msg{% else %}success-msg{% endif %}">{{ message }}</div>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {% block content %}{% endblock %}
+
+  <script>
+    function tick() {
+      const d = new Date();
+      const p = n => String(n).padStart(2, '0');
+      const el = document.getElementById('clock');
+      if (el) el.textContent = p(d.getHours()) + ':' + p(d.getMinutes()) + ':' + p(d.getSeconds()) + ' ET';
+    }
+    tick(); setInterval(tick, 1000);
+  </script>
+</body>
+
+</html>

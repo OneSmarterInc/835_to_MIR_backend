@@ -1,0 +1,3626 @@
+{% extends "base.html" %}
+
+{% block title %}MIR Relay — Flow & Conversions{% endblock %}
+
+{% block content %}
+<style>
+  .shell {
+    display: flex;
+    min-height: calc(100vh - 56px);
+    align-items: stretch;
+    position: relative;
+  }
+  
+  /* Drawer Backdrop Overlay */
+  .drawer-backdrop {
+    position: fixed;
+    top: 56px;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(15, 23, 42, 0.4);
+    backdrop-filter: blur(2px);
+    z-index: 99;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease;
+  }
+  .drawer-backdrop.open {
+    opacity: 1;
+    pointer-events: auto;
+  }
+
+  /* Drawer Navigation Panel (Sliding left to right) */
+  .rail {
+    position: fixed;
+    top: 56px;
+    left: 0;
+    bottom: 0;
+    width: 240px;
+    background: var(--surface);
+    border-right: 1px solid var(--line);
+    padding: 18px 0;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.28s cubic-bezier(0.4, 0, 0.2, 1);
+    box-shadow: 4px 0 20px rgba(0, 0, 0, 0.15);
+  }
+  .rail.open {
+    transform: translateX(0);
+  }
+  .rail .grp {
+    padding: 0 16px 8px;
+  }
+  .drawer-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    margin-bottom: 12px;
+  }
+  .drawer-header h3 {
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--ink);
+  }
+  .drawer-close-btn {
+    background: none;
+    border: none;
+    font-size: 18px;
+    color: var(--ink-3);
+    cursor: pointer;
+    padding: 2px 6px;
+  }
+  .drawer-close-btn:hover {
+    color: var(--brick);
+  }
+  .navitem {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    width: 100%;
+    text-align: left;
+    padding: 10px 18px;
+    border-left: 3px solid transparent;
+    color: var(--ink-2);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .navitem:hover {
+    background: var(--paper);
+    color: var(--ink);
+  }
+  .navitem.on {
+    border-left-color: var(--teal);
+    background: var(--paper);
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .navitem .count {
+    font-family: var(--display);
+    font-size: 10px;
+    background: var(--ochre);
+    color: #fff;
+    border-radius: 9999px;
+    padding: 1px 6px;
+  }
+  .main {
+    flex: 1;
+    padding: 26px 30px 60px;
+    max-width: 100%;
+    width: 100%;
+  }
+  .view {
+    display: none;
+    width: 100%;
+  }
+  .view.on {
+    display: block;
+  }
+  .flow-title-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
+    margin-bottom: 22px;
+  }
+  h1 {
+    font-size: 21px;
+    margin: 2px 0 3px;
+    font-weight: 600;
+    letter-spacing: -.01em;
+  }
+  .sub {
+    color: var(--ink-2);
+    font-size: 13px;
+    max-width: 72ch;
+    margin: 0;
+  }
+  .btn-sftp {
+    font-family: var(--display);
+    font-size: 11px;
+    padding: 6px 12px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-2);
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+
+  /* Pipeline Stage Cards */
+  .pipe {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 24px 20px 18px;
+    position: relative;
+    margin-bottom: 22px;
+  }
+  .pipe-track {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    overflow-x: auto;
+    padding-bottom: 4px;
+  }
+  .stage {
+    flex: 1;
+    min-width: 180px;
+    padding: 0 16px;
+    position: relative;
+  }
+  .stage:first-child {
+    padding-left: 0;
+  }
+  .stage + .stage {
+    border-left: 1px solid var(--line-soft);
+  }
+  .stage .n {
+    font-family: var(--display);
+    font-size: 10px;
+    color: var(--ink-3);
+    letter-spacing: .14em;
+  }
+  .stage h3 {
+    font-size: 13px;
+    margin: 4px 0 2px;
+    font-weight: 600;
+  }
+  .stage .who {
+    font-size: 11px;
+    color: var(--ink-3);
+    margin-bottom: 12px;
+  }
+  .chipstack {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    max-height: 108px;
+    overflow-y: auto;
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .chipstack::-webkit-scrollbar {
+    display: none;
+  }
+  .chip {
+    font-family: var(--display);
+    font-size: 10.5px;
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--teal);
+    padding: 6px 9px;
+    background: #FAFBFC;
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    align-items: center;
+  }
+  .chip.ok { border-left-color: var(--teal); }
+  .chip.work { border-left-color: var(--ochre); }
+  .chip.hold { border-left-color: var(--brick); }
+  .chip.idle { border-left-color: var(--ink-3); background: #F4F6F8; }
+  .chip .c { color: var(--ink-3); font-size: 10px; }
+
+  .stage.active {
+    background: linear-gradient(180deg, rgba(167,118,26,.06), transparent 60%);
+  }
+  .stage.active .n { color: var(--ochre); }
+  .pulse {
+    display: inline-block;
+    width: 5px;
+    height: 5px;
+    border-radius: 50%;
+    background: var(--ochre);
+    margin-left: 6px;
+    vertical-align: middle;
+    animation: beat 1.9s ease-in-out infinite;
+  }
+  @keyframes beat { 0%,100% { opacity: .25; } 50% { opacity: 1; } }
+
+  .vault {
+    margin-top: 16px;
+    border-top: 1px dashed var(--line);
+    padding-top: 12px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 24px;
+    align-items: center;
+  }
+  .vault .lock {
+    font-family: var(--display);
+    font-size: 10.5px;
+    color: var(--teal);
+    letter-spacing: .04em;
+  }
+
+  /* Metrics Grid */
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin-bottom: 22px;
+  }
+  .metric {
+    background: var(--surface);
+    padding: 16px 18px;
+  }
+  .metric .v {
+    font-family: var(--display);
+    font-size: 26px;
+    letter-spacing: -.02em;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric .l {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin-top: 2px;
+  }
+  .metric .d {
+    font-size: 11px;
+    color: var(--ink-2);
+    margin-top: 6px;
+  }
+
+  /* Start a Conversion Component (Exact reference design) */
+  .start-conversion-card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 18px 20px;
+    margin-bottom: 22px;
+  }
+  .start-conversion-header {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .start-conversion-header h2 {
+    font-size: 14px;
+    font-weight: 700;
+    margin: 0;
+  }
+  .step-pills {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .step-pill {
+    font-family: var(--display);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    padding: 3px 10px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    background: var(--paper);
+    color: var(--ink-2);
+  }
+  .step-pill.active {
+    background: var(--ochre-bg);
+    border-color: var(--ochre);
+    color: var(--ochre);
+    font-weight: 600;
+  }
+  .step-pill.done {
+    background: var(--teal-bg);
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+  .step-arrow {
+    color: var(--ink-3);
+    font-size: 11px;
+  }
+
+  .conversion-boxes {
+    display: grid;
+    grid-template-columns: 1fr 1fr auto;
+    gap: 16px;
+    align-items: center;
+  }
+  @media(max-width: 860px) {
+    .conversion-boxes {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .c-box {
+    background: #F4F6F8;
+    border: 1px dashed var(--line);
+    padding: 14px 16px;
+    border-radius: 2px;
+  }
+  .c-box .c-box-label {
+    font-family: var(--display);
+    font-size: 9.5px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    margin-bottom: 8px;
+  }
+  .c-box input[type="file"] {
+    display: inline-block;
+    font-size: 12px;
+  }
+  .c-box .subtext {
+    font-size: 11.5px;
+    color: var(--ink-3);
+    margin-top: 6px;
+  }
+
+  .c-actions {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+
+  .btn-gray {
+    background: #7A8AA0;
+    color: #fff;
+    border: 1px solid #7A8AA0;
+    padding: 8px 16px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 2px;
+    cursor: pointer;
+  }
+  .btn-gray:hover {
+    background: #5E6E84;
+  }
+  .btn-disabled {
+    background: var(--paper);
+    color: var(--ink-3);
+    border: 1px solid var(--line);
+    padding: 8px 16px;
+    font-size: 12.5px;
+    border-radius: 2px;
+    cursor: not-allowed;
+  }
+
+  /* Filters Bar for Conversions Table */
+  .filters-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-bottom: none;
+    padding: 12px 16px;
+  }
+  .filters-bar input[type="text"] {
+    flex: 1;
+    min-width: 220px;
+    padding: 7px 12px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    font-family: var(--body);
+    font-size: 12.5px;
+    outline: none;
+  }
+  .filters-bar select {
+    padding: 7px 12px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    font-family: var(--body);
+    font-size: 12.5px;
+    background: var(--surface);
+    color: var(--ink);
+    outline: none;
+  }
+  .filters-bar .runs-counter {
+    margin-left: auto;
+    font-family: var(--display);
+    font-size: 11px;
+    color: var(--ink-3);
+  }
+
+  /* Cards & Layout */
+  .cols {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 16px;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    padding: 16px 17px;
+    margin-bottom: 16px;
+  }
+  .card h2 {
+    font-size: 13px;
+    margin: 0 0 3px;
+    font-weight: 600;
+  }
+  .card .path {
+    font-family: var(--display);
+    font-size: 11px;
+    color: var(--ink-2);
+    word-break: break-all;
+    background: var(--paper);
+    padding: 6px 8px;
+    margin: 9px 0;
+  }
+  .kv {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 5px 0;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 12.5px;
+  }
+  .kv:last-child {
+    border-bottom: none;
+  }
+  .kv .k { color: var(--ink-3); }
+  .kv .v { font-family: var(--display); font-variant-numeric: tabular-nums; }
+
+  textarea {
+    width: 100%;
+    height: 100px;
+    font-family: var(--display);
+    font-size: 12px;
+    background: #FAFBFC;
+    border: 1px solid var(--line);
+    padding: 10px;
+    outline: none;
+    resize: vertical;
+    color: var(--ink);
+    margin-top: 10px;
+  }
+
+  .hidden {
+    display: none !important;
+  }
+
+  .status-banner {
+    padding: 12px 16px;
+    border-radius: 2px;
+    margin-bottom: 14px;
+    border: 1px solid transparent;
+  }
+  .status-banner.valid {
+    background: var(--teal-bg);
+    border-color: var(--teal);
+    color: var(--teal);
+  }
+  .status-banner.invalid {
+    background: var(--brick-bg);
+    border-color: var(--brick);
+    color: var(--brick);
+  }
+
+  pre {
+    font-family: var(--display);
+    font-size: 11px;
+    line-height: 1.6;
+    background: #F7F9FB;
+    border: 1px solid var(--line-soft);
+    padding: 12px;
+    overflow-x: auto;
+    margin-top: 8px;
+    max-height: 280px;
+  }
+
+  /* Tables */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--line);
+  }
+  th {
+    font-family: var(--display);
+    font-size: 10px;
+    letter-spacing: .13em;
+    text-transform: uppercase;
+    color: var(--ink-3);
+    text-align: left;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--line);
+    font-weight: 500;
+  }
+  th.sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  th.sortable:hover {
+    color: var(--ink);
+    background: var(--paper);
+  }
+  .sort-arrow {
+    display: inline-flex;
+    margin-left: 4px;
+    font-size: 10px;
+    color: var(--ink-3);
+    vertical-align: middle;
+  }
+  th.sortable.asc .sort-arrow, th.sortable.desc .sort-arrow {
+    color: var(--teal);
+    font-weight: bold;
+  }
+  td {
+    padding: 11px 12px;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 12.5px;
+  }
+  tbody tr:last-child td {
+    border-bottom: none;
+  }
+  td.num {
+    font-family: var(--display);
+    font-variant-numeric: tabular-nums;
+  }
+  .tag {
+    display: inline-block;
+    font-family: var(--display);
+    font-size: 10px;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+    padding: 2px 7px;
+    border-radius: 2px;
+    white-space: nowrap;
+  }
+  .tag.ok { background: var(--teal-bg); color: var(--teal); }
+  .tag.work { background: var(--ochre-bg); color: var(--ochre); }
+  .tag.bad { background: var(--brick-bg); color: var(--brick); }
+  .tag.idle { background: var(--paper); color: var(--ink-3); }
+
+  .stub {
+    margin-top: 16px;
+    border: 1px dashed var(--line);
+    padding: 12px 16px;
+    font-size: 12px;
+    color: var(--ink-2);
+    background: var(--surface);
+  }
+  .stub b {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* Eye icon button and popup styles */
+  .btn-eye {
+    background: none;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 3px 6px;
+    cursor: pointer;
+    color: var(--ink-2);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+  }
+  .btn-eye:hover {
+    background: var(--paper);
+    color: var(--teal);
+    border-color: var(--teal);
+  }
+  .btn-eye svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+  }
+
+  .btn, button, .btn-primary, .btn-secondary, .btn-sftp, .btn-gray {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+    cursor: pointer;
+    border: none;
+    background: none;
+    transition: all 0.18s cubic-bezier(0.4, 0, 0.2, 1);
+    user-select: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+  }
+
+  .btn {
+    border-radius: 4px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+
+  .btn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0, 0, 0, 0.08);
+  }
+
+  .btn:active {
+    transform: translateY(0);
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.05);
+  }
+
+  .btn.primary, button.btn-primary {
+    background: var(--teal);
+    color: #ffffff;
+    border: 1px solid var(--teal);
+    box-shadow: 0 2px 4px rgba(14, 108, 91, 0.25);
+  }
+  .btn.primary:hover, button.btn-primary:hover {
+    background: #095245;
+    border-color: #095245;
+    box-shadow: 0 4px 12px rgba(14, 108, 91, 0.35);
+  }
+
+  .btn.secondary {
+    background: var(--surface);
+    color: var(--ink-2);
+    border: 1px solid var(--line);
+  }
+  .btn.secondary:hover {
+    background: var(--paper);
+    color: var(--ink);
+    border-color: var(--ink-3);
+  }
+
+  .btn-sftp {
+    font-family: var(--display);
+    font-size: 11px;
+    padding: 6px 14px;
+    border: 1px solid var(--line);
+    background: var(--surface);
+    color: var(--ink-2);
+    border-radius: 4px;
+    white-space: nowrap;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  }
+  .btn-sftp:hover {
+    background: var(--paper);
+    color: var(--teal);
+    border-color: var(--teal);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 8px rgba(14, 108, 91, 0.12);
+  }
+
+  .btn-gray {
+    background: #1E293B;
+    color: #ffffff;
+    border: 1px solid #0F172A;
+    padding: 8px 18px;
+    font-size: 12.5px;
+    font-weight: 600;
+    border-radius: 4px;
+    cursor: pointer;
+    box-shadow: 0 2px 5px rgba(15, 23, 42, 0.25);
+  }
+  .btn-gray:hover {
+    background: #0F172A;
+    border-color: #020617;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(15, 23, 42, 0.35);
+  }
+  .btn-gray:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 4px rgba(15, 23, 42, 0.2);
+  }
+
+  .btn-download {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 4px 8px;
+    cursor: pointer;
+    color: var(--teal);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.18s ease;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.03);
+  }
+  .btn-download:hover {
+    background: var(--teal-bg);
+    color: var(--teal);
+    border-color: var(--teal);
+    transform: translateY(-1px);
+    box-shadow: 0 3px 6px rgba(14, 108, 91, 0.15);
+  }
+    text-decoration: none;
+  }
+  .btn-download:hover {
+    background: var(--teal-bg);
+    color: var(--teal);
+    border-color: var(--teal);
+  }
+  .btn-download svg {
+    width: 15px;
+    height: 15px;
+    fill: currentColor;
+  }
+
+  .pass-wrapper {
+    position: relative;
+    display: flex;
+    align-items: center;
+    width: 100%;
+  }
+  .pass-wrapper input {
+    width: 100%;
+    padding-right: 36px !important;
+  }
+  .pass-toggle-btn {
+    position: absolute;
+    right: 8px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    padding: 4px;
+    color: var(--ink-3);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 4px;
+    transition: color 0.15s ease;
+  }
+  .pass-toggle-btn:hover {
+    color: var(--ink);
+  }
+  .pass-toggle-btn svg {
+    width: 16px;
+    height: 16px;
+    fill: currentColor;
+  }
+
+  .inline-viewer-modal {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(15, 23, 42, 0.7);
+    backdrop-filter: blur(4px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+  }
+  .inline-viewer-modal.hidden {
+    display: none !important;
+  }
+  .inline-viewer-content {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    width: 95vw;
+    height: 92vh;
+    max-width: 1600px;
+    max-height: 95vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.35);
+    overflow: hidden;
+  }
+  .inline-viewer-header {
+    padding: 14px 20px;
+    border-bottom: 1px solid var(--line);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    background: #FAFBFC;
+  }
+  .inline-viewer-header h3 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 600;
+  }
+  .inline-viewer-nav {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .tab-btn {
+    padding: 5px 14px;
+    font-family: var(--display);
+    font-size: 11.5px;
+    font-weight: 600;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--ink-2);
+    cursor: pointer;
+  }
+  .tab-btn.active {
+    background: var(--teal);
+    color: #ffffff;
+    border-color: var(--teal);
+  }
+  .modal-cross-btn {
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: 4px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 22px;
+    line-height: 1;
+    color: var(--ink-2);
+    cursor: pointer;
+    transition: all 0.15s ease;
+  }
+  .modal-cross-btn:hover {
+    background: #fee2e2;
+    color: var(--brick);
+    border-color: var(--brick);
+  }
+  .inline-viewer-body {
+    padding: 16px 20px;
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .inline-viewer-body textarea {
+    width: 100%;
+    height: 100%;
+    flex: 1;
+    font-family: var(--display);
+    font-size: 12.5px;
+    line-height: 1.6;
+    background: #F7F9FB;
+    border: 1px solid var(--line-soft);
+    padding: 14px 16px;
+    border-radius: 4px;
+    outline: none;
+    resize: none;
+    color: var(--ink);
+    white-space: pre;
+    overflow-x: auto;
+    overflow-y: auto;
+  }
+  .inline-viewer-footer {
+    padding: 12px 20px;
+    border-top: 1px solid var(--line);
+    background: #FAFBFC;
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+  }
+</style>
+
+<div class="shell">
+  <!-- Drawer Backdrop Overlay -->
+  <div class="drawer-backdrop" id="drawerBackdrop"></div>
+
+  <!-- Left-to-Right Drawer Navigation Panel -->
+  <nav class="rail" id="navDrawer">
+    <div class="drawer-header">
+      <h3>NAVIGATION</h3>
+      <button type="button" class="drawer-close-btn" id="drawerCloseBtn" title="Close Menu">&times;</button>
+    </div>
+    <div class="grp eyebrow">Operations</div>
+    <button class="navitem on" data-v="flow">Flow</button>
+    <button class="navitem" data-v="batches">Conversions</button>
+    <button class="navitem" data-v="notices">Notices from MPL <span class="count">3</span></button>
+    <div class="grp eyebrow" style="padding-top:18px">Records</div>
+    <button class="navitem" data-v="archive">Archive</button>
+    <div class="grp eyebrow" style="padding-top:18px">Setup</div>
+    <button class="navitem" data-v="conn">Connections</button>
+  </nav>
+
+  <main class="main">
+
+    <!-- ============ FLOW VIEW (CLEAN MONITORING & REALTIME PIPELINE) ============ -->
+    <section class="view on" id="v-flow">
+      <div class="flow-title-row">
+        <div>
+          <h1>Flow</h1>
+          <p class="sub">
+            <span class="eyebrow" style="margin-right: 8px;">TODAY &bull; {{ today_date_str }}</span>
+            837 is optional reference only. MIR is built from validated 835 files using the active mapping, then the output is ready for the configured MPL delivery path.
+          </p>
+        </div>
+        <button type="button" class="btn-sftp">SFTP connection</button>
+      </div>
+
+      <!-- DYNAMIC PIPELINE TRACK -->
+      <div class="pipe">
+        <div class="pipe-track">
+
+          <!-- STAGE 01 -->
+          <div class="stage">
+            <div class="n">01</div>
+            <h3>837 reference</h3>
+            <div class="who">Optional - reference only</div>
+            <div class="chipstack">
+              <div class="chip idle">
+                <span>No 837 reference today</span>
+                <span class="c">optional</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- STAGE 02 -->
+          <div class="stage">
+            <div class="n">02</div>
+            <h3>835 received</h3>
+            <div class="who">Source used to build MIR</div>
+            <div class="chipstack" id="stage2Chips">
+              {% if recent_files %}
+                {% for f in recent_files %}
+                  <div class="chip {% if f.status == 'ARCHIVED' %}ok{% elif f.status == 'PROCESSING' %}work{% else %}hold{% endif %}">
+                    <span title="{{ f.original_filename }}">{{ f.original_filename|slice:":26" }}</span>
+                    <span class="c">{{ f.claims_count }} clm</span>
+                  </div>
+                {% endfor %}
+              {% else %}
+                <div class="chip idle"><span>No 835 received today</span><span class="c">&ndash;</span></div>
+              {% endif %}
+            </div>
+          </div>
+
+          <!-- STAGE 03 -->
+          <div class="stage">
+            <div class="n">03</div>
+            <h3>MIR built</h3>
+            <div class="who">Relay conversion</div>
+            <div class="chipstack" id="stage3Chips">
+              {% if recent_files %}
+                {% for f in recent_files %}
+                  {% if f.status == 'ARCHIVED' or f.status == 'COMPLETED' %}
+                    <div class="chip ok">
+                      <span title="{{ f.original_filename }}">MIR_{{ f.original_filename|slice:":20" }}.mir</span>
+                      <span class="c">{{ f.records_count|default:f.claims_count }} rec</span>
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              {% else %}
+                <div class="chip idle"><span>No MIR built today</span><span class="c">&ndash;</span></div>
+              {% endif %}
+            </div>
+          </div>
+
+          <!-- STAGE 04 -->
+          <div class="stage">
+            <div class="n">04</div>
+            <h3>MIR delivery path</h3>
+            <div class="who">Configured outbound SFTP</div>
+            <div class="chipstack" id="stage4Chips">
+              <div class="chip idle">
+                <span>SFTP not connected</span>
+                <span class="c">setup</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- VAULT FOOTER BAR -->
+        <div class="vault">
+          <span class="lock">&squarf; 837 never feeds MIR generation</span>
+          <span class="lock">&squarf; 835 validation happens on the backend</span>
+          <span class="lock">&squarf; Plan and file metadata persist in SQLite</span>
+        </div>
+      </div>
+
+      <!-- METRICS GRID -->
+      <div class="metrics">
+        <div class="metric">
+          <div class="v" id="metricClaimsConvertedCount">{{ total_claims_converted_today }}</div>
+          <div class="l">Claims converted today</div>
+          <div class="d"><span id="metricCompletedRunsCount">{{ converted_today_file_count }}</span> completed runs</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="metricValidatedWaitingCount">{{ validated_waiting_count }}</div>
+          <div class="l">Validated, waiting</div>
+          <div class="d">Ready for Process MIR</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="metricRunsAttentionCount"{% if runs_needing_attention_count %} style="color: var(--brick);"{% endif %}>{{ runs_needing_attention_count }}</div>
+          <div class="l">Runs needing attention</div>
+          <div class="d">Validation or processing failed</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="metricMirOutputsCount">{{ mir_outputs_today_count }}</div>
+          <div class="l">MIR outputs today</div>
+          <div class="d">0 optional 837 references</div>
+        </div>
+      </div>
+
+      <!-- INBOUND & OUTBOUND SFTP CARDS -->
+      <div class="cols" style="grid-template-columns: 1fr 1fr; gap: 20px;">
+        <div class="card" style="padding: 20px;">
+          <h2 style="font-size: 15px; font-weight: 700; margin-bottom: 4px;">Inbound SFTP</h2>
+          <div class="eyebrow" style="margin-bottom: 12px;">835 FROM CLAIMS SYSTEM &bull; 837 OPTIONAL REFERENCE</div>
+          <div id="flowInboundBanner" style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; font-weight: 600; font-size: 13px; color: var(--ink-2); margin-bottom: 14px;">
+            Not configured
+          </div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">Host</span><span class="v" id="flowInboundHost" style="color:var(--ink-3);">&ndash;</span></div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">835 folder</span><span class="v" id="flowInbound835Dir" style="color:var(--ink-3);">&ndash;</span></div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">837 reference folder</span><span class="v" id="flowInbound837Dir" style="color:var(--ink-3);">&ndash;</span></div>
+          <div class="kv" style="padding: 8px 0;"><span class="k">Connection</span><span class="v" id="flowInboundConnection" style="color:var(--ink-3); font-weight:500;">Not configured</span></div>
+        </div>
+
+        <div class="card" style="padding: 20px;">
+          <h2 style="font-size: 15px; font-weight: 700; margin-bottom: 4px;">Outbound SFTP</h2>
+          <div class="eyebrow" style="margin-bottom: 12px;">MIR DESTINATION FOR MPL</div>
+          <div id="flowOutboundBanner" style="background: var(--surface); border: 1px solid var(--line); border-radius: 4px; padding: 8px 12px; font-weight: 600; font-size: 13px; color: var(--ink-2); margin-bottom: 14px;">
+            Not configured
+          </div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">MIR folder</span><span class="v" id="flowOutboundMirDir" style="color:var(--ink-3);">&ndash;</span></div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">MIR built today</span><span class="v" id="flowMirBuiltCount" style="font-weight:600;">{{ mir_outputs_today_count }}</span></div>
+          <div class="kv" style="padding: 8px 0; border-bottom: 1px solid var(--line);"><span class="k">Last connection test</span><span class="v" id="flowOutboundLastTest" style="color:var(--ink-3);">&ndash;</span></div>
+          <div class="kv" style="padding: 8px 0;"><span class="k">Folders discovered</span><span class="v" id="flowOutboundFoldersDiscovered" style="font-weight:600;">0</span></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ CONVERSIONS VIEW (EXACT MATCH FOR REFERENCE IMAGE) ============ -->
+    <section class="view" id="v-batches">
+      <div class="eyebrow">Operations Studio</div>
+      <h1>Conversions</h1>
+      <p class="sub">Start a conversion run, validate EDI 835 files, and view 30-day conversion history.</p>
+
+      <!-- START A CONVERSION CARD (EXACT REFERENCE DESIGN) -->
+      <div class="start-conversion-card">
+        <div class="start-conversion-header">
+          <h2>Start a conversion</h2>
+          <div class="step-pills">
+            <span class="step-pill active" id="pillStep1">1 &bull; UPLOAD 835</span>
+            <span class="step-arrow">&rarr;</span>
+            <span class="step-pill" id="pillStep2">2 &bull; VALIDATE</span>
+            <span class="step-arrow">&rarr;</span>
+            <span class="step-pill" id="pillStep3">3 &bull; PROCESS MIR</span>
+          </div>
+        </div>
+
+        <div class="conversion-boxes">
+          <!-- REQUIRED 835 INPUT BOX -->
+          <div class="c-box">
+            <div class="c-box-label">REQUIRED &bull; 835 INPUT</div>
+            <input type="file" id="convFileInput" accept=".835,.853,.x12,.txt,.edi,*/*" />
+            <div class="subtext" id="conv835Subtext">No 835 files selected.</div>
+          </div>
+
+          <!-- OPTIONAL 837 REFERENCE BOX -->
+          <div class="c-box">
+            <div class="c-box-label">OPTIONAL &bull; 837 REFERENCE ONLY</div>
+            <input type="file" id="ref837FileInput" accept=".837,.x12,.txt,*/*" />
+            <div class="subtext" id="conv837Subtext">No 837 reference selected.</div>
+          </div>
+
+          <!-- ACTION BUTTONS WITH ICONS -->
+          <div class="c-actions">
+            <button type="button" class="btn-gray" id="btnValidate835">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path><polyline points="22 4 12 14.01 9 11.01"></polyline></svg>
+              <span>Validate 835</span>
+            </button>
+            <button type="button" class="btn-disabled" id="btnProcessMIR" disabled>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+              <span>Process MIR</span>
+            </button>
+            <button type="button" class="btn-gray" id="btnStartBatchConversion" title="Test SFTP Inbound Batch Conversion: Reads all files from inbound SFTP folder, validates, archives, converts to MIR, uploads to outbound SFTP, and deletes original file from inbound SFTP.">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+              <span>Test</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Hidden input for holding selected 835 text in memory -->
+        <input type="hidden" id="convEdiText" value="" />
+
+        <!-- ERROR ALERT BOX -->
+        <div id="convErrorBox" class="error-msg hidden" style="margin-top: 14px;"></div>
+
+        <!-- VALIDATION RESULT REPORT -->
+        <div id="convValidationCard" class="hidden" style="margin-top: 14px;">
+          <div id="convStatusBanner" class="status-banner valid">
+            <div>
+              <div style="font-weight: 700; font-size: 14px;" id="convStatusTitle">✓ EDI File Validated Successfully</div>
+              <div style="font-size: 12px; margin-top: 2px;" id="convStatusSub">PyX12 Engine: All envelope headers and segment rules passed. Ready for Process MIR.</div>
+            </div>
+          </div>
+
+          <div class="metrics">
+            <div class="metric">
+              <div class="v" id="convValTotalSegs">0</div>
+              <div class="l">Total Segments</div>
+            </div>
+            <div class="metric">
+              <div class="v" id="convValClaimsFound">0</div>
+              <div class="l">Claims Identified</div>
+            </div>
+            <div class="metric">
+              <div class="v" id="convValErrCount" style="color: var(--brick);">0</div>
+              <div class="l">Errors</div>
+            </div>
+            <div class="metric">
+              <div class="v" id="convValWarnCount" style="color: var(--ochre);">0</div>
+              <div class="l">Warnings</div>
+            </div>
+          </div>
+
+          <div id="convErrorsSection" class="hidden" style="margin-bottom: 12px;">
+            <div class="eyebrow" style="color: var(--brick); margin-bottom: 6px;">Errors Found</div>
+            <div id="convErrorsList"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- FILTERS CONTROL BAR -->
+      <div class="filters-bar" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <input type="text" id="filterSearchText" placeholder="Search run, 835 file, or MIR file" style="padding: 7px 12px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px; width: 280px;" />
+        <span class="runs-counter" id="runsCountLabel" style="font-size: 12px; font-weight: 600; color: var(--ink-3);">0 runs</span>
+      </div>
+
+      <!-- CONVERSIONS TABLE (EXACT MATCH FOR REFERENCE IMAGE) -->
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 16px;">
+        <div style="overflow-x: auto;">
+          <table style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th class="sortable" data-sort-key="id" data-table="conv">RUN <span class="sort-arrow">&udarr;</span></th>
+                <th class="sortable desc" data-sort-key="date" data-table="conv">835 DATE <span class="sort-arrow">&darr;</span></th>
+                <th class="sortable" data-sort-key="time" data-table="conv">TIMESTAMP <span class="sort-arrow">&udarr;</span></th>
+                <th class="sortable" data-sort-key="filename" data-table="conv">835 IN <span class="sort-arrow">&udarr;</span></th>
+                <th>837 REF</th>
+                <th class="sortable" data-sort-key="claims" data-table="conv">CLAIMS <span class="sort-arrow">&udarr;</span></th>
+                <th>MIR OUT</th>
+                <th class="sortable" data-sort-key="status" data-table="conv">STATUS <span class="sort-arrow">&udarr;</span></th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="trackedFilesBody">
+              <tr><td colspan="9" style="padding:24px; text-align:center; color:var(--ink-3);">Loading conversion runs...</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- CONVERSIONS PAGINATION CONTROL FOOTER -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; color: var(--ink-3);">Rows per page:</span>
+            <select id="convPageSize" style="padding: 4px 8px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px;">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button id="convBtnPrev" class="btn secondary" style="padding: 4px 10px; font-size: 11px;" disabled>&ndash; Previous</button>
+            <span id="convPageInfo" style="font-size: 11px; color: var(--ink-2);">Page 1 of 1</span>
+            <button id="convBtnNext" class="btn secondary" style="padding: 4px 10px; font-size: 11px;" disabled>Next &rarr;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- OPERATIONAL VIEW BANNER -->
+      <div class="stub">
+        <b>30-day operational view.</b> This table is intentionally limited by the backend to the latest 30 days. Every uploaded 835 and every generated MIR is also written to the SQLite-backed Archive.
+      </div>
+    </section>
+
+    <!-- ============ NOTICES VIEW ============ -->
+    <section class="view" id="v-notices">
+      <div class="eyebrow">Returned from MPL</div>
+      <h1>Notices</h1>
+      <p class="sub">MPL sends these back every few days rather than on a schedule. Relay keeps the original and reads it back in plain language.</p>
+
+      <article class="card">
+        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
+          <div>
+            <div class="mono" style="font-size: 13px; font-weight: 600;">MPL-RTN-20250806-114</div>
+            <div style="font-size: 11px; color: var(--ink-3);">6 Aug &bull; covers 1–5 Aug</div>
+          </div>
+          <span class="tag bad">Needs an answer</span>
+        </div>
+        <pre>RTN 20250806 ABCHEALTH
+BATCH 20250801-20250805 RECV 004 ACC 003 REJ 001
+FILE MIR_ABC_20250804_03 ST=R CD=E220 SEG=CLM OCC=00007
+CD=E220 TXT=PRV ID NOT ON FILE FOR SVC DT RANGE
+ACTION=RESUBMIT AFTER CORRECTION WINDOW=15D</pre>
+        <p style="margin-top: 10px; font-size: 13px; color: var(--ink-2);">
+          MPL took three of the four files sent last week and rejected one. The provider ID was not on file for the service date range.
+        </p>
+      </article>
+    </section>
+
+    <!-- ============ ARCHIVE VIEW (EXACT MATCH FOR REFERENCE SCREENSHOT) ============ -->
+    <section class="view" id="v-archive">
+      <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;">
+        <div style="display:flex; align-items:baseline; gap:10px;">
+          <h1 style="margin:0;">Archive</h1>
+          <span style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--ink-3); text-transform: uppercase;">ALL CONVERSION-SET HISTORY</span>
+        </div>
+
+        <!-- ZIP ARCHIVE DOWNLOAD DROPDOWN -->
+        <div style="position: relative; display: inline-block;">
+          <button type="button" class="btn-gray" id="btnZipDropdownToggle" style="display: inline-flex; align-items: center; gap: 6px; padding: 7px 14px; font-size: 12px; font-weight: 600; border-radius: 6px; cursor: pointer;" title="Export Archive to ZIP">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 8v13H3V8"></path>
+              <path d="M1 3h22v5H1z"></path>
+              <path d="M10 12h4"></path>
+            </svg>
+            <span>ZIP Archive</span>
+            <span style="font-size: 10px; margin-left: 2px;">&#9660;</span>
+          </button>
+          <div id="zipDropdownMenu" class="hidden" style="position: absolute; top: 100%; right: 0; margin-top: 6px; background: #ffffff; border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 4px 16px rgba(0,0,0,0.18); z-index: 200; min-width: 210px; overflow: hidden;">
+            <a href="/api/download-zip/?type=mir" style="display: block; padding: 10px 14px; font-size: 12px; color: #1e293b; text-decoration: none; border-bottom: 1px solid #f1f5f9; font-weight: 500;">📄 Download all MIR (.mir)</a>
+            <a href="/api/download-zip/?type=835" style="display: block; padding: 10px 14px; font-size: 12px; color: #1e293b; text-decoration: none; border-bottom: 1px solid #f1f5f9; font-weight: 500;">📦 Download all 835 (.x12 / .835)</a>
+            <a href="/api/download-zip/?type=both" style="display: block; padding: 10px 14px; font-size: 12px; color: var(--teal); font-weight: 700; text-decoration: none;">⚡ Download Both (MIR & 835)</a>
+          </div>
+        </div>
+      </div>
+      <p class="sub" style="margin-top: 4px; margin-bottom: 20px;">
+        One row represents one 835 conversion set. The 835 input(s), optional 837 reference, MIR output, validation result, and processing result stay together.
+      </p>
+
+      <!-- 5 METRIC CARDS METRICS BAR -->
+      <div class="metrics" style="grid-template-columns: repeat(5, 1fr); gap: 12px; margin-bottom: 20px;">
+        <div class="metric">
+          <div class="v" id="archMetricConversionSets">0</div>
+          <div class="l">Conversion sets</div>
+          <div class="d"><span id="archMetricPhysicalSeals">0</span> physical file seals stored</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="archMetric835Received">0</div>
+          <div class="l">835 files received</div>
+          <div class="d">Across all conversion sets</div>
+        </div>
+        <div class="metric">
+          <div class="v">0</div>
+          <div class="l">837 references</div>
+          <div class="d">Optional - reference only</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="archMetricValidatedSets">0</div>
+          <div class="l">Validated sets</div>
+          <div class="d">835 validation passed</div>
+        </div>
+        <div class="metric">
+          <div class="v" id="archMetricProcessedSets">0</div>
+          <div class="l">Processed sets</div>
+          <div class="d"><span id="archMetricWaitingFailed">0</span> waiting/failed - <span id="archMetricValFailed">0</span> validation failed</div>
+        </div>
+      </div>
+
+      <!-- SEARCH BAR ROW -->
+      <div class="filters-bar" style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px;">
+        <input type="text" id="archSearchText" placeholder="Search run, 835, 837, or MIR..." style="padding: 7px 12px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px; width: 280px;">
+        <span id="archTotalSetsCount" style="font-size: 12px; font-weight: 600; color: var(--ink-3);">0 sets</span>
+      </div>
+
+      <!-- ARCHIVE DATA TABLE -->
+      <div class="card" style="padding: 0; overflow: hidden; margin-bottom: 16px;">
+        <div style="overflow-x: auto;">
+          <table class="datatable" style="width: 100%; border-collapse: collapse;">
+            <thead>
+              <tr>
+                <th class="sortable desc" data-sort-key="date" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">835 DATE <span class="sort-arrow">&darr;</span></th>
+                <th class="sortable" data-sort-key="id" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">RUN <span class="sort-arrow">&udarr;</span></th>
+                <th class="sortable" data-sort-key="filename" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">835 INPUT <span class="sort-arrow">&udarr;</span></th>
+                <th style="font-size: 11px; letter-spacing: 0.05em;">837 REF</th>
+                <th style="font-size: 11px; letter-spacing: 0.05em;">MIR OUTPUT</th>
+                <th class="sortable" data-sort-key="claims" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">CLAIMS <span class="sort-arrow">&udarr;</span></th>
+                <th class="sortable" data-sort-key="sftp" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">SFTP STATUS <span class="sort-arrow">&udarr;</span></th>
+                <th class="sortable" data-sort-key="status" data-table="arch" style="font-size: 11px; letter-spacing: 0.05em;">STATUS <span class="sort-arrow">&udarr;</span></th>
+                <th style="font-size: 11px; letter-spacing: 0.05em;">SOURCE</th>
+                <th style="font-size: 11px; letter-spacing: 0.05em;">ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="archTableBody">
+              <tr>
+                <td colspan="10" style="padding: 32px; text-align: center; color: var(--ink-3);">
+                  No conversion sets match these filters.
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- PAGINATION CONTROL FOOTER -->
+        <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 20px; border-top: 1px solid var(--line); background: var(--surface);">
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <span style="font-size: 11px; color: var(--ink-3);">Rows per page:</span>
+            <select id="archPageSize" style="padding: 4px 8px; font-size: 11px; border: 1px solid var(--line); border-radius: 4px;">
+              <option value="10">10</option>
+              <option value="20" selected>20</option>
+              <option value="50">50</option>
+              <option value="100">100</option>
+            </select>
+          </div>
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <button id="archBtnPrev" class="btn secondary" style="padding: 4px 10px; font-size: 11px;" disabled>&ndash; Previous</button>
+            <span id="archPageInfo" style="font-size: 11px; color: var(--ink-2);">Page 1 of 1</span>
+            <button id="archBtnNext" class="btn secondary" style="padding: 4px 10px; font-size: 11px;" disabled>Next &rarr;</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- FOOTER SUBTEXT LEGEND -->
+      <div style="font-size: 11.5px; color: var(--teal); font-weight: 500; display: flex; gap: 24px;">
+        <span>&#9632; Archive table = one row per conversion set</span>
+        <span>&#9632; Physical 835 / 837 / MIR file hashes remain stored individually</span>
+      </div>
+    </section>
+
+    <!-- ============ CONNECTIONS VIEW (SFTP CONFIGURATION & SETUP) ============ -->
+    <section class="view" id="v-conn">
+      <div style="display:flex; align-items:baseline; gap:10px; margin-bottom: 4px;">
+        <h1 style="margin:0;">Connections</h1>
+        <span style="font-size: 11px; font-weight: 700; letter-spacing: 0.08em; color: var(--ink-3); text-transform: uppercase;">SFTP CONFIGURATION</span>
+      </div>
+      <p class="sub" style="margin-top: 4px; margin-bottom: 20px;">
+        Connect to the client SFTP, verify the remote folders, and reuse the saved paths on the Flow screen. Credentials are encrypted locally and are never returned to the browser.
+      </p>
+
+      <!-- CHECKBOX CONTROL FOR SINGLE / SEPARATE SFTP SERVERS -->
+      <div class="card" style="padding: 14px 20px; margin-bottom: 20px; background: var(--surface); border: 1px solid var(--line);">
+        <label style="display: flex; align-items: center; gap: 10px; font-weight: 600; font-size: 13px; color: var(--ink-1); cursor: pointer;">
+          <input type="checkbox" id="chkSameSftpServer" checked style="width: 16px; height: 16px; cursor: pointer;">
+          <span>Same SFTP server for Inbound and Outbound connections</span>
+        </label>
+      </div>
+
+      <div style="display: grid; grid-template-columns: 2fr 1fr; gap: 20px; margin-bottom: 24px;">
+        
+        <!-- LEFT COLUMN: SETUP BOX (UNIFIED OR DUAL) -->
+        <div>
+          <!-- UNIFIED SFTP SETUP BOX (Shown when Same SFTP server is checked) -->
+          <div id="sftpBoxUnified" class="card" style="padding: 24px; position: relative;">
+            <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 16px;">
+              <div>
+                <h2 style="font-size: 16px; font-weight: 700; margin: 0;">SFTP connection</h2>
+                <div class="eyebrow" style="margin-top: 2px;">CLAIMS INPUT AND MPL OUTPUT</div>
+              </div>
+              <span id="sftpUnifiedStatusBadge" class="tag" style="background: #f1f5f9; color: var(--ink-3); font-weight: 700;">NOT CONFIGURED</span>
+            </div>
+
+            <!-- Host Grid -->
+            <div style="display: grid; grid-template-columns: 3fr 1fr 2fr 2fr; gap: 12px; margin-bottom: 16px;">
+              <div>
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Host</label>
+                <input type="text" id="sftpUniHost" value="sftp.example.com" placeholder="sftp.example.com" style="width: 100%; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+              </div>
+              <div>
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Port</label>
+                <input type="text" id="sftpUniPort" value="22" placeholder="22" style="width: 100%; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+              </div>
+              <div>
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Username</label>
+                <input type="text" id="sftpUniUser" placeholder="username" style="width: 100%; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+              </div>
+              <div>
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Authentication</label>
+                <select id="sftpUniAuth" onchange="handleAuthMethodChange(this, 'sftpUniPassBox', 'sftpUniSshKeyBox')" style="width: 100%; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <option value="Password">Password</option>
+                  <option value="SSH Key">SSH Key</option>
+                  <option value="SSH Key + Password">SSH Key + Password</option>
+                </select>
+              </div>
+            </div>
+
+            <!-- Password Container -->
+            <div id="sftpUniPassBox" style="margin-bottom: 16px;">
+              <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Password</label>
+              <div class="pass-wrapper">
+                <input type="password" id="sftpUniPass" value="" autocomplete="new-password" placeholder="Password" style="width: 100%; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                <button type="button" class="pass-toggle-btn" 
+                        onmousedown="showPass('sftpUniPass', this)" 
+                        onmouseup="hidePass('sftpUniPass', this)" 
+                        onmouseleave="hidePass('sftpUniPass', this)" 
+                        ontouchstart="showPass('sftpUniPass', this)" 
+                        ontouchend="hidePass('sftpUniPass', this)" 
+                        ontouchcancel="hidePass('sftpUniPass', this)" 
+                        title="Hold to see password">
+                  <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- SSH Key Container (Upload file format or Paste string) -->
+            <div id="sftpUniSshKeyBox" class="hidden" style="margin-bottom: 16px;">
+              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
+                <label style="font-size: 11px; font-weight: 600; color: var(--ink-2); margin: 0;">SSH Key</label>
+                <label style="font-size: 11px; font-weight: 600; color: var(--teal); cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid var(--teal); padding: 2px 8px; border-radius: 4px; background: var(--surface);">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+                  <span>Upload Key File</span>
+                  <input type="file" id="sftpUniKeyFileInput" accept=".pem,.key,id_rsa,id_ed25519,*/*" style="display: none;" onchange="handleKeyFileUpload(this, 'sftpUniSshKey')">
+                </label>
+              </div>
+              <textarea id="sftpUniSshKey" rows="3" autocomplete="off" placeholder="e.g. -----BEGIN OPENSSH PRIVATE KEY----- or C:\path\to\id_ed25519" style="width: 100%; padding: 8px 10px; font-size: 11px; font-family: var(--display); border: 1px solid var(--line); border-radius: 4px; resize: vertical; margin-top:0;"></textarea>
+            </div>
+
+            <!-- Trust Key -->
+            <div style="margin-bottom: 20px;">
+              <label style="display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink-2); cursor: pointer;">
+                <input type="checkbox" id="sftpUniTrust" checked>
+                <span>Trust an unknown host key during this local POC</span>
+              </label>
+            </div>
+
+            <!-- Directories with Browse Buttons -->
+            <div style="margin-bottom: 14px;">
+              <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">837 reference inbound folder (.837 / .x12) <span style="color:var(--ink-3); font-weight:normal;">optional</span></label>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="text" id="sftpUniDir837" value="" placeholder="e.g. /inbound/837/" style="flex: 1; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                <button type="button" class="btn secondary" style="padding: 7px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpUniDir837').value, 'sftpUniDir837')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                </button>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 14px;">
+              <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">835 inbound folder (.835 / .x12 source)</label>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="text" id="sftpUniDir835" value="" placeholder="e.g. /inbound/835/" style="flex: 1; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                <button type="button" class="btn secondary" style="padding: 7px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpUniDir835').value, 'sftpUniDir835')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                </button>
+              </div>
+            </div>
+
+            <div style="margin-bottom: 20px;">
+              <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">MIR outbound folder (.mir output destination)</label>
+              <div style="display: flex; gap: 8px; align-items: center;">
+                <input type="text" id="sftpUniDirMir" value="" placeholder="e.g. /outbound/mir/" style="flex: 1; padding: 8px 10px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                <button type="button" class="btn secondary" style="padding: 7px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpUniDirMir').value, 'sftpUniDirMir')">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                </button>
+              </div>
+            </div>
+
+            <!-- Submit Buttons -->
+            <div style="display:flex; gap:10px; align-items:center;">
+              <button type="button" id="btnTestSaveUnified" class="btn primary" style="padding: 9px 18px; font-size: 12.5px; font-weight: 600;">Test & save connection</button>
+              <button type="button" id="btnStartBatchConnUnified" class="btn-gray" style="padding: 9px 18px; font-size: 12.5px; font-weight: 600;" title="Test SFTP Inbound Batch Conversion">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><polygon points="5 3 19 12 5 21 5 3"></polygon></svg>
+                <span>Test</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- DUAL SFTP SETUP BOXES (Shown when Same SFTP server is unchecked) -->
+          <div id="sftpBoxDual" class="hidden">
+            <!-- Box 1: INBOUND SFTP -->
+            <div class="card" style="padding: 20px; margin-bottom: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px;">
+                <div>
+                  <h2 style="font-size: 15px; font-weight: 700; margin: 0;">Inbound SFTP connection</h2>
+                  <div class="eyebrow" style="margin-top: 2px;">CLAIMS & 837 INBOUND SOURCE</div>
+                </div>
+                <span id="sftpInboundStatusBadge" class="tag" style="background: #f1f5f9; color: var(--ink-3);">NOT CONFIGURED</span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 3fr 1fr 2fr 2fr; gap: 10px; margin-bottom: 12px;">
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Inbound Host</label>
+                  <input type="text" id="sftpInHost" value="inbound.sftp.example.com" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Port</label>
+                  <input type="text" id="sftpInPort" value="22" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Username</label>
+                  <input type="text" id="sftpInUser" placeholder="inbound_user" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Authentication</label>
+                  <select id="sftpInAuth" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                    <option value="Password">Password</option>
+                    <option value="SSH Key">SSH Key</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 12px;">
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Password</label>
+                <div class="pass-wrapper">
+                  <input type="password" id="sftpInPass" value="" placeholder="Enter SFTP password" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <button type="button" class="pass-toggle-btn" 
+                          onmousedown="showPass('sftpInPass', this)" 
+                          onmouseup="hidePass('sftpInPass', this)" 
+                          onmouseleave="hidePass('sftpInPass', this)" 
+                          ontouchstart="showPass('sftpInPass', this)" 
+                          ontouchend="hidePass('sftpInPass', this)" 
+                          ontouchcancel="hidePass('sftpInPass', this)" 
+                          title="Hold to see password">
+                    <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 12px;">
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">837 reference inbound folder optional</label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="sftpInDir837" value="" placeholder="e.g. /inbound/837/" style="flex: 1; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <button type="button" class="btn secondary" style="padding: 6px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpInDir837').value, 'sftpInDir837')">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 16px;">
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">835 inbound folder</label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="sftpInDir835" value="" placeholder="e.g. /inbound/835/" style="flex: 1; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <button type="button" class="btn secondary" style="padding: 6px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpInDir835').value, 'sftpInDir835')">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  </button>
+                </div>
+              </div>
+
+              <button type="button" id="btnTestSaveInbound" class="btn primary" style="padding: 8px 16px; font-size: 12px;">Test & save inbound connection</button>
+            </div>
+
+            <!-- Box 2: OUTBOUND SFTP -->
+            <div class="card" style="padding: 20px;">
+              <div style="display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 14px;">
+                <div>
+                  <h2 style="font-size: 15px; font-weight: 700; margin: 0;">Outbound SFTP connection</h2>
+                  <div class="eyebrow" style="margin-top: 2px;">MIR OUTBOUND DESTINATION</div>
+                </div>
+                <span id="sftpOutboundStatusBadge" class="tag" style="background: #f1f5f9; color: var(--ink-3);">NOT CONFIGURED</span>
+              </div>
+
+              <div style="display: grid; grid-template-columns: 3fr 1fr 2fr 2fr; gap: 10px; margin-bottom: 12px;">
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Outbound Host</label>
+                  <input type="text" id="sftpOutHost" value="" placeholder="outbound.sftp.example.com" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Port</label>
+                  <input type="text" id="sftpOutPort" value="22" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Username</label>
+                  <input type="text" id="sftpOutUser" placeholder="outbound_user" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                </div>
+                <div>
+                  <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Authentication</label>
+                  <select id="sftpOutAuth" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                    <option value="Password">Password</option>
+                    <option value="SSH Key">SSH Key</option>
+                  </select>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 12px;">
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">Password</label>
+                <div class="pass-wrapper">
+                  <input type="password" id="sftpOutPass" value="" placeholder="Enter SFTP password" style="width: 100%; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <button type="button" class="pass-toggle-btn" 
+                          onmousedown="showPass('sftpOutPass', this)" 
+                          onmouseup="hidePass('sftpOutPass', this)" 
+                          onmouseleave="hidePass('sftpOutPass', this)" 
+                          ontouchstart="showPass('sftpOutPass', this)" 
+                          ontouchend="hidePass('sftpOutPass', this)" 
+                          ontouchcancel="hidePass('sftpOutPass', this)" 
+                          title="Hold to see password">
+                    <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+                  </button>
+                </div>
+              </div>
+
+              <div style="margin-bottom: 16px;">
+                <label style="display: block; font-size: 11px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px;">MIR outbound folder</label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                  <input type="text" id="sftpOutDirMir" value="" placeholder="e.g. /outbound/mir/" style="flex: 1; padding: 7px 9px; font-size: 12px; border: 1px solid var(--line); border-radius: 4px;">
+                  <button type="button" class="btn secondary" style="padding: 6px 10px; color: var(--teal); border-color: var(--teal); display: flex; align-items: center; justify-content: center;" title="Browse Remote SFTP Folder" onclick="openSftpBrowserModal(null, document.getElementById('sftpOutDirMir').value, 'sftpOutDirMir')">
+                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+                  </button>
+                </div>
+              </div>
+
+              <button type="button" id="btnTestSaveOutbound" class="btn primary" style="padding: 8px 16px; font-size: 12px;">Test & save outbound connection</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- RIGHT COLUMN: AVAILABLE REMOTE FOLDERS -->
+        <div>
+          <div class="card" style="padding: 20px; height: 100%;">
+            <h2 style="font-size: 14px; font-weight: 700; margin: 0;">Available remote folders</h2>
+            <div class="eyebrow" style="margin-top: 2px; margin-bottom: 14px;">VISIBLE AFTER A SUCCESSFUL CONNECTION TEST</div>
+            
+            <div id="sftpDiscoveredFoldersBox" style="background: var(--surface); border: 1px dashed var(--line); border-radius: 6px; padding: 20px 16px; font-size: 12px; color: var(--ink-3); min-height: 140px; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;">
+              No successful SFTP test yet.
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- SAVED SFTP CONNECTIONS DATA TABLE -->
+      <div class="card" style="padding: 20px; margin-bottom: 20px;">
+        <div style="margin-bottom: 14px;">
+          <h2 style="font-size: 15px; font-weight: 700; margin: 0;">Configured SFTP Connections Database</h2>
+          <div class="eyebrow" style="margin-top: 2px;">SAVED CLIENT CONNECTION PATHS</div>
+        </div>
+        <div style="overflow-x: auto;">
+          <table class="datatable" style="width: 100%;">
+            <thead>
+              <tr>
+                <th>TYPE</th>
+                <th>HOST & PORT</th>
+                <th>USERNAME</th>
+                <th>835 INBOUND PATH</th>
+                <th>MIR OUTBOUND PATH</th>
+                <th>STATUS</th>
+                <th>LAST TESTED</th>
+                <th>ACTION</th>
+              </tr>
+            </thead>
+            <tbody id="sftpConfigsTableBody">
+              <tr><td colspan="8" style="padding: 20px; text-align: center; color: var(--ink-3);">No SFTP connections saved yet.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- CURRENT SCOPE NOTICE BOX -->
+      <div style="border: 1.5px dashed var(--line); border-radius: 8px; padding: 16px 20px; font-size: 12px; color: var(--ink-2); background: var(--surface); line-height: 1.5;">
+        <strong>Current scope.</strong> Manual upload on Conversions remains the active ingestion workflow. This screen establishes and verifies the real SFTP connection/folder configuration so watched-folder pickup and automated outbound delivery can use the same settings when we wire those jobs.
+      </div>
+
+    </section>
+
+  </main>
+</div>
+
+<!-- ============ POPUP MODAL FOR 835 / MIR VIEWING AND EDITING ============ -->
+<div id="fileViewerModal" class="inline-viewer-modal hidden">
+  <div class="inline-viewer-content">
+    <div class="inline-viewer-header">
+      <div style="display: flex; align-items: center; gap: 14px;">
+        <h3 id="modalFileTitle">File View & Edit</h3>
+        <div class="inline-viewer-nav">
+          <button type="button" class="tab-btn active" id="modalBtn835">835 Code</button>
+          <button type="button" class="tab-btn" id="modalBtnMIR">MIR Code</button>
+        </div>
+      </div>
+      <button type="button" id="modalCloseBtn" class="modal-cross-btn" title="Close Popup">&times;</button>
+    </div>
+    <div class="inline-viewer-body">
+      <textarea id="modalTextarea" spellcheck="false" placeholder="Loading file content..."></textarea>
+    </div>
+    <div class="inline-viewer-footer">
+      <button type="button" class="btn secondary" id="modalCopyBtn" style="padding: 6px 12px; font-size: 12px;">Copy</button>
+      <button type="button" class="btn primary" id="modalCloseFooterBtn" style="padding: 6px 16px; font-size: 12px;">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ POPUP MODAL FOR SFTP REMOTE DIRECTORY BROWSER ============ -->
+<div id="sftpBrowserModal" class="inline-viewer-modal hidden">
+  <div class="inline-viewer-content" style="width: 90vw; max-width: 1200px; height: 85vh;">
+    <div class="inline-viewer-header">
+      <div style="display: flex; align-items: center; gap: 12px; flex: 1;">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="var(--teal)" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path></svg>
+        <h3 style="margin:0; font-size:15px; font-weight:700;">Remote SFTP Directory Browser</h3>
+        <span class="tag ok" style="font-size:10px;">SFTP DIRECTORY</span>
+      </div>
+      <button type="button" id="sftpBrowserCloseBtn" onclick="closeSftpBrowserModal()" class="modal-cross-btn" title="Close SFTP Browser">&times;</button>
+    </div>
+    <div class="inline-viewer-body" style="padding: 16px; overflow: hidden; display: flex; flex-direction: column;">
+      <!-- Breadcrumb & Nav Bar -->
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 12px; background: #F4F6F8; padding: 8px 12px; border: 1px solid var(--line); border-radius: 4px;">
+        <div style="flex: 1; display: flex; align-items: center; gap: 6px; font-family: var(--display); font-size: 12px; overflow-x: auto;">
+          <span style="color: var(--ink-3); font-weight: 600;">Path:</span>
+          <input type="text" id="sftpBrowserPathInput" value="/" style="flex: 1; min-width: 250px; padding: 4px 8px; font-size: 12px; font-family: var(--display); border: 1px solid var(--line); border-radius: 4px;">
+          <button type="button" id="sftpBrowserBtnGo" onclick="fetchSftpDirectory(document.getElementById('sftpBrowserPathInput').value, true)" class="btn primary" style="padding: 4px 12px; font-size: 11px;">Go</button>
+        </div>
+      </div>
+      <!-- Directory listing table -->
+      <div style="flex: 1; overflow-y: auto; border: 1px solid var(--line); border-radius: 4px; background: var(--surface);">
+        <table style="width: 100%; border-collapse: collapse;">
+          <thead>
+            <tr>
+              <th style="font-size: 10px; width: 45%;">NAME</th>
+              <th style="font-size: 10px; width: 15%;">TYPE</th>
+              <th style="font-size: 10px; width: 15%;">SIZE</th>
+              <th style="font-size: 10px; width: 25%;">LAST MODIFIED</th>
+            </tr>
+          </thead>
+          <tbody id="sftpBrowserTableBody">
+            <tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--ink-3);">Loading SFTP directory contents...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+    <div class="inline-viewer-footer">
+      <button type="button" onclick="selectCurrentSftpFolder()" class="btn primary" style="padding: 6px 16px; font-size: 12px;">Select This Folder</button>
+      <button type="button" onclick="closeSftpBrowserModal()" class="btn secondary" style="padding: 6px 16px; font-size: 12px;">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // --- DRAWER MENU TOGGLE LOGIC ---
+  const btnDrawerToggle = document.getElementById("btnDrawerToggle");
+  const navDrawer = document.getElementById("navDrawer");
+  const drawerBackdrop = document.getElementById("drawerBackdrop");
+  const drawerCloseBtn = document.getElementById("drawerCloseBtn");
+
+  function openDrawer() {
+    if (navDrawer) navDrawer.classList.add("open");
+    if (drawerBackdrop) drawerBackdrop.classList.add("open");
+  }
+
+  function closeDrawer() {
+    if (navDrawer) navDrawer.classList.remove("open");
+    if (drawerBackdrop) drawerBackdrop.classList.remove("open");
+  }
+
+  if (btnDrawerToggle) btnDrawerToggle.addEventListener("click", () => {
+    if (navDrawer && navDrawer.classList.contains("open")) {
+      closeDrawer();
+    } else {
+      openDrawer();
+    }
+  });
+
+  if (drawerCloseBtn) drawerCloseBtn.addEventListener("click", closeDrawer);
+  if (drawerBackdrop) drawerBackdrop.addEventListener("click", closeDrawer);
+
+  // --- NAVIGATION TAB SWITCHING ---
+  function switchTab(tab) {
+    if (!tab) return;
+    document.querySelectorAll('.navitem').forEach(x => x.classList.remove('on'));
+    document.querySelectorAll('.view').forEach(x => x.classList.remove('on'));
+    const btn = document.querySelector(`.navitem[data-v="${tab}"]`);
+    if (btn) btn.classList.add('on');
+    const target = document.getElementById('v-' + tab);
+    if (target) target.classList.add('on');
+    if (tab === 'batches') loadTrackedFiles();
+    if (tab === 'archive') loadArchiveFiles();
+    if (tab === 'conn') loadSftpConfig();
+    try { localStorage.setItem("activeTab", tab); } catch (e) {}
+  }
+
+  document.querySelectorAll('.navitem').forEach(b => {
+    b.addEventListener('click', () => {
+      switchTab(b.dataset.v);
+      window.scrollTo(0, 0);
+      closeDrawer();
+    });
+  });
+
+  // Restore active tab on page refresh
+  try {
+    const savedTab = localStorage.getItem("activeTab");
+    if (savedTab) switchTab(savedTab);
+  } catch (e) {}
+
+  // State management
+  let activeValidatedFileId = null;
+  let allTrackedFilesData = [];
+  let currentFileName = "uploaded_file.x12";
+  let currentMirText = "";
+
+  // Elements
+  const convFileInput = document.getElementById("convFileInput");
+  const ref837FileInput = document.getElementById("ref837FileInput");
+  const convEdiText = document.getElementById("convEdiText");
+  const conv835Subtext = document.getElementById("conv835Subtext");
+  const conv837Subtext = document.getElementById("conv837Subtext");
+
+  const btnValidate835 = document.getElementById("btnValidate835");
+  const btnProcessMIR = document.getElementById("btnProcessMIR");
+  const convErrorBox = document.getElementById("convErrorBox");
+
+  const pillStep1 = document.getElementById("pillStep1");
+  const pillStep2 = document.getElementById("pillStep2");
+  const pillStep3 = document.getElementById("pillStep3");
+
+  const convValidationCard = document.getElementById("convValidationCard");
+  const convStatusBanner = document.getElementById("convStatusBanner");
+  const convStatusTitle = document.getElementById("convStatusTitle");
+  const convStatusSub = document.getElementById("convStatusSub");
+  const convValTotalSegs = document.getElementById("convValTotalSegs");
+  const convValClaimsFound = document.getElementById("convValClaimsFound");
+  const convValErrCount = document.getElementById("convValErrCount");
+  const convValWarnCount = document.getElementById("convValWarnCount");
+  const convErrorsSection = document.getElementById("convErrorsSection");
+  const convErrorsList = document.getElementById("convErrorsList");
+
+  const convMirResultCard = document.getElementById("convMirResultCard");
+  const convMirOutput = document.getElementById("convMirOutput");
+  const convCopyBtn = document.getElementById("convCopyBtn");
+  const convDownloadBtn = document.getElementById("convDownloadBtn");
+
+  // Filters Elements
+  const filterSearchText = document.getElementById("filterSearchText");
+  const filterStatus = document.getElementById("filterStatus");
+  const filterDateRange = document.getElementById("filterDateRange");
+  const filterSortOrder = document.getElementById("filterSortOrder");
+  const btnClearFilters = document.getElementById("btnClearFilters");
+  const runsCountLabel = document.getElementById("runsCountLabel");
+
+  // --- LIVE METRICS REFRESH ---
+  async function updateLiveMetrics() {
+    try {
+      const res = await fetch('/edi835/api/metrics/');
+      if (!res.ok) return;
+      const data = await res.json();
+
+      const cEl = document.getElementById("metricClaimsConvertedCount");
+      if (cEl) cEl.textContent = data.total_claims_converted_today;
+
+      const rEl = document.getElementById("metricCompletedRunsCount");
+      if (rEl) rEl.textContent = data.converted_today_file_count;
+
+      const wEl = document.getElementById("metricValidatedWaitingCount");
+      if (wEl) wEl.textContent = data.validated_waiting_count;
+
+      const aEl = document.getElementById("metricRunsAttentionCount");
+      if (aEl) {
+        aEl.textContent = data.runs_needing_attention_count;
+        aEl.style.color = data.runs_needing_attention_count > 0 ? "var(--brick)" : "inherit";
+      }
+
+      const mEl = document.getElementById("metricMirOutputsCount");
+      if (mEl) mEl.textContent = data.mir_outputs_today_count;
+
+      const inEl = document.getElementById("inboundPickedUpCount");
+      if (inEl) inEl.textContent = data.converted_today_file_count + " files";
+
+      const outEl = document.getElementById("outboundDeliveredCount");
+      if (outEl) outEl.textContent = data.mir_outputs_today_count + " files";
+
+      const flowMirBuiltEl = document.getElementById("flowMirBuiltCount");
+      if (flowMirBuiltEl) flowMirBuiltEl.textContent = data.mir_outputs_today_count;
+
+      const archRecEl = document.getElementById("archiveRecordsHeldCount");
+      if (archRecEl) archRecEl.textContent = data.archived_files_count !== undefined ? data.archived_files_count : data.total_files_count;
+
+      const cSetsEl = document.getElementById("archMetricConversionSets");
+      if (cSetsEl) cSetsEl.textContent = data.conversion_sets_count || 0;
+
+      const pSealsEl = document.getElementById("archMetricPhysicalSeals");
+      if (pSealsEl) pSealsEl.textContent = data.archived_files_count || 0;
+
+      const f835El = document.getElementById("archMetric835Received");
+      if (f835El) f835El.textContent = data.files_835_received || 0;
+
+      const valSetsEl = document.getElementById("archMetricValidatedSets");
+      if (valSetsEl) valSetsEl.textContent = data.validated_sets_count || 0;
+
+      const procSetsEl = document.getElementById("archMetricProcessedSets");
+      if (procSetsEl) procSetsEl.textContent = data.processed_sets_count || 0;
+
+      const waitFailEl = document.getElementById("archMetricWaitingFailed");
+      if (waitFailEl) waitFailEl.textContent = data.waiting_failed_count || 0;
+
+      const valFailEl = document.getElementById("archMetricValFailed");
+      if (valFailEl) valFailEl.textContent = data.val_failed_count || 0;
+    } catch (err) {
+      console.warn("Failed to fetch live metrics:", err);
+    }
+  }
+
+  // --- FILE SELECT HANDLERS ---
+  convFileInput.addEventListener("change", (e) => {
+    if (e.target.files.length) {
+      const file = e.target.files[0];
+      currentFileName = file.name;
+      conv835Subtext.textContent = "Selected: " + file.name;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        convEdiText.value = evt.target.result;
+        resetConversionUI();
+      };
+      reader.readAsText(file);
+    }
+  });
+
+  ref837FileInput.addEventListener("change", (e) => {
+    if (e.target.files.length) {
+      conv837Subtext.textContent = "Selected: " + e.target.files[0].name + " (optional reference)";
+    }
+  });
+
+  convEdiText.addEventListener("input", () => {
+    resetConversionUI();
+  });
+
+  function resetConversionUI() {
+    convErrorBox.classList.add("hidden");
+    convValidationCard.classList.add("hidden");
+    convMirResultCard.classList.add("hidden");
+    btnProcessMIR.disabled = true;
+    btnProcessMIR.className = "btn-disabled";
+    pillStep1.className = "step-pill active";
+    pillStep2.className = "step-pill";
+    pillStep3.className = "step-pill";
+    activeValidatedFileId = null;
+    currentMirText = "";
+  }
+
+  // --- VALIDATION HANDLER ---
+  btnValidate835.addEventListener("click", processValidation);
+
+  async function processValidation() {
+    const text = convEdiText.value.trim();
+    convErrorBox.classList.add("hidden");
+    convValidationCard.classList.add("hidden");
+    convMirResultCard.classList.add("hidden");
+
+    if (!text) {
+      convErrorBox.textContent = "Please select an 835 file to validate.";
+      convErrorBox.classList.remove("hidden");
+      return;
+    }
+
+    btnValidate835.disabled = true;
+    btnValidate835.textContent = "Validating...";
+
+    try {
+      const response = await fetch('/api/validate/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          edi_text: text,
+          original_filename: currentFileName
+        })
+      });
+      const data = await response.json();
+
+      if (data.file_id) activeValidatedFileId = data.file_id;
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || "Validation failed");
+      }
+
+      const report = data.report;
+      const isValid = report.valid !== undefined ? report.valid : report.is_valid;
+
+      if (isValid) {
+        convStatusBanner.className = "status-banner valid";
+        convStatusTitle.textContent = "✓ EDI File Validated Successfully";
+        convStatusSub.textContent = report.status_message || "PyX12 Engine: All envelope headers and segment rules passed. Ready for Process MIR.";
+        
+        // Enable Step 3 Process MIR button
+        btnProcessMIR.disabled = false;
+        btnProcessMIR.className = "btn-gray";
+        pillStep1.className = "step-pill done";
+        pillStep2.className = "step-pill done";
+        pillStep3.className = "step-pill active";
+      } else {
+        convStatusBanner.className = "status-banner invalid";
+        convStatusTitle.textContent = "✕ EDI Validation Failed";
+        convStatusSub.textContent = report.status_message || "PyX12 Engine: Structural or syntax errors found.";
+        btnProcessMIR.disabled = true;
+        btnProcessMIR.className = "btn-disabled";
+        pillStep2.className = "step-pill active";
+      }
+
+      convValTotalSegs.textContent = report.total_segments || 0;
+      convValClaimsFound.textContent = report.claims !== undefined ? report.claims : (report.claims_found || 0);
+      convValErrCount.textContent = (report.errors || []).length;
+      convValWarnCount.textContent = (report.warnings || []).length;
+
+      if (report.errors && report.errors.length) {
+        convErrorsList.innerHTML = report.errors.map(err => `
+          <div style="background: var(--brick-bg); border-left: 3px solid var(--brick); padding: 8px 12px; margin-bottom: 6px; font-size: 12px;">
+            <span>Line ${err.line || 'N/A'}: ${err.message}</span>
+          </div>
+        `).join('');
+        convErrorsSection.classList.remove('hidden');
+      } else {
+        convErrorsSection.classList.add('hidden');
+      }
+
+      convValidationCard.classList.remove("hidden");
+
+      await updateLiveMetrics();
+      await loadTrackedFiles();
+
+    } catch (err) {
+      convErrorBox.textContent = "Validation error: " + err.message;
+      convErrorBox.classList.remove("hidden");
+      await updateLiveMetrics();
+      await loadTrackedFiles();
+    } finally {
+      btnValidate835.disabled = false;
+      btnValidate835.textContent = "Validate 835";
+    }
+  }
+
+  // --- PROCESS MIR CONVERSION HANDLER ---
+  btnProcessMIR.addEventListener("click", processConversion);
+
+  async function processConversion() {
+    const text = convEdiText.value.trim();
+    if (!text) return;
+
+    btnProcessMIR.disabled = true;
+    btnProcessMIR.textContent = "Processing MIR...";
+
+    try {
+      const response = await fetch('/api/convert/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          edi_text: text,
+          original_filename: currentFileName,
+          file_id: activeValidatedFileId
+        })
+      });
+      const data = await response.json();
+
+      if (!response.ok || data.error) {
+        throw new Error(data.error || "Conversion failed");
+      }
+
+      currentMirText = data.text;
+      convMirOutput.textContent = data.text;
+      // Keep MIR text editor hidden after Process MIR completion as requested
+      convMirResultCard.classList.add("hidden");
+      
+      pillStep1.className = "step-pill done";
+      pillStep2.className = "step-pill done";
+      pillStep3.className = "step-pill done";
+      activeValidatedFileId = null;
+
+      await updateLiveMetrics();
+      await loadTrackedFiles();
+      await loadArchiveFiles();
+
+    } catch (err) {
+      convErrorBox.textContent = "Conversion error: " + err.message;
+      convErrorBox.classList.remove("hidden");
+      await updateLiveMetrics();
+      await loadTrackedFiles();
+      await loadArchiveFiles();
+    } finally {
+      btnProcessMIR.disabled = false;
+      btnProcessMIR.textContent = "Process MIR";
+    }
+  }
+
+  // --- START AUTOMATED BATCH CONVERSION HANDLER ---
+  const btnStartBatch = document.getElementById("btnStartBatchConversion");
+  if (btnStartBatch) {
+    btnStartBatch.addEventListener("click", async () => {
+      btnStartBatch.disabled = true;
+      const labelSpan = btnStartBatch.querySelector("span");
+      if (labelSpan) labelSpan.textContent = "Testing...";
+      try {
+        const res = await fetch("/api/start-batch-conversion/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert(data.message || `✓ Batch processing completed! Processed ${data.processed_count} files.`);
+          if (typeof loadAllDashboardData === "function") await loadAllDashboardData();
+        } else {
+          alert("Batch conversion failed: " + (data.error || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Batch conversion error: " + err.message);
+      } finally {
+        btnStartBatch.disabled = false;
+        if (labelSpan) labelSpan.textContent = "Test";
+      }
+    });
+  }
+
+  const btnStartBatchUnified = document.getElementById("btnStartBatchConnUnified");
+  if (btnStartBatchUnified) {
+    btnStartBatchUnified.addEventListener("click", async () => {
+      btnStartBatchUnified.disabled = true;
+      const labelSpan = btnStartBatchUnified.querySelector("span");
+      if (labelSpan) labelSpan.textContent = "Testing...";
+      try {
+        const res = await fetch("/api/start-batch-conversion/", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        const data = await res.json();
+        if (data.success) {
+          alert(data.message || `✓ Batch processing completed! Processed ${data.processed_count} files.`);
+          if (typeof loadAllDashboardData === "function") await loadAllDashboardData();
+        } else {
+          alert("Batch conversion failed: " + (data.error || "Unknown error"));
+        }
+      } catch (err) {
+        alert("Batch conversion error: " + err.message);
+      } finally {
+        btnStartBatchUnified.disabled = false;
+        if (labelSpan) labelSpan.textContent = "Test";
+      }
+    });
+  }
+
+  // --- ZIP ARCHIVE DROPDOWN TOGGLE ---
+  const btnZipToggle = document.getElementById("btnZipDropdownToggle");
+  const zipMenu = document.getElementById("zipDropdownMenu");
+  if (btnZipToggle && zipMenu) {
+    btnZipToggle.addEventListener("click", (e) => {
+      e.stopPropagation();
+      zipMenu.classList.toggle("hidden");
+    });
+    document.addEventListener("click", (e) => {
+      if (!zipMenu.contains(e.target) && !btnZipToggle.contains(e.target)) {
+        zipMenu.classList.add("hidden");
+      }
+    });
+  }
+
+  // --- COPY & DOWNLOAD HANDLERS ---
+  convCopyBtn.addEventListener("click", () => {
+    if (!currentMirText) return;
+    navigator.clipboard.writeText(currentMirText).then(() => {
+      const orig = convCopyBtn.textContent;
+      convCopyBtn.textContent = "Copied!";
+      setTimeout(() => (convCopyBtn.textContent = orig), 2000);
+    });
+  });
+
+  convDownloadBtn.addEventListener("click", () => {
+    if (!currentMirText) return;
+    const form = document.createElement("form");
+    form.method = "POST";
+    form.action = "/api/download/";
+    
+    const inputContent = document.createElement("input");
+    inputContent.type = "hidden";
+    inputContent.name = "mir_content";
+    inputContent.value = currentMirText;
+    form.appendChild(inputContent);
+
+    const inputName = document.createElement("input");
+    inputName.type = "hidden";
+    inputName.name = "file_name";
+    const downloadMirName = currentFileName.replace(/\.[^/.]+$/, "") + ".mir";
+    inputName.value = downloadMirName;
+    form.appendChild(inputName);
+
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+  });
+
+  // --- TABLE HEADER SORTING LOGIC ---
+  let sortState = {
+    conv: { key: 'date', order: 'desc' },
+    arch: { key: 'date', order: 'desc' }
+  };
+
+  function handleHeaderSortClick(th) {
+    const tableType = th.getAttribute('data-table');
+    const sortKey = th.getAttribute('data-sort-key');
+    if (!tableType || !sortKey) return;
+
+    if (sortState[tableType].key === sortKey) {
+      sortState[tableType].order = sortState[tableType].order === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortState[tableType].key = sortKey;
+      sortState[tableType].order = 'asc';
+    }
+
+    updateSortHeaderIndicators(tableType);
+
+    if (tableType === 'conv') {
+      renderFilteredTable();
+    } else {
+      archCurrentPage = 1;
+      renderArchiveTable();
+    }
+  }
+
+  function updateSortHeaderIndicators(tableType) {
+    const selector = tableType === 'conv' ? '#v-batches th.sortable' : '#v-archive th.sortable';
+    document.querySelectorAll(selector).forEach(th => {
+      const key = th.getAttribute('data-sort-key');
+      const arrowSpan = th.querySelector('.sort-arrow');
+      th.classList.remove('asc', 'desc');
+
+      if (key === sortState[tableType].key) {
+        th.classList.add(sortState[tableType].order);
+        if (arrowSpan) arrowSpan.innerHTML = sortState[tableType].order === 'asc' ? '&uarr;' : '&darr;';
+      } else {
+        if (arrowSpan) arrowSpan.innerHTML = '&udarr;';
+      }
+    });
+  }
+
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => handleHeaderSortClick(th));
+  });
+
+  // --- CONVERSIONS VIEW STATE & PAGINATION ---
+  let convCurrentPage = 1;
+
+  // --- DATATABLE & FILTERS LOGIC ---
+  async function loadTrackedFiles() {
+    try {
+      const res = await fetch('/edi835/api/tracked-files/');
+      const data = await res.json();
+      allTrackedFilesData = data.files || [];
+      renderFilteredTable();
+    } catch (e) {
+      document.getElementById('trackedFilesBody').innerHTML = `<tr><td colspan="9" style="padding:24px; text-align:center; color:var(--brick);">Failed to load conversion runs.</td></tr>`;
+    }
+  }
+
+  function sortDataList(list, key, order) {
+    const multiplier = order === 'asc' ? 1 : -1;
+    return list.sort((a, b) => {
+      let valA, valB;
+      if (key === 'date' || key === 'time') {
+        valA = new Date(a.uploaded_at || 0).getTime();
+        valB = new Date(b.uploaded_at || 0).getTime();
+      } else if (key === 'id') {
+        valA = (a.id || '').toLowerCase();
+        valB = (b.id || '').toLowerCase();
+      } else if (key === 'filename') {
+        valA = (a.original_filename || '').toLowerCase();
+        valB = (b.original_filename || '').toLowerCase();
+      } else if (key === 'claims') {
+        valA = a.claims_count || 0;
+        valB = b.claims_count || 0;
+      } else if (key === 'status') {
+        valA = (a.status || '').toLowerCase();
+        valB = (b.status || '').toLowerCase();
+      } else if (key === 'sftp') {
+        valA = (a.status === 'ARCHIVED' || a.present_in_sftp || a.present_in_archive_folder) ? 1 : 0;
+        valB = (b.status === 'ARCHIVED' || b.present_in_sftp || b.present_in_archive_folder) ? 1 : 0;
+      } else {
+        valA = 0; valB = 0;
+      }
+
+      if (valA < valB) return -1 * multiplier;
+      if (valA > valB) return 1 * multiplier;
+      return 0;
+    });
+  }
+
+  function renderFilteredTable() {
+    const tbody = document.getElementById('trackedFilesBody');
+    const query = (document.getElementById('filterSearchText')?.value || '').trim().toLowerCase();
+    const pageSizeVal = parseInt(document.getElementById('convPageSize')?.value || '20', 10);
+
+    let filtered = allTrackedFilesData.filter(item => {
+      // Search filter
+      if (query) {
+        const fullStr = (item.id + ' ' + item.original_filename + ' ' + (item.output_path || '')).toLowerCase();
+        if (!fullStr.includes(query)) return false;
+      }
+      return true;
+    });
+
+    // Dynamic Column Sorting
+    filtered = sortDataList(filtered, sortState.conv.key, sortState.conv.order);
+
+    const runsCountLabel = document.getElementById('runsCountLabel');
+    if (runsCountLabel) runsCountLabel.textContent = filtered.length + " runs";
+
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="9" style="padding:26px; text-align:center; color:var(--ink-3);">No conversion runs match search query.</td></tr>`;
+      updateConvPagination(0, 1, pageSizeVal);
+      return;
+    }
+
+    // Pagination for Conversions
+    const totalPages = Math.ceil(filtered.length / pageSizeVal);
+    if (convCurrentPage > totalPages) convCurrentPage = totalPages;
+    if (convCurrentPage < 1) convCurrentPage = 1;
+
+    const startIndex = (convCurrentPage - 1) * pageSizeVal;
+    const pageItems = filtered.slice(startIndex, startIndex + pageSizeVal);
+
+    tbody.innerHTML = pageItems.map(f => {
+      const upDate = f.uploaded_at ? f.uploaded_at.substring(0, 10) : '—';
+      const upTime = f.uploaded_at ? f.uploaded_at.substring(11, 19) : '—';
+      const shortId = "R-" + f.id.substring(0, 6).toUpperCase();
+      const baseName = f.original_filename.replace(/\.[^/.]+$/, "");
+      const mirName = "MIR_" + baseName + ".mir";
+
+      return `
+        <tr>
+          <td class="num" style="font-weight:600; font-size:11.5px;">${shortId}</td>
+          <td class="num">${upDate}</td>
+          <td class="num">${upTime}</td>
+          <td class="num" style="color:var(--ink-2);">${f.original_filename}</td>
+          <td class="num" style="color:var(--ink-3);">—</td>
+          <td class="num">${f.claims_count || 0}</td>
+          <td class="num" style="color:var(--ink-2);">${f.status === 'ARCHIVED' ? mirName : '—'}</td>
+          <td><span class="tag ${f.status === 'ARCHIVED' ? 'ok' : (f.status === 'ERROR' ? 'bad' : 'work')}" ${f.status === 'PROCESSING' ? `style="cursor:pointer;" title="Click to convert file to MIR" onclick="convertFileByStatus('${f.id}')"` : ''}>${f.status}</span></td>
+          <td class="num" style="font-size:11px; display:flex; align-items:center; gap:8px;">
+            <button type="button" class="btn-eye" title="View / Edit Code" onclick="openFileViewerModal('${f.id}')">
+              <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+            </button>
+            ${f.status === 'ARCHIVED' ? `<a href="/api/download/?file_name=${mirName}" class="btn-download" title="Download .mir File"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></a>` : '—'}
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    updateConvPagination(filtered.length, convCurrentPage, pageSizeVal);
+
+    // Also update Stage 2 and Stage 3 chips on Flow view for current day only
+    const stage2Chips = document.getElementById("stage2Chips");
+    const stage3Chips = document.getElementById("stage3Chips");
+
+    const todayISOStr = new Date().toISOString().substring(0, 10);
+    const todayFiles = allTrackedFilesData.filter(f => f.uploaded_at && f.uploaded_at.substring(0, 10) === todayISOStr);
+
+    if (stage2Chips) {
+      if (todayFiles.length) {
+        stage2Chips.innerHTML = todayFiles.map(f => `
+          <div class="chip ${f.status === 'ARCHIVED' ? 'ok' : (f.status === 'ERROR' ? 'hold' : 'work')}">
+            <span title="${f.original_filename}">${f.original_filename.substring(0, 24)}</span>
+            <span class="c">${f.claims_count || 0} clm</span>
+          </div>
+        `).join('');
+      } else {
+        stage2Chips.innerHTML = `<div class="chip idle"><span>No 835 received today</span><span class="c">&ndash;</span></div>`;
+      }
+    }
+
+    if (stage3Chips) {
+      if (todayFiles.length) {
+        stage3Chips.innerHTML = todayFiles.map(f => {
+          const base = f.original_filename.replace(/\.[^/.]+$/, "");
+          const mirName = "MIR_" + base + ".mir";
+          return `
+            <div class="chip ${f.status === 'ARCHIVED' ? 'ok' : (f.status === 'ERROR' ? 'hold' : 'work')}">
+              <span title="${mirName}">${mirName.substring(0, 24)}</span>
+              <span class="c">${f.records_count || f.claims_count || 0} rec</span>
+            </div>
+          `;
+        }).join('');
+      } else {
+        stage3Chips.innerHTML = `<div class="chip idle"><span>No MIR built today</span><span class="c">&ndash;</span></div>`;
+      }
+    }
+
+  }
+
+  function updateConvPagination(totalItems, currentPage, pageSize) {
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const convPageInfo = document.getElementById("convPageInfo");
+    const convBtnPrev = document.getElementById("convBtnPrev");
+    const convBtnNext = document.getElementById("convBtnNext");
+
+    if (convPageInfo) convPageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+    if (convBtnPrev) convBtnPrev.disabled = (currentPage <= 1);
+    if (convBtnNext) convBtnNext.disabled = (currentPage >= totalPages);
+  }
+
+  // Bind Conversions Filter & Pagination Controls
+  document.getElementById('filterSearchText')?.addEventListener('input', () => { convCurrentPage = 1; renderFilteredTable(); });
+  document.getElementById('convPageSize')?.addEventListener('change', () => { convCurrentPage = 1; renderFilteredTable(); });
+  document.getElementById('convBtnPrev')?.addEventListener('click', () => {
+    if (convCurrentPage > 1) { convCurrentPage--; renderFilteredTable(); }
+  });
+  document.getElementById('convBtnNext')?.addEventListener('click', () => {
+    convCurrentPage++; renderFilteredTable();
+  });
+
+  // --- ARCHIVE VIEW STATE & PAGINATION ---
+  let archCurrentPage = 1;
+
+  async function loadArchiveFiles() {
+    try {
+      // 1. Fetch live metrics for top 5 metrics cards
+      const mRes = await fetch('/edi835/api/metrics/');
+      if (mRes.ok) {
+        const mData = await mRes.json();
+
+        const cSetsEl = document.getElementById("archMetricConversionSets");
+        if (cSetsEl) cSetsEl.textContent = mData.conversion_sets_count || 0;
+
+        const pSealsEl = document.getElementById("archMetricPhysicalSeals");
+        if (pSealsEl) pSealsEl.textContent = mData.archived_files_count || 0;
+
+        const f835El = document.getElementById("archMetric835Received");
+        if (f835El) f835El.textContent = mData.files_835_received || 0;
+
+        const valSetsEl = document.getElementById("archMetricValidatedSets");
+        if (valSetsEl) valSetsEl.textContent = mData.validated_sets_count || 0;
+
+        const procSetsEl = document.getElementById("archMetricProcessedSets");
+        if (procSetsEl) procSetsEl.textContent = mData.processed_sets_count || 0;
+
+        const waitFailEl = document.getElementById("archMetricWaitingFailed");
+        if (waitFailEl) waitFailEl.textContent = mData.waiting_failed_count || 0;
+
+        const valFailEl = document.getElementById("archMetricValFailed");
+        if (valFailEl) valFailEl.textContent = mData.val_failed_count || 0;
+      }
+
+      // 2. Fetch tracked files DB records for Archive View table
+      const res = await fetch('/edi835/api/tracked-files/');
+      if (res.ok) {
+        const data = await res.json();
+        allTrackedFilesData = data.files || [];
+      }
+
+      renderArchiveTable();
+    } catch (err) {
+      console.warn("Failed to load archive files:", err);
+    }
+  }
+
+  function renderArchiveTable() {
+    const tbody = document.getElementById('archTableBody');
+    if (!tbody) return;
+
+    const query = (document.getElementById('archSearchText')?.value || '').trim().toLowerCase();
+    const pageSizeVal = parseInt(document.getElementById('archPageSize')?.value || '20', 10);
+
+    let filtered = allTrackedFilesData.filter(item => {
+      // Search filter
+      if (query) {
+        const fullStr = (item.id + ' ' + item.original_filename + ' ' + (item.output_path || '')).toLowerCase();
+        if (!fullStr.includes(query)) return false;
+      }
+      return true;
+    });
+
+    // Dynamic Column Sorting
+    filtered = sortDataList(filtered, sortState.arch.key, sortState.arch.order);
+
+    // Set count display
+    const archTotalSetsCount = document.getElementById("archTotalSetsCount");
+    if (archTotalSetsCount) archTotalSetsCount.textContent = filtered.length + " sets";
+
+    if (!filtered.length) {
+      tbody.innerHTML = `<tr><td colspan="10" style="padding:32px; text-align:center; color:var(--ink-3);">No conversion sets match search query.</td></tr>`;
+      updateArchPagination(0, 1, pageSizeVal);
+      return;
+    }
+
+    // Pagination
+    const totalPages = Math.ceil(filtered.length / pageSizeVal);
+    if (archCurrentPage > totalPages) archCurrentPage = totalPages;
+    if (archCurrentPage < 1) archCurrentPage = 1;
+
+    const startIndex = (archCurrentPage - 1) * pageSizeVal;
+    const pageItems = filtered.slice(startIndex, startIndex + pageSizeVal);
+
+    tbody.innerHTML = pageItems.map(f => {
+      const upDate = f.uploaded_at ? f.uploaded_at.substring(0, 10) : '—';
+      const shortId = "R-" + f.id.substring(0, 6).toUpperCase();
+      const baseName = f.original_filename.replace(/\.[^/.]+$/, "");
+      const mirName = "MIR_" + baseName + ".mir";
+
+      const isProcessed = f.status === 'ARCHIVED';
+
+      // Source Tag: SFTP or MANUAL
+      const isSftpSource = f.ingestion_source === 'SFTP';
+      const sourceText = isSftpSource ? 'SFTP' : 'MANUAL';
+      const sourceTagClass = isSftpSource ? 'ok' : 'work';
+      const sourceTitle = isSftpSource ? 'Ingested automatically from SFTP inbound folder' : 'Uploaded manually via conversion form';
+
+      // Individual File SFTP Status: Driven by database present_in_sftp boolean
+      const isSftpSuccess = Boolean(f.present_in_sftp);
+      const sftpStatusText = isSftpSuccess ? 'Success' : (f.status === 'ERROR' ? 'Failed' : 'Pending');
+      const sftpStatusTagClass = isSftpSuccess ? 'ok' : (f.status === 'ERROR' ? 'bad' : 'work');
+
+      // Detailed File Status
+      let displayStatus = '';
+      if (f.status === 'ARCHIVED') {
+        displayStatus = isSftpSuccess ? 'Validated & SFTP Success' : 'Validated & SFTP Pending';
+      } else if (f.status === 'PROCESSING') {
+        displayStatus = 'Validated & SFTP Pending';
+      } else if (f.status === 'ERROR') {
+        displayStatus = 'Validation Failed';
+      } else {
+        displayStatus = f.status + ' & SFTP ' + sftpStatusText;
+      }
+
+      const statusTagClass = f.status === 'ARCHIVED' ? 'ok' : (f.status === 'ERROR' ? 'bad' : 'work');
+
+      return `
+        <tr>
+          <td class="num">${upDate}</td>
+          <td class="num" style="font-weight:600; font-size:11.5px;">${shortId}</td>
+          <td class="num" style="color:var(--ink-2);">${f.original_filename}</td>
+          <td class="num" style="color:var(--ink-3);">—</td>
+          <td class="num" style="color:var(--ink-2);">${isProcessed ? mirName : '—'}</td>
+          <td class="num">${f.claims_count || 0}</td>
+          <td>
+            <span class="tag ${sftpStatusTagClass}" 
+                  style="cursor:pointer;" 
+                  title="${isSftpSuccess ? 'Uploaded to SFTP' : 'Click to push 835 & MIR to SFTP'}" 
+                  onclick="pushFileRecordToSftp('${f.id}')">
+              ${sftpStatusText}
+            </span>
+          </td>
+          <td><span class="tag ${statusTagClass}" ${f.status === 'PROCESSING' ? `style="cursor:pointer;" title="Click to convert file to MIR" onclick="convertFileByStatus('${f.id}')"` : ''}>${displayStatus}</span></td>
+          <td><span class="tag ${sourceTagClass}" style="font-size:10.5px;" title="${sourceTitle}">${sourceText}</span></td>
+          <td class="num" style="font-size:11px; display:flex; align-items:center; gap:8px;">
+            <button type="button" class="btn-eye" title="View / Edit Code" onclick="openFileViewerModal('${f.id}')">
+              <svg viewBox="0 0 24 24"><path d="M12 4.5C7 4.5 2.73 7.61 1 12c1.73 4.39 6 7.5 11 7.5s9.27-3.11 11-7.5c-1.73-4.39-6-7.5-11-7.5zM12 17c-2.76 0-5-2.24-5-5s2.24-5 5-5 5 2.24 5 5-2.24 5-5 5zm0-8c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3z"/></svg>
+            </button>
+            ${isProcessed ? `<a href="/api/download/?file_name=${mirName}" class="btn-download" title="Download .mir File"><svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg></a>` : '—'}
+          </td>
+        </tr>
+      `;
+    }).join('');
+
+    updateArchPagination(filtered.length, archCurrentPage, pageSizeVal);
+  }
+
+  async function convertFileByStatus(fileId) {
+    if (!fileId) return;
+    try {
+      const res = await fetch("/api/convert/", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ file_id: fileId })
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) {
+        alert(data.error || "Failed to convert file into MIR.");
+      } else {
+        fetchTrackedFilesData();
+      }
+    } catch (err) {
+      alert("Error converting file: " + err.message);
+    }
+  }
+
+  function updateArchPagination(totalItems, currentPage, pageSize) {
+    const totalPages = Math.max(1, Math.ceil(totalItems / pageSize));
+    const archPageInfo = document.getElementById("archPageInfo");
+    const archBtnPrev = document.getElementById("archBtnPrev");
+    const archBtnNext = document.getElementById("archBtnNext");
+
+    if (archPageInfo) archPageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+    if (archBtnPrev) archBtnPrev.disabled = (currentPage <= 1);
+    if (archBtnNext) archBtnNext.disabled = (currentPage >= totalPages);
+  }
+
+  // Bind Archive Filter Controls
+  document.getElementById('archSearchText')?.addEventListener('input', () => { archCurrentPage = 1; renderArchiveTable(); });
+  document.getElementById('archPageSize')?.addEventListener('change', () => { archCurrentPage = 1; renderArchiveTable(); });
+  document.getElementById('archBtnPrev')?.addEventListener('click', () => {
+    if (archCurrentPage > 1) {
+      archCurrentPage--;
+      renderArchiveTable();
+    }
+  });
+
+  document.getElementById('archBtnNext')?.addEventListener('click', () => {
+    archCurrentPage++;
+    renderArchiveTable();
+  });
+
+  document.getElementById('archBtnClear')?.addEventListener('click', () => {
+    if (document.getElementById('archSearchText')) document.getElementById('archSearchText').value = '';
+    if (document.getElementById('archValidatedFilter')) document.getElementById('archValidatedFilter').value = 'any';
+    if (document.getElementById('archProcessedFilter')) document.getElementById('archProcessedFilter').value = 'any';
+    if (document.getElementById('archStatusFilter')) document.getElementById('archStatusFilter').value = 'any';
+    if (document.getElementById('archPageSize')) document.getElementById('archPageSize').value = '20';
+    sortState.arch = { key: 'date', order: 'desc' };
+    updateSortHeaderIndicators('arch');
+    archCurrentPage = 1;
+    renderArchiveTable();
+  });
+
+  // Filter Event Listeners
+  [filterSearchText, filterStatus].forEach(el => {
+    if (el) {
+      el.addEventListener('input', renderFilteredTable);
+      el.addEventListener('change', renderFilteredTable);
+    }
+  });
+
+  btnClearFilters?.addEventListener("click", () => {
+    filterSearchText.value = "";
+    filterStatus.value = "";
+    sortState.conv = { key: 'date', order: 'desc' };
+    updateSortHeaderIndicators('conv');
+    renderFilteredTable();
+  });
+
+  // --- SFTP CONNECTIONS LOGIC ---
+  const chkSameSftpServer = document.getElementById("chkSameSftpServer");
+  const sftpBoxUnified = document.getElementById("sftpBoxUnified");
+  const sftpBoxDual = document.getElementById("sftpBoxDual");
+
+  if (chkSameSftpServer) {
+    chkSameSftpServer.addEventListener("change", (e) => {
+      if (e.target.checked) {
+        sftpBoxUnified.classList.remove("hidden");
+        sftpBoxDual.classList.add("hidden");
+      } else {
+        sftpBoxUnified.classList.add("hidden");
+        sftpBoxDual.classList.remove("hidden");
+      }
+    });
+  }
+
+  let currentSftpConfig = null;
+
+  async function loadSftpConfig() {
+    try {
+      const res = await fetch('/edi835/api/sftp/get/');
+      if (!res.ok) return;
+      const data = await res.json();
+      
+      const configs = data.configurations || [];
+      const active = data.active_config;
+      currentSftpConfig = active;
+
+      if (active) {
+        if (chkSameSftpServer) {
+          chkSameSftpServer.checked = active.use_same_server;
+          if (active.use_same_server) {
+            sftpBoxUnified.classList.remove("hidden");
+            sftpBoxDual.classList.add("hidden");
+          } else {
+            sftpBoxUnified.classList.add("hidden");
+            sftpBoxDual.classList.remove("hidden");
+          }
+        }
+
+        if (active.use_same_server) {
+          if (document.getElementById("sftpUniHost")) document.getElementById("sftpUniHost").value = active.host || '';
+          if (document.getElementById("sftpUniPort")) document.getElementById("sftpUniPort").value = active.port || 22;
+          if (document.getElementById("sftpUniUser")) document.getElementById("sftpUniUser").value = active.username || '';
+          if (document.getElementById("sftpUniPass")) document.getElementById("sftpUniPass").value = '';
+          if (document.getElementById("sftpUniSshKey")) document.getElementById("sftpUniSshKey").value = '';
+          if (document.getElementById("sftpUniAuth")) {
+            const authSel = document.getElementById("sftpUniAuth");
+            authSel.value = active.auth_method || 'Password';
+            handleAuthMethodChange(authSel, 'sftpUniPassBox', 'sftpUniSshKeyBox');
+          }
+          if (document.getElementById("sftpUniDir837")) document.getElementById("sftpUniDir837").value = active.inbound_837_folder || '';
+          if (document.getElementById("sftpUniDir835")) document.getElementById("sftpUniDir835").value = active.inbound_835_folder || '';
+          if (document.getElementById("sftpUniDirMir")) document.getElementById("sftpUniDirMir").value = active.outbound_mir_folder || '';
+          
+          const uniBadge = document.getElementById("sftpUnifiedStatusBadge");
+          if (uniBadge) {
+            uniBadge.textContent = active.status || "CONFIGURED";
+            uniBadge.className = "tag ok";
+          }
+        } else {
+          if (document.getElementById("sftpInHost")) document.getElementById("sftpInHost").value = active.host || '';
+          if (document.getElementById("sftpInPort")) document.getElementById("sftpInPort").value = active.port || 22;
+          if (document.getElementById("sftpInUser")) document.getElementById("sftpInUser").value = active.username || '';
+          if (document.getElementById("sftpInDir837")) document.getElementById("sftpInDir837").value = active.inbound_837_folder || '';
+          if (document.getElementById("sftpInDir835")) document.getElementById("sftpInDir835").value = active.inbound_835_folder || '';
+          
+          if (document.getElementById("sftpOutHost")) document.getElementById("sftpOutHost").value = active.outbound_host || '';
+          if (document.getElementById("sftpOutPort")) document.getElementById("sftpOutPort").value = active.outbound_port || 22;
+          if (document.getElementById("sftpOutUser")) document.getElementById("sftpOutUser").value = active.outbound_username || '';
+          if (document.getElementById("sftpOutDirMir")) document.getElementById("sftpOutDirMir").value = active.outbound_mir_folder || '';
+
+          const inBadge = document.getElementById("sftpInboundStatusBadge");
+          if (inBadge) { inBadge.textContent = "CONFIGURED"; inBadge.className = "tag ok"; }
+
+          const outBadge = document.getElementById("sftpOutboundStatusBadge");
+          if (outBadge) { outBadge.textContent = "CONFIGURED"; outBadge.className = "tag ok"; }
+        }
+
+        // Render discovered remote folders box dynamically from active config paths
+        const discoveredBox = document.getElementById("sftpDiscoveredFoldersBox");
+        if (discoveredBox) {
+          let folderItems = [];
+          if (active.use_same_server) {
+            if (active.inbound_835_folder) {
+              folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 835 Inbound (.835 / .x12): <code>${active.inbound_835_folder}</code></div>`);
+            }
+            if (active.inbound_837_folder) {
+              folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 837 Reference (.837 / .x12): <code>${active.inbound_837_folder}</code></div>`);
+            }
+            if (active.outbound_mir_folder) {
+              folderItems.push(`<div style="padding:4px 0;">📁 MIR Outbound (.mir): <code>${active.outbound_mir_folder}</code></div>`);
+            }
+          } else {
+            // Dual mode (Different Inbound & Outbound servers)
+            if (active.connection_type === 'INBOUND') {
+              if (active.inbound_835_folder) {
+                folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 835 Inbound (.835 / .x12): <code>${active.inbound_835_folder}</code></div>`);
+              }
+              if (active.inbound_837_folder) {
+                folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 837 Reference (.837 / .x12): <code>${active.inbound_837_folder}</code></div>`);
+              }
+              folderItems.push(`<div style="padding:4px 0; color:var(--ink-3);">📁 MIR Outbound (.mir): <code>-</code></div>`);
+            } else if (active.connection_type === 'OUTBOUND') {
+              folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line); color:var(--ink-3);">📁 835 Inbound (.835 / .x12): <code>-</code></div>`);
+              folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line); color:var(--ink-3);">📁 837 Reference (.837 / .x12): <code>-</code></div>`);
+              if (active.outbound_mir_folder) {
+                folderItems.push(`<div style="padding:4px 0;">📁 MIR Outbound (.mir): <code>${active.outbound_mir_folder}</code></div>`);
+              }
+            } else {
+              if (active.inbound_835_folder) {
+                folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 835 Inbound (.835 / .x12): <code>${active.inbound_835_folder}</code></div>`);
+              }
+              if (active.inbound_837_folder) {
+                folderItems.push(`<div style="padding:4px 0; border-bottom:1px solid var(--line);">📁 837 Reference (.837 / .x12): <code>${active.inbound_837_folder}</code></div>`);
+              }
+              if (active.outbound_mir_folder) {
+                folderItems.push(`<div style="padding:4px 0;">📁 MIR Outbound (.mir): <code>${active.outbound_mir_folder}</code></div>`);
+              }
+            }
+          }
+
+          if (folderItems.length > 0) {
+            discoveredBox.innerHTML = `
+              <div style="text-align:left; width:100%;">
+                <div style="font-weight:600; color:var(--teal); margin-bottom:8px;">✓ Verified Active Remote Folders:</div>
+                ${folderItems.join('')}
+              </div>
+            `;
+          } else {
+            discoveredBox.innerHTML = `
+              <div style="text-align:center; color:var(--ink-3);">
+                No verified remote folders configured yet.
+              </div>
+            `;
+          }
+        }
+
+        // Refine Stage 04 chip on Flow view
+        const stage4Chips = document.getElementById("stage4Chips");
+        if (stage4Chips) {
+          stage4Chips.innerHTML = `
+            <div class="chip ok">
+              <span>MIR folder configured</span>
+              <span class="c">SFTP ready</span>
+            </div>
+          `;
+        }
+
+        // Dynamically update Flow page Inbound & Outbound SFTP Cards
+        updateFlowViewSftpCards(configs, active);
+      } else {
+        updateFlowViewSftpCards([], null);
+      }
+
+      // Render Saved SFTP Configs Table
+      renderSftpTable(configs);
+
+    } catch (err) {
+      console.warn("Failed to load SFTP config:", err);
+    }
+  }
+
+  function updateFlowViewSftpCards(configs, active) {
+    if (!configs) configs = [];
+    
+    // Find Inbound config (UNIFIED, INBOUND, or active)
+    const inboundCfg = configs.find(c => c.connection_type === 'INBOUND') 
+      || configs.find(c => c.connection_type === 'UNIFIED' || c.use_same_server)
+      || (active?.connection_type === 'INBOUND' || active?.use_same_server ? active : null);
+
+    // Find Outbound config (UNIFIED, OUTBOUND, or active)
+    const outboundCfg = configs.find(c => c.connection_type === 'OUTBOUND') 
+      || configs.find(c => c.connection_type === 'UNIFIED' || c.use_same_server)
+      || (active?.connection_type === 'OUTBOUND' || active?.use_same_server ? active : null);
+
+    // --- Update Inbound Card ---
+    const inBanner = document.getElementById("flowInboundBanner");
+    const inHost = document.getElementById("flowInboundHost");
+    const in835 = document.getElementById("flowInbound835Dir");
+    const in837 = document.getElementById("flowInbound837Dir");
+    const inConn = document.getElementById("flowInboundConnection");
+
+    if (inboundCfg && (inboundCfg.host || inboundCfg.inbound_835_folder)) {
+      const isConnected = inboundCfg.status === 'CONNECTED';
+      if (inBanner) {
+        inBanner.textContent = isConnected ? `Connected (${inboundCfg.host || 'SFTP'})` : `Configured (${inboundCfg.host || 'SFTP'})`;
+        inBanner.style.color = isConnected ? 'var(--teal)' : 'var(--ink-2)';
+      }
+      if (inHost) inHost.textContent = inboundCfg.host ? `${inboundCfg.host}:${inboundCfg.port || 22}` : '–';
+      if (in835) in835.textContent = inboundCfg.inbound_835_folder || '–';
+      if (in837) in837.textContent = inboundCfg.inbound_837_folder || '–';
+      if (inConn) {
+        inConn.textContent = inboundCfg.status || 'CONFIGURED';
+        inConn.style.color = isConnected ? 'var(--teal)' : (inboundCfg.status === 'FAILED' ? 'var(--brick)' : 'var(--ink-2)');
+      }
+    } else {
+      if (inBanner) { inBanner.textContent = 'Not configured'; inBanner.style.color = 'var(--ink-2)'; }
+      if (inHost) inHost.textContent = '–';
+      if (in835) in835.textContent = '–';
+      if (in837) in837.textContent = '–';
+      if (inConn) { inConn.textContent = 'Not configured'; inConn.style.color = 'var(--ink-3)'; }
+    }
+
+    // --- Update Outbound Card ---
+    const outBanner = document.getElementById("flowOutboundBanner");
+    const outMir = document.getElementById("flowOutboundMirDir");
+    const outLastTest = document.getElementById("flowOutboundLastTest");
+    const outDiscovered = document.getElementById("flowOutboundFoldersDiscovered");
+
+    if (outboundCfg && (outboundCfg.host || outboundCfg.outbound_mir_folder)) {
+      const isConnected = outboundCfg.status === 'CONNECTED';
+      if (outBanner) {
+        outBanner.textContent = isConnected ? `Connected (${outboundCfg.host || 'SFTP'})` : `Configured (${outboundCfg.host || 'SFTP'})`;
+        outBanner.style.color = isConnected ? 'var(--teal)' : 'var(--ink-2)';
+      }
+      if (outMir) outMir.textContent = outboundCfg.outbound_mir_folder || '–';
+      if (outLastTest) outLastTest.textContent = outboundCfg.last_tested_at || '–';
+      
+      let folderCount = 0;
+      if (outboundCfg.connection_type === 'UNIFIED' || outboundCfg.use_same_server) {
+        if (outboundCfg.inbound_835_folder) folderCount++;
+        if (outboundCfg.inbound_837_folder) folderCount++;
+        if (outboundCfg.outbound_mir_folder) folderCount++;
+      } else {
+        if (outboundCfg.outbound_mir_folder) folderCount++;
+      }
+      if (outDiscovered) outDiscovered.textContent = folderCount.toString();
+    } else {
+      if (outBanner) { outBanner.textContent = 'Not configured'; outBanner.style.color = 'var(--ink-2)'; }
+      if (outMir) outMir.textContent = '–';
+      if (outLastTest) outLastTest.textContent = '–';
+      if (outDiscovered) outDiscovered.textContent = '0';
+    }
+  }
+
+  function renderSftpTable(configs) {
+    const tbody = document.getElementById("sftpConfigsTableBody");
+    if (!tbody) return;
+
+    if (!configs || !configs.length) {
+      tbody.innerHTML = `<tr><td colspan="8" style="padding: 20px; text-align: center; color: var(--ink-3);">No SFTP connections saved in database yet.</td></tr>`;
+      return;
+    }
+
+    tbody.innerHTML = configs.map(c => {
+      let typeStr = 'UNIFIED';
+      if (c.connection_type === 'INBOUND') {
+        typeStr = 'INBOUND';
+      } else if (c.connection_type === 'OUTBOUND') {
+        typeStr = 'OUTBOUND';
+      } else if (c.use_same_server) {
+        typeStr = 'UNIFIED';
+      } else {
+        typeStr = 'DUAL (IN/OUT)';
+      }
+
+      const hostPort = `${c.host}:${c.port}`;
+      const lastTested = c.last_tested_at || '—';
+      const status = c.status || 'CONFIGURED';
+
+      let tagClass = 'ok';
+      let hoverTitle = '';
+      if (status === 'FAILED') {
+        tagClass = 'bad';
+        hoverTitle = c.last_error ? `Failed Reason: ${c.last_error}` : 'SFTP connection failed. Check host, port, or credentials.';
+      } else if (status === 'PENDING') {
+        tagClass = 'work';
+        hoverTitle = c.last_error ? `Pending Reason: ${c.last_error}` : 'Pending: SFTP host, username, or folder paths are not fully configured.';
+      } else {
+        tagClass = 'ok';
+        hoverTitle = `Connected successfully on ${lastTested}`;
+      }
+
+      const inPathDisplay = (c.connection_type === 'OUTBOUND') ? '—' : (c.inbound_835_folder || '—');
+      const outPathDisplay = (c.connection_type === 'INBOUND') ? '—' : (c.outbound_mir_folder || '—');
+
+      return `
+        <tr>
+          <td class="num" style="font-weight:600; font-size:11.5px;">${typeStr}</td>
+          <td class="num" style="font-weight:600; color:var(--ink-1);">${hostPort}</td>
+          <td class="num">${c.username || 'anonymous'}</td>
+          <td class="num" style="color:var(--ink-2); font-size:11px;">${inPathDisplay}</td>
+          <td class="num" style="color:var(--ink-2); font-size:11px;">${outPathDisplay}</td>
+          <td>
+            <span class="tag ${tagClass}" style="cursor:pointer;" title="${hoverTitle}">
+              ${status}
+            </span>
+          </td>
+          <td class="num">${lastTested}</td>
+          <td class="num" style="font-size:11px; display:flex; gap:6px; align-items:center;">
+            <button onclick="deleteSftpConfig('${c.id}')" class="btn secondary" style="padding:3px 8px; font-size:10.5px; color:var(--brick);">Delete</button>
+          </td>
+        </tr>
+      `;
+    }).join('');
+  }
+
+  async function saveSftpConfigUnified() {
+    const btn = document.getElementById("btnTestSaveUnified");
+    if (btn) { btn.disabled = true; btn.textContent = "Connecting..."; }
+
+    const passInput = document.getElementById("sftpUniPass");
+    const passValue = passInput?.value || "";
+    if (passValue) window.lastEnteredSftpPass = passValue;
+
+    const sshKeyInput = document.getElementById("sftpUniSshKey");
+    const sshKeyValue = sshKeyInput?.value || "";
+    if (sshKeyValue) window.lastEnteredSshKey = sshKeyValue;
+
+    try {
+      const payload = {
+        host: document.getElementById("sftpUniHost")?.value || "",
+        port: document.getElementById("sftpUniPort")?.value || 22,
+        username: document.getElementById("sftpUniUser")?.value || "",
+        password: passValue,
+        ssh_key: sshKeyValue,
+        auth_method: document.getElementById("sftpUniAuth")?.value || "Password",
+        trust_unknown_key: document.getElementById("sftpUniTrust")?.checked || true,
+        inbound_837_folder: document.getElementById("sftpUniDir837")?.value || "",
+        inbound_835_folder: document.getElementById("sftpUniDir835")?.value || "",
+        outbound_mir_folder: document.getElementById("sftpUniDirMir")?.value || "",
+      };
+
+      // Immediately clear user-entered Password and SSH Key from input fields right after clicking Test & Connect
+      if (passInput) passInput.value = "";
+      if (sshKeyInput) sshKeyInput.value = "";
+
+      const res = await fetch('/api/sftp/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      const uniBadge = document.getElementById("sftpUnifiedStatusBadge");
+      const discoveredBox = document.getElementById("sftpDiscoveredFoldersBox");
+
+      if (data.success) {
+        if (uniBadge) {
+          uniBadge.textContent = "CONNECTED";
+          uniBadge.className = "tag ok";
+        }
+        if (discoveredBox) {
+          let folderListHtml = '';
+          if (data.remote_folders && data.remote_folders.length) {
+            folderListHtml = data.remote_folders.map(rf => `
+              <div style="padding:4px 0; border-bottom:1px solid var(--line);">
+                📁 <b>Directory:</b> <code>/${rf}/</code>
+              </div>
+            `).join('');
+          } else {
+            folderListHtml = '<div style="padding:4px 0; color:var(--ink-3);">No subdirectories found in remote working directory.</div>';
+          }
+
+          let fileListHtml = '';
+          if (data.remote_files && data.remote_files.length) {
+            fileListHtml = '<div style="margin-top:8px; font-size:11px; color:var(--ink-2);"><b>Discovered Files:</b> ' + 
+              data.remote_files.map(rf => `<code>${rf.name}</code> (${rf.size}B)`).join(', ') + '</div>';
+          }
+
+          discoveredBox.innerHTML = `
+            <div style="text-align:left; width:100%;">
+              <div style="font-weight:600; color:var(--teal); margin-bottom:8px;">✓ SFTP Connection Successful</div>
+              <div style="padding:4px 0; margin-bottom:6px; border-bottom:1px solid var(--line); color:var(--ink-1);">📍 Remote Working Dir (pwd): <code>${data.pwd || '/'}</code></div>
+              <div style="font-weight:600; margin:6px 0 4px 0; font-size:11.5px; color:var(--ink-2);">Available Remote Folders on Server:</div>
+              ${folderListHtml}
+              ${fileListHtml}
+            </div>
+          `;
+        }
+        alert("✓ SFTP connection successful");
+        await fetch('/edi835/api/sftp/save/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, use_same_server: true, connection_type: "UNIFIED" })
+        });
+        await loadSftpConfig();
+      } else {
+        if (uniBadge) {
+          uniBadge.textContent = "FAILED";
+          uniBadge.className = "tag bad";
+        }
+        if (discoveredBox) {
+          const st = data.stages || {};
+          let troubleshootHtml = '';
+          if (data.troubleshooting && data.troubleshooting.length) {
+            troubleshootHtml = `
+              <div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--line); font-size:11px; color:var(--ink-2);">
+                <b>Verify that:</b>
+                <ul style="margin:4px 0 0 16px; padding:0;">
+                  ${data.troubleshooting.map(item => `<li>${item}</li>`).join('')}
+                </ul>
+              </div>
+            `;
+          }
+
+          discoveredBox.innerHTML = `
+            <div style="text-align:left; width:100%;">
+              <div style="font-weight:700; color:var(--brick); margin-bottom:8px;">✗ ${data.error || 'SFTP connection failed'}</div>
+              
+              <div style="font-size:11px; background:var(--surface-2); padding:8px 10px; border-radius:4px; margin-bottom:8px;">
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>Network (TCP Port ${payload.port}):</span>
+                  <b style="color:${st.network === 'Passed' ? 'var(--teal)' : 'var(--brick)'}">${st.network || 'Failed'}</b>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>SSH Handshake:</span>
+                  <b style="color:${st.ssh_handshake === 'Passed' ? 'var(--teal)' : (st.ssh_handshake === 'Failed' ? 'var(--brick)' : 'var(--ink-3)')}">${st.ssh_handshake || 'Not Tested'}</b>
+                </div>
+                <div style="display:flex; justify-content:space-between; margin-bottom:2px;">
+                  <span>Authentication:</span>
+                  <b style="color:${st.authentication === 'Passed' ? 'var(--teal)' : (st.authentication === 'Failed' ? 'var(--brick)' : 'var(--ink-3)')}">${st.authentication || 'Not Tested'}</b>
+                </div>
+                <div style="display:flex; justify-content:space-between;">
+                  <span>SFTP Subsystem:</span>
+                  <b style="color:${st.sftp === 'Passed' ? 'var(--teal)' : (st.sftp === 'Failed' ? 'var(--brick)' : 'var(--ink-3)')}">${st.sftp || 'Not Tested'}</b>
+                </div>
+              </div>
+
+              ${troubleshootHtml}
+            </div>
+          `;
+        }
+        alert("✗ " + (data.error || "SFTP connection failed"));
+        await fetch('/edi835/api/sftp/save/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, use_same_server: true, connection_type: "UNIFIED" })
+        });
+        await loadSftpConfig();
+      }
+    } catch (e) {
+      console.warn("Failed to test SFTP connection:", e);
+      alert("✗ Unable to connect to SFTP server");
+    } finally {
+      if (btn) { btn.disabled = false; btn.textContent = "Test & save connection"; }
+    }
+  }
+
+  async function saveSftpConfigDual(type) {
+    const btnId = (type === 'inbound') ? "btnTestSaveInbound" : "btnTestSaveOutbound";
+    const btn = document.getElementById(btnId);
+    if (btn) { btn.disabled = true; btn.textContent = "Testing live connection..."; }
+
+    const inPassInput = document.getElementById("sftpInPass");
+    const outPassInput = document.getElementById("sftpOutPass");
+    const inPassVal = inPassInput?.value || "";
+    const outPassVal = outPassInput?.value || "";
+
+    // Vanish passwords right after clicking connect
+    if (inPassInput) inPassInput.value = "";
+    if (outPassInput) outPassInput.value = "";
+
+    try {
+      const payload = {
+        use_same_server: false,
+        connection_type: (type === 'inbound') ? "INBOUND" : "OUTBOUND",
+        host: document.getElementById("sftpInHost")?.value || "inbound.sftp.example.com",
+        port: document.getElementById("sftpInPort")?.value || 22,
+        username: document.getElementById("sftpInUser")?.value || "",
+        password: inPassVal,
+        auth_method: document.getElementById("sftpInAuth")?.value || "Password",
+        inbound_837_folder: document.getElementById("sftpInDir837")?.value || "/relay/abc-health/in/837/",
+        inbound_835_folder: document.getElementById("sftpInDir835")?.value || "/relay/abc-health/in/835/",
+        
+        outbound_host: document.getElementById("sftpOutHost")?.value || "outbound.sftp.example.com",
+        outbound_port: document.getElementById("sftpOutPort")?.value || 22,
+        outbound_username: document.getElementById("sftpOutUser")?.value || "",
+        outbound_password: outPassVal,
+        outbound_auth_method: document.getElementById("sftpOutAuth")?.value || "Password",
+        outbound_mir_folder: document.getElementById("sftpOutDirMir")?.value || "/relay/abc-health/out/mir/",
+      };
+
+      const res = await fetch('/edi835/api/sftp/save/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      const inBadge = document.getElementById("sftpInboundStatusBadge");
+      const outBadge = document.getElementById("sftpOutboundStatusBadge");
+
+      if (data.success && data.connected) {
+        if (inBadge) { inBadge.textContent = "CONNECTED"; inBadge.className = "tag ok"; }
+        if (outBadge) { outBadge.textContent = "CONNECTED"; outBadge.className = "tag ok"; }
+        alert("✓ " + data.message);
+      } else {
+        if (inBadge) { inBadge.textContent = "FAILED"; inBadge.className = "tag bad"; }
+        if (outBadge) { outBadge.textContent = "FAILED"; outBadge.className = "tag bad"; }
+        alert("❌ SFTP Connection Error:\n\n" + (data.error || "Connection failed. Please check host, port, username, and password."));
+      }
+
+      await loadSftpConfig();
+    } catch (e) {
+      console.warn("Failed to save dual SFTP config:", e);
+      alert("❌ Error performing SFTP connection test.");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.textContent = (type === 'inbound') ? "Test & save inbound connection" : "Test & save outbound connection";
+      }
+    }
+  }
+
+  async function deleteSftpConfig(id) {
+    if (!confirm("Delete this SFTP connection configuration from database?")) return;
+    try {
+      await fetch('/edi835/api/sftp/delete/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ config_id: id })
+      });
+      await loadSftpConfig();
+    } catch (e) {
+      console.warn("Failed to delete SFTP config:", e);
+    }
+  }
+
+  // --- AUTH METHOD CHANGED HANDLER ---
+  function handleAuthMethodChange(selectEl, passBoxId, keyBoxId) {
+    const val = selectEl.value;
+    const passBox = document.getElementById(passBoxId);
+    const keyBox = document.getElementById(keyBoxId);
+
+    if (val === "Password") {
+      if (passBox) passBox.classList.remove("hidden");
+      if (keyBox) keyBox.classList.add("hidden");
+    } else if (val === "SSH Key") {
+      if (passBox) passBox.classList.add("hidden");
+      if (keyBox) keyBox.classList.remove("hidden");
+    } else if (val === "SSH Key + Password") {
+      if (passBox) passBox.classList.remove("hidden");
+      if (keyBox) keyBox.classList.remove("hidden");
+    }
+  }
+
+  // --- KEY FILE UPLOAD HANDLER ---
+  function handleKeyFileUpload(fileInput, targetTextareaId) {
+    if (!fileInput.files || !fileInput.files.length) return;
+    const file = fileInput.files[0];
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const textarea = document.getElementById(targetTextareaId);
+      if (textarea) {
+        textarea.value = e.target.result;
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  // --- HOLD-TO-SEE PASSWORD EYE BUTTON LOGIC ---
+  function showPass(inputId, btnEl) {
+    const input = document.getElementById(inputId);
+    if (input) {
+      input.type = "text";
+      if (btnEl) btnEl.style.color = "var(--teal)";
+    }
+  }
+
+  function hidePass(inputId, btnEl) {
+    const input = document.getElementById(inputId);
+    if (input) {
+      input.type = "password";
+      if (btnEl) btnEl.style.color = "var(--ink-3)";
+    }
+  }
+
+  // Backward compatibility wrapper
+  function togglePassVisibility(inputId, btnEl) {
+    const input = document.getElementById(inputId);
+    if (!input) return;
+    if (input.type === "password") {
+      showPass(inputId, btnEl);
+    } else {
+      hidePass(inputId, btnEl);
+    }
+  }
+
+  async function verifySftpPaths() {
+    const btn = document.getElementById("btnVerifyPaths");
+    if (btn) { btn.disabled = true; btn.textContent = "Connecting & creating paths..."; }
+
+    const passInput = document.getElementById("sftpUniPass");
+    const passVal = passInput?.value || "";
+    if (passInput) passInput.value = "";
+
+    try {
+      const payload = {
+        host: document.getElementById("sftpUniHost")?.value || "",
+        port: document.getElementById("sftpUniPort")?.value || 22,
+        username: document.getElementById("sftpUniUser")?.value || "",
+        password: passVal,
+        ssh_key: document.getElementById("sftpUniSshKey")?.value || "",
+        auth_method: document.getElementById("sftpUniAuth")?.value || "Password",
+        trust_unknown_key: document.getElementById("sftpUniTrust")?.checked || true,
+        inbound_837_folder: document.getElementById("sftpUniDir837")?.value || "",
+        inbound_835_folder: document.getElementById("sftpUniDir835")?.value || "",
+        outbound_mir_folder: document.getElementById("sftpUniDirMir")?.value || "",
+      };
+
+      const res = await fetch('/edi835/api/sftp/verify-paths/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      const data = await res.json();
+
+      const discoveredBox = document.getElementById("sftpDiscoveredFoldersBox");
+
+      if (data.success) {
+        let pathListHtml = '';
+        if (data.path_statuses && data.path_statuses.length) {
+          pathListHtml = data.path_statuses.map(ps => `
+            <div style="padding:5px 0; border-bottom:1px solid var(--line);">
+              📁 <b>${ps.type}:</b> <code>${ps.path}</code> 
+              <span class="tag ${ps.created ? 'work' : 'ok'}" style="margin-left:6px;">${ps.created ? 'CREATED NEW FOLDER' : 'FOLDER VERIFIED'}</span>
+            </div>
+          `).join('');
+        }
+
+        if (discoveredBox) {
+          discoveredBox.innerHTML = `
+            <div style="text-align:left; width:100%;">
+              <div style="font-weight:600; color:var(--teal); margin-bottom:8px;">✓ SFTP Remote Folder Paths Connected:</div>
+              ${pathListHtml}
+            </div>
+          `;
+        }
+        alert("✓ " + data.message);
+        // Persist verified config so currentSftpConfig reflects CONNECTED state
+        await fetch('/edi835/api/sftp/save/', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...payload, use_same_server: true, connection_type: "UNIFIED" })
+        });
+        await loadSftpConfig();
+      } else {
+        alert("✗ " + (data.error || "Failed to verify SFTP paths. Establish SFTP connection first."));
+      }
+    } catch (e) {
+      console.warn("Failed to verify SFTP paths:", e);
+      alert("✗ SFTP Connection required before connecting paths.");
+    } finally {
+      if (btn) { btn.disabled = false; btn.innerHTML = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path><line x1="12" y1="11" x2="12" y2="17"></line><line x1="9" y1="14" x2="15" y2="14"></line></svg><span>Connect & create paths</span>'; }
+    }
+  }
+
+  // --- SFTP DIRECTORY BROWSER MODAL LOGIC ---
+  let currentBrowserPath = ".";
+  let activeBrowserConfigId = null;
+  let activeTargetFieldId = null;
+  let sftpNavHistory = [];
+  let sftpNavIndex = -1;
+  let sftpDirectoryCache = {};
+
+  async function openSftpBrowserModal(configId, remotePath, targetFieldId) {
+    if (configId) activeBrowserConfigId = configId;
+    if (targetFieldId) activeTargetFieldId = targetFieldId;
+    
+    // Reset history navigation stack for fresh browser session
+    sftpNavHistory = [];
+    sftpNavIndex = -1;
+    
+    const modal = document.getElementById("sftpBrowserModal");
+    if (modal) modal.classList.remove("hidden");
+    await fetchSftpDirectory(remotePath || ".", true);
+  }
+
+  function updateSftpNavButtons() {
+    const btnBack = document.getElementById("sftpBrowserBtnBack");
+    const btnForward = document.getElementById("sftpBrowserBtnForward");
+
+    if (btnBack) btnBack.disabled = (sftpNavIndex <= 0);
+    if (btnForward) btnForward.disabled = (sftpNavIndex >= sftpNavHistory.length - 1);
+  }
+
+  function navigateSftpBack() {
+    if (sftpNavIndex > 0) {
+      sftpNavIndex--;
+      const targetPath = sftpNavHistory[sftpNavIndex];
+      fetchSftpDirectory(targetPath, false);
+    }
+  }
+
+  function navigateSftpForward() {
+    if (sftpNavIndex < sftpNavHistory.length - 1) {
+      sftpNavIndex++;
+      const targetPath = sftpNavHistory[sftpNavIndex];
+      fetchSftpDirectory(targetPath, false);
+    }
+  }
+
+  function selectCurrentSftpFolder() {
+    if (activeTargetFieldId) {
+      const targetInput = document.getElementById(activeTargetFieldId);
+      if (targetInput) {
+        targetInput.value = currentBrowserPath;
+      }
+    }
+    closeSftpBrowserModal();
+  }
+
+  function closeSftpBrowserModal() {
+    const modal = document.getElementById("sftpBrowserModal");
+    if (modal) modal.classList.add("hidden");
+  }
+
+  function navigateSftpUp() {
+    if (!currentBrowserPath || currentBrowserPath === "/" || currentBrowserPath === ".") return;
+    const parts = currentBrowserPath.replace(/\/$/, "").split("/");
+    parts.pop();
+    const parentPath = parts.join("/") || "/";
+    fetchSftpDirectory(parentPath, true);
+  }
+
+  async function fetchSftpDirectory(targetPath, recordHistory = true) {
+    const tbody = document.getElementById("sftpBrowserTableBody");
+    const pathInput = document.getElementById("sftpBrowserPathInput");
+    targetPath = targetPath || ".";
+
+    if (recordHistory) {
+      sftpNavHistory = sftpNavHistory.slice(0, sftpNavIndex + 1);
+      sftpNavHistory.push(targetPath);
+      sftpNavIndex = sftpNavHistory.length - 1;
+    }
+    updateSftpNavButtons();
+
+    // Instant Client-Side Cache Rendering
+    if (sftpDirectoryCache[targetPath]) {
+      const cached = sftpDirectoryCache[targetPath];
+      currentBrowserPath = cached.pwd || targetPath;
+      if (pathInput) pathInput.value = currentBrowserPath;
+      renderDirectoryRows(cached);
+    } else {
+      if (tbody) tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--ink-3);">Loading SFTP directory contents...</td></tr>`;
+    }
+
+    try {
+      const payload = {
+        path: targetPath || ".",
+        config_id: activeBrowserConfigId
+      };
+      const hostVal = document.getElementById("sftpUniHost")?.value;
+      const userVal = document.getElementById("sftpUniUser")?.value;
+      if (hostVal && userVal) {
+        payload.host = hostVal;
+        payload.port = document.getElementById("sftpUniPort")?.value || 22;
+        payload.username = userVal;
+        payload.password = document.getElementById("sftpUniPass")?.value || window.lastEnteredSftpPass || "";
+        payload.ssh_key = document.getElementById("sftpUniSshKey")?.value || window.lastEnteredSshKey || "";
+        payload.auth_method = document.getElementById("sftpUniAuth")?.value || "Password";
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 6000);
+
+      const res = await fetch('/edi835/api/sftp/browse/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      const data = await res.json();
+
+      if (!data.success) {
+        if (tbody && !sftpDirectoryCache[targetPath]) {
+          tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--brick); font-weight:600;">❌ ${data.error || 'Failed to list directory'}</td></tr>`;
+        }
+        return;
+      }
+
+      currentBrowserPath = data.pwd || targetPath;
+      if (pathInput) pathInput.value = currentBrowserPath;
+
+      // Store in client-side cache
+      sftpDirectoryCache[targetPath] = data;
+      sftpDirectoryCache[currentBrowserPath] = data;
+
+      renderDirectoryRows(data);
+
+    } catch (err) {
+      if (!sftpDirectoryCache[targetPath] && tbody) {
+        tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--brick);">❌ Network error browsing directory: ${err.message}</td></tr>`;
+      }
+    }
+  }
+
+  function renderDirectoryRows(data) {
+    const tbody = document.getElementById("sftpBrowserTableBody");
+    if (!tbody) return;
+
+    const folders = data.folders || [];
+    const files = data.files || [];
+
+    if (!folders.length && !files.length) {
+      tbody.innerHTML = `<tr><td colspan="4" style="padding: 20px; text-align: center; color: var(--ink-3);">Directory is empty.</td></tr>`;
+      return;
+    }
+
+    let rowsHtml = '';
+
+    if (data.parent_path) {
+      rowsHtml += `
+        <tr style="cursor:pointer; background:#F8FAFC;" onclick="fetchSftpDirectory('${data.parent_path.replace(/'/g, "\\'")}', true)">
+          <td style="font-weight:600; color:var(--teal);">📁 .. (Parent Directory)</td>
+          <td style="color:var(--ink-3); font-size:11px;">Folder</td>
+          <td style="color:var(--ink-3); font-size:11px;">—</td>
+          <td style="color:var(--ink-3); font-size:11px;">—</td>
+        </tr>
+      `;
+    }
+
+    folders.forEach(f => {
+      rowsHtml += `
+        <tr style="cursor:pointer;" onclick="fetchSftpDirectory('${f.path.replace(/'/g, "\\'")}', true)">
+          <td style="font-weight:600; color:var(--ink-1);">📁 ${f.name}</td>
+          <td><span class="tag ok" style="font-size:9.5px;">FOLDER</span></td>
+          <td style="color:var(--ink-3); font-size:11px;">—</td>
+          <td style="color:var(--ink-3); font-size:11px;">${f.mtime}</td>
+        </tr>
+      `;
+    });
+
+    files.forEach(file => {
+      rowsHtml += `
+        <tr>
+          <td style="color:var(--ink-2);">📄 ${file.name}</td>
+          <td><span class="tag idle" style="font-size:9.5px;">FILE</span></td>
+          <td class="num" style="font-size:11px;">${file.size} B</td>
+          <td style="color:var(--ink-3); font-size:11px;">${file.mtime}</td>
+        </tr>
+      `;
+    });
+
+    tbody.innerHTML = rowsHtml;
+  }
+
+  async function pushFileRecordToSftp(fileId) {
+    if (!currentSftpConfig || currentSftpConfig.status !== 'CONNECTED') {
+      alert("⚠️ No active SFTP connection.\n\nPlease go to the Connections section, enter your SFTP host/port/credentials, and click 'Test & save connection' before pushing files.");
+      return;
+    }
+
+    try {
+      const res = await fetch('/edi835/api/sftp/push/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file_id: fileId })
+      });
+      const data = await res.json();
+      if (data.success) {
+        alert("✓ " + data.message);
+        await loadArchiveFiles();
+      } else {
+        alert("❌ " + (data.error || "Failed to push files to SFTP server. Check server connection and credentials."));
+      }
+    } catch (e) {
+      alert("❌ Unable to reach server to push files to SFTP.");
+    }
+  }
+
+  document.getElementById("btnTestSaveUnified")?.addEventListener("click", saveSftpConfigUnified);
+  document.getElementById("btnVerifyPaths")?.addEventListener("click", verifySftpPaths);
+  document.getElementById("btnTestSaveInbound")?.addEventListener("click", () => saveSftpConfigDual('inbound'));
+  document.getElementById("btnTestSaveOutbound")?.addEventListener("click", () => saveSftpConfigDual('outbound'));
+
+  // --- FILE VIEWER MODAL LOGIC (Eye Icon Popup) ---
+  let modalState = {
+    fileId: null,
+    filename: "",
+    ediText: "",
+    mirText: "",
+    activeTab: "835" // "835" or "MIR"
+  };
+
+  const fileViewerModal = document.getElementById("fileViewerModal");
+  const modalFileTitle = document.getElementById("modalFileTitle");
+  const modalBtn835 = document.getElementById("modalBtn835");
+  const modalBtnMIR = document.getElementById("modalBtnMIR");
+  const modalTextarea = document.getElementById("modalTextarea");
+  const modalCloseBtn = document.getElementById("modalCloseBtn");
+  const modalCloseFooterBtn = document.getElementById("modalCloseFooterBtn");
+  const modalCopyBtn = document.getElementById("modalCopyBtn");
+
+  async function openFileViewerModal(fileId) {
+    modalState.fileId = fileId;
+    modalState.activeTab = "835";
+    modalFileTitle.textContent = "Loading file...";
+    modalTextarea.value = "Fetching EDI 835 and MIR code...";
+    
+    modalBtn835.className = "tab-btn active";
+    modalBtnMIR.className = "tab-btn";
+    fileViewerModal.classList.remove("hidden");
+
+    try {
+      const res = await fetch(`/api/file-content/${fileId}/`);
+      if (!res.ok) throw new Error("Could not retrieve file content");
+      const data = await res.json();
+
+      modalState.filename = data.filename || "File";
+      modalState.ediText = data.edi_text || "(No 835 content recorded)";
+      modalState.mirText = data.mir_text || "(No MIR content generated yet)";
+
+      modalFileTitle.textContent = modalState.filename;
+      updateModalTextarea();
+
+    } catch (err) {
+      modalFileTitle.textContent = "Error Loading File";
+      modalTextarea.value = "Failed to load file content: " + err.message;
+    }
+  }
+
+  function updateModalTextarea() {
+    if (modalState.activeTab === "835") {
+      modalTextarea.value = modalState.ediText;
+      modalTextarea.style.whiteSpace = "pre-wrap";
+      modalTextarea.style.overflowX = "hidden";
+    } else {
+      modalTextarea.value = modalState.mirText;
+      modalTextarea.style.whiteSpace = "pre";
+      modalTextarea.style.overflowX = "auto";
+    }
+  }
+
+  // Save changes to local state as user edits in the modal
+  modalTextarea.addEventListener("input", () => {
+    if (modalState.activeTab === "835") {
+      modalState.ediText = modalTextarea.value;
+    } else {
+      modalState.mirText = modalTextarea.value;
+    }
+  });
+
+  modalBtn835.addEventListener("click", () => {
+    modalState.activeTab = "835";
+    modalBtn835.className = "tab-btn active";
+    modalBtnMIR.className = "tab-btn";
+    updateModalTextarea();
+  });
+
+  modalBtnMIR.addEventListener("click", () => {
+    modalState.activeTab = "MIR";
+    modalBtn835.className = "tab-btn";
+    modalBtnMIR.className = "tab-btn active";
+    updateModalTextarea();
+  });
+
+  function closeModalViewer() {
+    fileViewerModal.classList.add("hidden");
+  }
+
+  modalCloseBtn.addEventListener("click", closeModalViewer);
+  modalCloseFooterBtn.addEventListener("click", closeModalViewer);
+
+  fileViewerModal.addEventListener("click", (e) => {
+    if (e.target === fileViewerModal) closeModalViewer();
+  });
+
+  modalCopyBtn.addEventListener("click", () => {
+    const textToCopy = modalTextarea.value;
+    if (!textToCopy) return;
+    navigator.clipboard.writeText(textToCopy).then(() => {
+      const orig = modalCopyBtn.textContent;
+      modalCopyBtn.textContent = "Copied!";
+      setTimeout(() => (modalCopyBtn.textContent = orig), 2000);
+    });
+  });
+
+  // Initial load
+  updateLiveMetrics();
+  loadTrackedFiles();
+  loadArchiveFiles();
+  loadSftpConfig();
+
+  // --- LIVE FOLDER OBSERVER AUTO-REFRESH TIMER (Every 3 seconds) ---
+  setInterval(() => {
+    loadTrackedFiles();
+    loadArchiveFiles();
+    updateLiveMetrics();
+  }, 3000);
+</script>
+{% endblock %}

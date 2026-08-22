@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+
+{% block title %}Sign Up — MIR Relay{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>Create Account</h1>
+        <p class="sub">Register for MIR Relay Operations</p>
+
+        {% if form.non_field_errors %}
+            <div class="error-msg">
+                {% for error in form.non_field_errors %}
+                    <p>{{ error }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        <form method="post">
+            {% csrf_token %}
+            <div>
+                <label>Full Name</label>
+                {{ form.name }}
+                {% if form.name.errors %}<div class="error-msg">{{ form.name.errors.0 }}</div>{% endif %}
+            </div>
+            <div>
+                <label>Email Address</label>
+                {{ form.email }}
+                {% if form.email.errors %}<div class="error-msg">{{ form.email.errors.0 }}</div>{% endif %}
+            </div>
+            <div>
+                <label>Mobile Number</label>
+                {{ form.mobile }}
+                {% if form.mobile.errors %}<div class="error-msg">{{ form.mobile.errors.0 }}</div>{% endif %}
+            </div>
+            <div>
+                <label>Password</label>
+                {{ form.password }}
+                {% if form.password.errors %}<div class="error-msg">{{ form.password.errors.0 }}</div>{% endif %}
+            </div>
+            <div>
+                <label>Confirm Password</label>
+                {{ form.confirm_password }}
+                {% if form.confirm_password.errors %}<div class="error-msg">{{ form.confirm_password.errors.0 }}</div>{% endif %}
+            </div>
+            <button type="submit" class="btn-primary">Create Account</button>
+        </form>
+
+        <p class="center" style="margin-top: 20px; font-size: 13px; color: var(--ink-2);">
+            Already have an account? <a href="{% url 'login' %}" class="link">Sign In</a>
+        </p>
+    </div>
+</div>
+{% endblock %}

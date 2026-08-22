@@ -1,0 +1,33 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In — MIR Relay{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>Sign In</h1>
+        <p class="sub">MIR Relay &bull; EDI 835 Conversion Operations</p>
+
+        {% if form.non_field_errors %}
+            <div class="error-msg">
+                {% for error in form.non_field_errors %}
+                    <p>{{ error }}</p>
+                {% endfor %}
+            </div>
+        {% endif %}
+
+        <form method="post">
+            {% csrf_token %}
+            <div>
+                <label>Email Address</label>
+                {{ form.email }}
+            </div>
+            <div>
+                <label>Password</label>
+                {{ form.password }}
+            </div>
+            <button type="submit" class="btn-primary">Sign In</button>
+        </form>
+    </div>
+</div>
+{% endblock %}

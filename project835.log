@@ -1,0 +1,28 @@
+ERROR 2026-08-22 17:35:17,934 validator 26976 24808 PyX12 parsing exception: ISA line is only 44 characters
+WARNING 2026-08-22 17:35:19,450 services 26976 24808 upload_mir_to_sftp: No SFTPConfig found in database.
+ERROR 2026-08-22 17:35:22,468 services 26976 24808 EDI 835 processing failed for file '8bbfac16-3e26-4bd9-bc5f-73e7a9c4e9fa_BAD_FILE_123.x12': No CLP claims were found in the uploaded 835 file.
+Traceback (most recent call last):
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\edi835\services.py", line 251, in process_edi835_file_content
+    res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\converter\services\parser.py", line 376, in parse_835_to_mir
+    mir_text, summary = convert_835_to_mir(text, client=client)
+                        ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\admin_panel\mir_mapper_logic\converter.py", line 9, in convert_835_to_mir
+    raise ValueError("No CLP claims were found in the uploaded 835 file.")
+ValueError: No CLP claims were found in the uploaded 835 file.
+WARNING 2026-08-22 17:35:22,482 services 26976 24808 upload_mir_to_sftp: No SFTPConfig found in database.
+WARNING 2026-08-22 17:35:22,496 services 26976 24808 upload_mir_to_sftp: No SFTPConfig found in database.
+ERROR 2026-08-22 17:40:13,258 validator 20292 17276 PyX12 parsing exception: ISA line is only 44 characters
+WARNING 2026-08-22 17:40:14,827 services 20292 17276 upload_mir_to_sftp: No SFTPConfig found in database.
+ERROR 2026-08-22 17:40:17,567 services 20292 17276 EDI 835 processing failed for file '4934b0d3-ea34-4afc-90b0-9f700fab62b7_BAD_FILE_123.x12': No CLP claims were found in the uploaded 835 file.
+Traceback (most recent call last):
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\edi835\services.py", line 251, in process_edi835_file_content
+    res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\converter\services\parser.py", line 376, in parse_835_to_mir
+    mir_text, summary = convert_835_to_mir(text, client=client)
+                        ~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\Sahil1234\Desktop\835_To_Mir_final\Project835\backend\admin_panel\mir_mapper_logic\converter.py", line 9, in convert_835_to_mir
+    raise ValueError("No CLP claims were found in the uploaded 835 file.")
+ValueError: No CLP claims were found in the uploaded 835 file.
+WARNING 2026-08-22 17:40:17,584 services 20292 17276 upload_mir_to_sftp: No SFTPConfig found in database.
+WARNING 2026-08-22 17:40:17,595 services 20292 17276 upload_mir_to_sftp: No SFTPConfig found in database.

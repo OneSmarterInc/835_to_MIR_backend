@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+
+{% block title %}Setup 2FA — MIR Relay{% endblock %}
+
+{% block content %}
+<div class="auth-container">
+    <div class="auth-card">
+        <h1>Two-Factor Authentication</h1>
+        <p class="sub">Configure Authenticator App</p>
+
+        {% if verified %}
+            <div class="success-msg">
+                <p>✅ Authenticator app configured successfully!</p>
+            </div>
+
+            <h3 style="font-size: 14px; margin-bottom: 6px;">Save Recovery Codes</h3>
+            <p style="font-size: 12px; color: var(--ink-2); margin-bottom: 12px;">Store these codes safely to recover access if you lose your device:</p>
+
+            <div style="background: var(--paper); padding: 12px; border: 1px solid var(--line); margin-bottom: 16px;">
+                {% for code in recovery_codes %}
+                    <code style="font-family: var(--display); font-size: 12px; margin: 2px 6px; display: inline-block; color: var(--ink);">{{ code }}</code>
+                {% endfor %}
+            </div>
+
+            <a href="{% url 'home' %}">
+                <button type="button" class="btn-primary">Go to Dashboard</button>
+            </a>
+        {% else %}
+            <p style="font-size: 12.5px; color: var(--ink-2); margin-bottom: 14px;">Scan the QR code below with Google Authenticator or Microsoft Authenticator:</p>
+
+            <div style="text-align: center; margin: 16px 0;">
+                <img src="data:image/png;base64,{{ qr_code }}" alt="2FA QR Code" style="width: 200px; height: 200px; border: 1px solid var(--line); padding: 8px; background: #fff;">
+            </div>
+
+            <p style="font-size: 11px; font-family: var(--display); text-transform: uppercase; color: var(--ink-3); margin-bottom: 4px;">Manual Key</p>
+            <div style="font-family: var(--display); font-size: 12px; background: var(--paper); padding: 8px; text-align: center; border: 1px solid var(--line); margin-bottom: 16px; word-break: break-all;">{{ secret }}</div>
+
+            <form method="post">
+                {% csrf_token %}
+                <label>Enter 6-Digit Authenticator Code</label>
+                <input type="text" name="code" placeholder="123456" autocomplete="off" required maxlength="6" autofocus>
+                <button type="submit" class="btn-primary">Verify & Enable 2FA</button>
+            </form>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
