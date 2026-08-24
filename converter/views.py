@@ -60,46 +60,13 @@ def api_convert(request):
             file_id = request.POST.get('file_id')
 
     client = None
-    body_client_id = None
-    if request.content_type == 'application/json':
-        try:
-            body = json.loads(request.body.decode('utf-8'))
-            body_client_id = body.get('client_id') or body.get('client')
-        except Exception:
-            pass
-    else:
-        body_client_id = request.POST.get('client_id') or request.POST.get('client')
-
-    if body_client_id:
-        from accounts.models import Client
-        try:
-            client = Client.objects.get(id=body_client_id)
-        except (Client.DoesNotExist, ValueError):
-            pass
-
-    if not client and request.user and request.user.is_authenticated:
+    if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
     # If multiple files provided, execute multi-file batch conversion into a SINGLE MIR file
     if files_list and len(files_list) > 0:
         batch_res = process_multiple_edi835_files(files_list, client=client)
         if not batch_res.get("success"):
-            if client:
-                try:
-                    from admin_panel.email_service import send_client_email
-                    err_msg = batch_res.get("error", "Multi-file conversion failed.")
-                    subject = f"OneSmarter: Batch 835 Conversion Failed"
-                    html = (
-                        f"<h3>Batch 835 Conversion Failed</h3>"
-                        f"<p>Your batch of EDI 835 files could not be converted to MIR.</p>"
-                        f"<p><b>Error:</b> {err_msg}</p>"
-                        f"<p>Please review the files and try again.</p>"
-                    )
-                    to_emails = [request.user.email] if request.user and request.user.email else None
-                    send_client_email(client, subject, html, to_emails=to_emails)
-                except Exception as email_err:
-                    import logging
-                    logging.getLogger(__name__).error(f"Failed to send batch failure email: {email_err}")
             return JsonResponse({'error': batch_res.get("error", "Multi-file conversion failed.")}, status=400)
 
         primary_rec = batch_res.get("db_record")
@@ -177,22 +144,6 @@ def api_convert(request):
     res = process_edi835_file_content(edi_text, original_filename=original_filename, file_id=file_id, client=client)
 
     if not res.get("success"):
-        if client:
-            try:
-                from admin_panel.email_service import send_client_email
-                err_msg = res.get("error", "Unknown error")
-                subject = f"OneSmarter: 835 File Conversion Failed - {original_filename}"
-                html = (
-                    f"<h3>835 File Conversion Failed</h3>"
-                    f"<p>Your EDI 835 file <b>{original_filename}</b> could not be converted to MIR.</p>"
-                    f"<p><b>Error:</b> {err_msg}</p>"
-                    f"<p>Please review the file and re-upload a corrected version.</p>"
-                )
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
-            except Exception as email_err:
-                import logging
-                logging.getLogger(__name__).error(f"Failed to send conversion failure email: {email_err}")
         return JsonResponse({
             'error': f'Failed to convert EDI file: {res.get("error")}',
             'file_id': str(res["db_record"].id) if res.get("db_record") else None
@@ -244,24 +195,7 @@ def api_validate(request):
         return JsonResponse({'error': 'Only POST method is allowed.'}, status=405)
 
     client = None
-    body_client_id = None
-    if request.content_type == 'application/json':
-        try:
-            body = json.loads(request.body.decode('utf-8'))
-            body_client_id = body.get('client_id') or body.get('client')
-        except Exception:
-            pass
-    else:
-        body_client_id = request.POST.get('client_id') or request.POST.get('client')
-
-    if body_client_id:
-        from accounts.models import Client
-        try:
-            client = Client.objects.get(id=body_client_id)
-        except (Client.DoesNotExist, ValueError):
-            pass
-
-    if not client and request.user and request.user.is_authenticated:
+    if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
     files_list = []

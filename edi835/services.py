@@ -50,11 +50,8 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
 
         if client:
             cfg = SFTPConfig.objects.filter(client=client).first()
-            if not cfg or cfg.use_default:
-                cfg = SFTPConfig.objects.filter(client__isnull=True).first()
         else:
-            cfg = SFTPConfig.objects.filter(client__isnull=True).first()
-
+            cfg = SFTPConfig.objects.first()
         if not cfg:
             logger.warning("upload_mir_to_sftp: No SFTPConfig found in database.")
             return False
@@ -143,10 +140,8 @@ def push_file_record_to_sftp(file_id):
     client = rec.client
     if client:
         cfg = SFTPConfig.objects.filter(client=client).first()
-        if not cfg or cfg.use_default:
-            cfg = SFTPConfig.objects.filter(client__isnull=True).first()
     else:
-        cfg = SFTPConfig.objects.filter(client__isnull=True).first()
+        cfg = SFTPConfig.objects.first()
 
     if not cfg:
         return False, "No SFTP connection configuration found. Please setup SFTP in Connections section first."
@@ -161,21 +156,7 @@ def push_file_record_to_sftp(file_id):
     stored_name = rec.stored_filename or rec.original_filename
     if rec.output_path:
         base_name = os.path.splitext(stored_name)[0]
-        # Resolve mir_filename dynamically
-        now = timezone.now()
-        fmt = "MIROUT_YYYY_MMDD_.MIR"
-        if client and getattr(client, "mir_filename_format", None):
-            fmt = client.mir_filename_format
-            
-        resolved_name = fmt
-        resolved_name = resolved_name.replace("YYYY", now.strftime("%Y"))
-        resolved_name = resolved_name.replace("MM", now.strftime("%m"))
-        resolved_name = resolved_name.replace("DD", now.strftime("%d"))
-        
-        if not resolved_name.upper().endswith(".MIR"):
-            resolved_name += ".mir"
-            
-        mir_filename = resolved_name
+        mir_filename = f"MIR_{base_name}.mir"
         mir_path = Path(settings.BASE_DIR) / rec.output_path
         if not os.path.exists(mir_path):
             mir_path = dirs["output"] / f"{base_name}.mir"
@@ -212,34 +193,19 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     """
     dirs = get_edi835_storage_dirs()
 
+    # Sanitize filename to prevent path traversal
+    original_filename = os.path.basename(original_filename)
+    base_name = os.path.splitext(original_filename)[0]
+    mir_filename = f"{base_name}.mir"
+
     db_record = None
     file_uuid = uuid.uuid4()
     if file_id:
         try:
             db_record = EDI835File.objects.select_related("client").get(id=file_id)
             file_uuid = db_record.id
-            if db_record.client:
-                client = db_record.client
         except (EDI835File.DoesNotExist, ValueError):
             db_record = None
-
-    # Sanitize filename to prevent path traversal
-    original_filename = os.path.basename(original_filename)
-    base_name = os.path.splitext(original_filename)[0]
-
-    # Resolve mir_filename dynamically using client's format
-    if client:
-        now = timezone.now()
-        fmt = getattr(client, "mir_filename_format", "MIROUT_YYYY_MMDD_.MIR") or "MIROUT_YYYY_MMDD_.MIR"
-        resolved_name = fmt
-        resolved_name = resolved_name.replace("YYYY", now.strftime("%Y"))
-        resolved_name = resolved_name.replace("MM", now.strftime("%m"))
-        resolved_name = resolved_name.replace("DD", now.strftime("%d"))
-        if not resolved_name.upper().endswith(".MIR"):
-            resolved_name += ".mir"
-        mir_filename = resolved_name
-    else:
-        mir_filename = f"{base_name}.mir"
 
     # Prefix with UUID to prevent file overwrite collisions
     stored_filename = f"{file_uuid}_{original_filename}"

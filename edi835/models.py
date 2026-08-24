@@ -157,7 +157,6 @@ class SFTPConfig(models.Model):
     outbound_mir_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/out/mir/")
 
     status = models.CharField(max_length=50, default="NOT_CONFIGURED")
-    use_default = models.BooleanField(default=False, help_text="Whether to use default SFTP settings")
     last_error = models.TextField(null=True, blank=True)
     last_tested_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)

@@ -715,26 +715,23 @@ def api_admin_client_state(request, client_id):
         for u in User.objects.filter(client=client_obj).values("id", "name", "email", "mobile", "is_staff")
     ]
 
-    # Force refresh steps definitions to match the latest 15 steps definition if count differs or title changed
-    step6_def = OnboardingStepDefinition.objects.filter(step_number=6).first()
-    if step_defs.count() != 15 or not step6_def or step6_def.title != "SMTP / Email Configuration":
-        OnboardingStepDefinition.objects.all().delete()
+    # If steps are empty, create default steps
+    if not step_defs.exists():
         default_steps = [
             (1, "Mutual NDA signed", "Upload signed NDA template to establish confidentiality agreement."),
             (2, "Business associate agreement executed", "Execute HIPAA compliant Business Associate Agreement."),
             (3, "Security review returned to client", "Upload security audit review document."),
             (4, "Contact Records", "Designate client contact personnel and records."),
             (5, "Claims system identified and verified", "Identify client claims vendor software system."),
-            (6, "SMTP / Email Configuration", "Configure SMTP credentials to utilize for onboarding notifications."),
-            (7, "Delivery method agreed", "Configure secure transfer mechanism (SFTP, API drop)."),
-            (8, "Sample 835 received and validated", "Validate structural integrity of sample X12 835 file."),
-            (9, "Mapping rules written & configured", "Open Mapping Application to configure 835 conversion."),
-            (10, "MIR Output Filename Format & Create User", "Define output MIR file naming convention and create SFTP user logins."),
-            (11, "Side-by-Side 835 Conversion Review", "Verify side-by-side conversion of sample 835 files."),
-            (12, "Go-Live Safeguards Verification", "Confirm production cutover safeguards and monitoring."),
-            (13, "Production Schedule", "Define scheduled date and time to go live."),
-            (14, "Go-Live / Final Verification", "Attach email conversation confirmation."),
-            (15, "Production Delivery Sign-Off / Conclude Onboarding", "Monitor first live 835 delivery and conclude onboarding."),
+            (6, "Delivery method agreed", "Configure secure transfer mechanism (SFTP, API drop)."),
+            (7, "Sample 835 received and validated", "Validate structural integrity of sample X12 835 file."),
+            (8, "Mapping rules written & configured", "Open Mapping Application to configure 835 conversion."),
+            (9, "Create user", "Open SFTP App to provision test folders and SSH keys."),
+            (10, "Test conversions reviewed with client", "Verify side-by-side conversion of sample 835 files."),
+            (11, "Send test file to client FTP", "Transmit verified test payload to client FTP server."),
+            (12, "Upload email conversation attachment", "Attach email confirmation."),
+            (13, "Go live checklist & controls verified", "Confirm production cutover safeguards and monitoring."),
+            (14, "First production file delivered & monitored", "Monitor first live 835 delivery and conclude onboarding."),
         ]
         for num, title, desc in default_steps:
             OnboardingStepDefinition.objects.create(step_number=num, title=title, description=desc)
@@ -748,24 +745,23 @@ def api_admin_client_state(request, client_id):
         3: "upload_template",
         4: "contact_manager",
         5: "claim_verify",
-        6: "smtp_config",
-        7: "transfer_config",
-        8: "x12_835_validate",
-        9: "mapping_redirect",
-        10: "naming_config",
-        11: "side_by_side_done",
-        12: "golive_redirect",
-        13: "production_schedule",
-        14: "email_upload",
-        15: "text_submission_final",
+        6: "transfer_config",
+        7: "x12_835_validate",
+        8: "mapping_redirect",
+        9: "sftp_redirect",
+        10: "side_by_side_done",
+        11: "send_ftp_action",
+        12: "email_upload",
+        13: "golive_redirect",
+        14: "text_submission_final",
     }
 
     def get_phase(step_number):
         if step_number <= 4:
             return "PHASE ONE - PAPER RECORD DATA"
-        elif step_number <= 9:
+        elif step_number <= 8:
             return "PHASE TWO - UNDERSTAND THEIR SYSTEM"
-        elif step_number <= 13:
+        elif step_number <= 12:
             return "PHASE THREE - MOVE IT ON TEST"
         else:
             return "PHASE FOUR - LIVE"
@@ -776,22 +772,21 @@ def api_admin_client_state(request, client_id):
         
         is_done = st == 'COMPLETED'
         
-        # Override Step 12 completion based on Go-Live steps
-        if step.step_number == 12:
-            is_done = (st == 'COMPLETED') or (completed_golive == total_golive)
+        # Override Step 13 completion based on Go-Live steps
+        if step.step_number == 13:
+            is_done = (completed_golive == total_golive)
             
         is_in_progress = st == 'IN_PROGRESS'
         
         if is_in_progress:
             in_progress_found = True
             
-        is_file_step = step.step_number in [1, 2, 3, 14]
+        is_file_step = step.step_number in [1, 2, 3]
 
         extra_data = {}
         if step.step_number == 4:
             extra_data["contacts"] = contacts_list
-        elif step.step_number == 10:
-            extra_data["mir_filename_format"] = client_obj.mir_filename_format
+        elif step.step_number == 9:
             extra_data["users"] = users_list
         elif step.step_number == 13:
             if client_obj.live_since:
@@ -804,7 +799,7 @@ def api_admin_client_state(request, client_id):
 
         # Load the latest uploaded document for this step (persisted across redos)
         latest_upload_data = None
-        if is_file_step or step.step_number in [8, 11]:
+        if is_file_step or step.step_number in [7, 12]:
             doc_type = f"Onboarding Step {step.step_number}"
             latest_doc = latest_docs_by_type.get(doc_type)
             if latest_doc:
@@ -864,17 +859,17 @@ def update_client_onboarding_stats(client_obj):
     completed_steps_qs = ClientStepStatus.objects.filter(client=client_obj, status='COMPLETED')
     completed_step_nums = set(completed_steps_qs.values_list('step__step_number', flat=True))
     
-    # Ensure step 12 is counted if go-live is complete
+    # Ensure step 13 is counted if go-live is complete
     total_golive = GoLiveStepDefinition.objects.count()
     if total_golive == 0: total_golive = 6
     completed_golive = ClientGoLiveStatus.objects.filter(client=client_obj, status='COMPLETED').count()
     
     if completed_golive == total_golive:
-        if 12 not in completed_step_nums:
-            completed_step_nums.add(12)
+        if 13 not in completed_step_nums:
+            completed_step_nums.add(13)
             try:
-                step12_def = OnboardingStepDefinition.objects.get(step_number=12)
-                status_obj, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step12_def)
+                step13_def = OnboardingStepDefinition.objects.get(step_number=13)
+                status_obj, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step13_def)
                 status_obj.status = 'COMPLETED'
                 status_obj.save()
             except Exception:
@@ -1176,30 +1171,28 @@ def api_admin_step_validate_835(request, client_id):
         )
         doc.file.save(filename, ContentFile(file_bytes), save=True)
         
-        # Process the EDI file content immediately through the pipeline (validation, conversion, SFTP upload)
-        from edi835.services import process_edi835_file_content
-        proc_res = process_edi835_file_content(raw_text, original_filename=filename, client=client_obj)
-
-        # Trigger success email to the user
-        try:
-            from admin_panel.email_service import send_client_email
-            email_subj = f"OneSmarter: 835 File Validation & Delivery Successful"
-            sftp_status_str = "and uploaded to your configured SFTP server" if proc_res.get("db_record") and proc_res["db_record"].present_in_sftp else "but SFTP upload is pending/not configured"
-            email_html = f"""
-            <h3>Test 835 Validation & Conversion Successful</h3>
-            <p>Dear Partner,</p>
-            <p>We are pleased to inform you that your test 835 file <b>{filename}</b> has been successfully validated, converted to MIR format, {sftp_status_str}.</p>
-            <p><b>Conversion details:</b></p>
-            <ul>
-                <li>Claims identified: {proc_res.get('claims_count', 0)}</li>
-                <li>Services processed: {proc_res.get('services_count', 0)}</li>
-                <li>Records processed: {proc_res.get('records_count', 0)}</li>
-            </ul>
-            """
-            send_client_email(client_obj, email_subj, email_html)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to send email on step 7 success: {e}")
+        # Also store it as EDI835File for the client
+        from pathlib import Path
+        from django.conf import settings
+        from edi835.services import get_edi835_storage_dirs
+        from edi835.models import EDI835File
+        
+        dirs = get_edi835_storage_dirs()
+        archive_file_path = dirs["archive"] / filename
+        with open(archive_file_path, "wb") as f:
+            f.write(file_bytes)
+        rel_archive_path = (Path("media") / "edi835" / "archive" / filename).as_posix()
+        
+        EDI835File.objects.create(
+            client=client_obj,
+            original_filename=filename,
+            stored_filename=filename,
+            status="PROCESSING",
+            claims_count=report.get('claims', 0),
+            archive_path=rel_archive_path,
+            input_path=rel_archive_path,
+            present_in_archive_folder=True,
+        )
 
         step_def = OnboardingStepDefinition.objects.get(step_number=7)
         step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
@@ -1238,18 +1231,8 @@ def api_admin_step_action(request, client_id, step_key, action):
                 except Exception as e:
                     pass
 
-            if action == "save" and step_num == 10:
-                try:
-                    data = json.loads(request.body.decode('utf-8'))
-                    mir_format = data.get('mir_filename_format', '').strip()
-                    if mir_format:
-                        client_obj.mir_filename_format = mir_format
-                        client_obj.save(update_fields=['mir_filename_format'])
-                except Exception as e:
-                    return JsonResponse({'success': False, 'error': str(e)}, status=400)
-
-            # ── Step 6: persist SMTP config (password encrypted at rest) ───
-            if action == "send" and step_num == 6:
+            # ── Step 11: persist SMTP config (password encrypted at rest) ───
+            if action == "send" and step_num == 11:
                 try:
                     data = json.loads(request.body.decode('utf-8'))
                     smtp_fields = {
@@ -1264,11 +1247,6 @@ def api_admin_step_action(request, client_id, step_key, action):
                     plain_password = data.get('smtp_password', '').strip()
                     if plain_password:
                         smtp_fields['smtp_password'] = encrypt_smtp_password(plain_password)
-                    
-                    # If Use Default SMTP is checked, set use_default=True
-                    use_def_smtp = bool(data.get('use_default', False))
-                    smtp_fields['use_default'] = use_def_smtp
-                    
                     ClientSmtpConfig.objects.update_or_create(
                         client=client_obj,
                         defaults=smtp_fields
@@ -1288,7 +1266,7 @@ def api_admin_step_action(request, client_id, step_key, action):
                     return JsonResponse({'success': False, 'error': f'SMTP save failed: {smtp_err}'}, status=400)
             # ─────────────────────────────────────────────────────────────────
 
-            if (action == "save" and step_num in [5, 10, 11]) or (action == "send" and step_num == 6) or action == "submit-text":
+            if (action == "save" and step_num in [5, 10]) or (action == "send" and step_num == 11) or action == "submit-text":
                 from accounts.models import ClientStepComment
                 try:
                     data = json.loads(request.body.decode('utf-8'))
@@ -1417,7 +1395,6 @@ def api_admin_client_smtp(request, client_id):
                     'smtp_username': cfg.smtp_username,
                     'security':      cfg.security,
                     'reply_to':      cfg.reply_to or '',
-                    'use_default':   cfg.use_default,
                     # smtp_password intentionally NEVER sent to the browser
                     'has_password':  bool(cfg.smtp_password),
                 }
@@ -1450,58 +1427,6 @@ def api_admin_client_smtp(request, client_id):
             return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
     return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
-
-
-@csrf_exempt
-def api_admin_default_smtp(request):
-    """
-    GET  /admin-panel/api/default-smtp/  — load existing default config (password never returned)
-    POST /admin-panel/api/default-smtp/  — upsert default config (password stored encrypted)
-    """
-    if request.method == 'GET':
-        try:
-            cfg = ClientSmtpConfig.objects.get(client__isnull=True)
-            return JsonResponse({
-                'success': True,
-                'config': {
-                    'sender_name':   cfg.sender_name,
-                    'sender_email':  cfg.sender_email,
-                    'smtp_host':     cfg.smtp_host,
-                    'smtp_port':     cfg.smtp_port,
-                    'smtp_username': cfg.smtp_username,
-                    'security':      cfg.security,
-                    'reply_to':      cfg.reply_to or '',
-                    'has_password':  bool(cfg.smtp_password),
-                }
-            })
-        except ClientSmtpConfig.DoesNotExist:
-            return JsonResponse({'success': True, 'config': None})
-
-    if request.method == 'POST':
-        try:
-            data = json.loads(request.body.decode('utf-8'))
-            smtp_fields = {
-                'sender_name':   data.get('sender_name', '').strip(),
-                'sender_email':  data.get('sender_email', '').strip(),
-                'smtp_host':     data.get('smtp_host', '').strip(),
-                'smtp_port':     int(data.get('smtp_port', 587)),
-                'smtp_username': data.get('smtp_username', '').strip(),
-                'security':      data.get('security', 'STARTTLS').strip(),
-                'reply_to':      data.get('reply_to', '').strip() or None,
-            }
-            plain_password = data.get('smtp_password', '').strip()
-            if plain_password:
-                smtp_fields['smtp_password'] = encrypt_smtp_password(plain_password)
-            obj, created = ClientSmtpConfig.objects.update_or_create(
-                client=None,
-                defaults=smtp_fields
-            )
-            return JsonResponse({'success': True, 'created': created})
-        except Exception as e:
-            return JsonResponse({'success': False, 'error': str(e)}, status=400)
-
-    return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
-
 
 
 from admin_panel.models import ClientDocument
