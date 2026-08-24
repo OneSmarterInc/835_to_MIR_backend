@@ -430,7 +430,7 @@ def api_totp_verify(request):
         return JsonResponse({"error": "Only POST allowed."}, status=405)
 
     user = request.user
-   if not user.totp_enabled or not user.totp_secret:
+    if not user.totp_enabled or not user.totp_secret:
         return JsonResponse({"error": "2FA setup required. Please set up your authenticator app first.", "next": "totp_setup"}, status=400)
 
     try:
