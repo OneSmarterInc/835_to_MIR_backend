@@ -1184,3 +1184,69 @@ def api_change_password(request):
     update_session_auth_hash(request, user)
 
     return JsonResponse({"success": True, "message": "Password changed successfully."})
+
+
+@csrf_exempt
+def api_admin_reset_password(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/reset-password/
+    Resets the user's password, generates a temporary password, sets first_login to True,
+    and sends an email with the temporary password.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+        
+    try:
+        user_obj = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+        
+    # Generate temporary password
+    import random
+    import string
+    chars = string.ascii_letters + string.digits
+    temp_pass = "Temp@" + "".join(random.choice(chars) for _ in range(8))
+    
+    user_obj.set_password(temp_pass)
+    user_obj.first_login = True
+    user_obj.save()
+    
+    # Send email
+    from admin_panel.email_service import send_client_email
+    subject = "OneSmarter Inc: Account Password Reset"
+    html = f"""
+    <p>Dear {user_obj.name or 'User'},</p>
+    <p>Your password for the OneSmarter portal has been reset by the administrator.</p>
+    <p>Your temporary password is: <b>{temp_pass}</b></p>
+    <p>Please note that you will be required to change this password upon your next login.</p>
+    <p>Sincerely,<br/>OneSmarter Inc, USA</p>
+    """
+    
+    success = False
+    if user_obj.client:
+        success = send_client_email(user_obj.client, subject, html, to_emails=[user_obj.email])
+    else:
+        # Fall back to default SMTP
+        from admin_panel.models import ClientSmtpConfig
+        default_config = ClientSmtpConfig.objects.filter(client__isnull=True).first()
+        if default_config:
+            try:
+                from admin_panel.email_service import get_client_email_backend
+                backend = get_client_email_backend(default_config)
+                from_email = f"{default_config.sender_name} <{default_config.sender_email}>" if default_config.sender_name else default_config.sender_email
+                from django.core.mail import EmailMultiAlternatives
+                from django.utils.html import strip_tags
+                text_content = strip_tags(html)
+                msg = EmailMultiAlternatives(subject, text_content, from_email, [user_obj.email], connection=backend)
+                msg.attach_alternative(html, "text/html")
+                msg.send()
+                success = True
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to send default reset email: {e}")
+                
+    return JsonResponse({
+        "success": True,
+        "message": f"Password reset successfully for {user_obj.email}. Email status: {'Sent' if success else 'Failed to send'}"
+    })
+

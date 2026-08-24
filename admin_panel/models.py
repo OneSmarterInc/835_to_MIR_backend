@@ -177,7 +177,7 @@ class ClientSmtpConfig(models.Model):
         ('NONE',     'None'),
     ]
 
-    client        = models.OneToOneField(Client, on_delete=models.CASCADE, related_name='smtp_config')
+    client        = models.OneToOneField(Client, on_delete=models.CASCADE, null=True, blank=True, related_name='smtp_config')
     sender_name   = models.CharField(max_length=255, default='OneSmarter Support')
     sender_email  = models.EmailField(default='support@onesmarter.com')
     smtp_host     = models.CharField(max_length=255, default='smtp.gmail.com')
@@ -186,6 +186,7 @@ class ClientSmtpConfig(models.Model):
     smtp_password = models.CharField(max_length=255, blank=True)
     security      = models.CharField(max_length=20, choices=SECURITY_CHOICES, default='STARTTLS')
     reply_to      = models.EmailField(blank=True, null=True)
+    use_default   = models.BooleanField(default=False, help_text="Whether to use default SMTP settings")
     created_at    = models.DateTimeField(auto_now_add=True)
     updated_at    = models.DateTimeField(auto_now=True)
 
@@ -193,7 +194,7 @@ class ClientSmtpConfig(models.Model):
         db_table = 'client_smtp_config'
 
     def __str__(self):
-        return f"SMTP for {self.client.name} ({self.smtp_host})"
+        return f"SMTP for {self.client.name if self.client else 'Default/Global'} ({self.smtp_host})"
 
 
 def log_audit_event(module, action, details, performed_by="System", client=None):
