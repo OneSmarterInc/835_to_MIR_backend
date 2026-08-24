@@ -20,6 +20,7 @@ from .views import (
     api_admin_create_user,
     api_admin_update_user,
     api_admin_delete_user,
+    api_admin_reset_password,
     api_client_contacts,
     api_change_password,
 )
@@ -48,5 +49,6 @@ urlpatterns = [
     path("api/admin/users/create/", api_admin_create_user, name="api_admin_create_user"),
     path("api/admin/users/<int:user_id>/update/", api_admin_update_user, name="api_admin_update_user"),
     path("api/admin/users/<int:user_id>/delete/", api_admin_delete_user, name="api_admin_delete_user"),
+    path("api/admin/users/<int:user_id>/reset-password/", api_admin_reset_password, name="api_admin_reset_password"),
 ]
 

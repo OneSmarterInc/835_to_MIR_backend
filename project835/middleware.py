@@ -33,7 +33,7 @@ class AdminAccessMiddleware:
                 return HttpResponseForbidden("Access Denied: Standard users cannot access administrative paths.")
             
             # Block administrative API access if TOTP is enabled but not verified in the session
-            if getattr(request.user, "totp_enabled", False) and not request.session.get("totp_verified", False):
+            if getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False):
                 if '/api/' in path:
                     return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
                 
@@ -52,7 +52,7 @@ class ClientAccessMiddleware:
                 return JsonResponse({"success": False, "error": "Access denied. Authentication required."}, status=401)
             
             # Enforce MFA verification for standard API access if TOTP is enabled
-            if getattr(request.user, "totp_enabled", False) and not request.session.get("totp_verified", False) and not path.startswith('/accounts/api/totp'):
+            if getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False) and not path.startswith('/accounts/api/totp'):
                 return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
                 
         return self.get_response(request)

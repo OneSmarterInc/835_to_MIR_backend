@@ -32,6 +32,7 @@ class Client(models.Model):
     stage = models.CharField(max_length=50, choices=STAGE_CHOICES, default="onboarding")
     progress_pct = models.IntegerField(default=0, help_text="Onboarding progress percentage (0-100)")
     live_since = models.DateTimeField(blank=True, null=True)
+    mir_filename_format = models.CharField(max_length=255, default="MIROUT_YYYY_MMDD_.MIR", help_text="Preferred MIR filename format")
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -91,7 +92,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     totp_secret = models.CharField(max_length=64, blank=True, null=True)
 
     # Whether TOTP setup has been completed
-    totp_enabled = models.BooleanField(default=False)
+    totp_enabled = models.BooleanField(default=True)
 
     # Recovery codes
     recovery_codes = models.JSONField(default=list, blank=True)

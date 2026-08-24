@@ -52,6 +52,24 @@ def api_process_tracked_file(request):
     res = process_edi835_file_content(edi_text, original_filename=original_filename, client=client)
 
     if not res.get("success"):
+        # Send failure email notification
+        if client:
+            try:
+                from admin_panel.email_service import send_client_email
+                err_msg = res.get("error", "Unknown error")
+                subject = f"OneSmarter: 835 File Validation Failed - {original_filename}"
+                html = (
+                    f"<h3>835 File Validation Failed</h3>"
+                    f"<p>Your EDI 835 file <b>{original_filename}</b> could not be processed.</p>"
+                    f"<p><b>Error:</b> {err_msg}</p>"
+                    f"<p>Please review the file and re-upload a corrected version.</p>"
+                )
+                to_emails = [request.user.email] if request.user and request.user.email else None
+                send_client_email(client, subject, html, to_emails=to_emails)
+            except Exception as email_err:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to send validation failure email: {email_err}")
+
         return JsonResponse({
             "error": res.get("error"),
             "file_id": str(res["db_record"].id),
@@ -252,6 +270,9 @@ def api_get_sftp_config(request):
     API Endpoint: Returns active SFTP configuration and list of saved configurations from DB.
     """
     client_id = request.GET.get('client_id') or request.GET.get('client')
+    if not client_id and request.user.is_authenticated and not request.user.is_staff and request.user.client:
+        client_id = request.user.client.id
+
     if client_id:
         configs = SFTPConfig.objects.filter(client_id=client_id)
     else:
@@ -723,17 +744,24 @@ def api_save_sftp_config(request):
         outbound_mir_folder = body.get("outbound_mir_folder", "").strip() if use_same_server else ""
         test_folder = inbound_835_folder or "/"
 
+    use_default = body.get("use_default", False)
+    if isinstance(use_default, str):
+        use_default = (use_default.lower() == "true")
+
     # Perform connection test using helper
-    test_res = test_sftp_connection(
-        host=host,
-        port=port,
-        username=username,
-        password=password,
-        ssh_key=ssh_key,
-        auth_method=auth_method,
-        trust_unknown_key=trust_unknown_key,
-        remote_folder=test_folder,
-    )
+    if not use_default:
+        test_res = test_sftp_connection(
+            host=host,
+            port=port,
+            username=username,
+            password=password,
+            ssh_key=ssh_key,
+            auth_method=auth_method,
+            trust_unknown_key=trust_unknown_key,
+            remote_folder=test_folder,
+        )
+    else:
+        test_res = {"success": True}
 
     config_id = body.get("id")
     client_id = body.get("client_id") or body.get("client")
@@ -758,6 +786,7 @@ def api_save_sftp_config(request):
     config.name = f"{connection_type} Connection"
     config.use_same_server = use_same_server
     config.connection_type = connection_type
+    config.use_default = use_default
     config.host = host
     config.port = port
     config.username = username
@@ -771,22 +800,26 @@ def api_save_sftp_config(request):
     config.inbound_835_folder = inbound_835_folder
     config.outbound_mir_folder = outbound_mir_folder
 
-    if connection_type == "INBOUND":
-        missing = not host or not username or not inbound_835_folder
-    elif connection_type == "OUTBOUND":
-        missing = not host or not username or not outbound_mir_folder
-    else:
-        missing = not host or not username or not inbound_835_folder or not outbound_mir_folder
-
-    if missing:
-        config.status = "PENDING"
-        config.last_error = "Pending: Host, username, or remote folders are not fully configured."
-    elif test_res["success"]:
+    if use_default:
         config.status = "CONNECTED"
         config.last_error = None
     else:
-        config.status = "FAILED"
-        config.last_error = test_res.get("error") or "SFTP connection failed"
+        if connection_type == "INBOUND":
+            missing = not host or not username or not inbound_835_folder
+        elif connection_type == "OUTBOUND":
+            missing = not host or not username or not outbound_mir_folder
+        else:
+            missing = not host or not username or not inbound_835_folder or not outbound_mir_folder
+
+        if missing:
+            config.status = "PENDING"
+            config.last_error = "Pending: Host, username, or remote folders are not fully configured."
+        elif test_res["success"]:
+            config.status = "CONNECTED"
+            config.last_error = None
+        else:
+            config.status = "FAILED"
+            config.last_error = test_res.get("error") or "SFTP connection failed"
 
     config.last_tested_at = timezone.now()
     config.save()
