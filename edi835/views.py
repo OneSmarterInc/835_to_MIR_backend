@@ -744,6 +744,27 @@ def api_save_sftp_config(request):
         outbound_mir_folder = body.get("outbound_mir_folder", "").strip() if use_same_server else ""
         test_folder = inbound_835_folder or "/"
 
+    config_id = body.get("id")
+    client_id = body.get("client_id") or body.get("client")
+    
+    if not request.user.is_staff:
+        client = getattr(request.user, "client", None)
+        client_id = str(client.id) if client else None
+    config = None
+    if config_id:
+        config = SFTPConfig.objects.filter(id=config_id).first()
+
+    if not config:
+        if client_id:
+            config = SFTPConfig.objects.filter(connection_type=connection_type, client_id=client_id).first()
+        else:
+            config = SFTPConfig.objects.filter(connection_type=connection_type, client__isnull=True).first()
+
+    if not password and config and config.password:
+        password = config.password
+    if not ssh_key and config and config.ssh_key:
+        ssh_key = config.ssh_key
+
     use_default = body.get("use_default", False)
     if isinstance(use_default, str):
         use_default = (use_default.lower() == "true")
@@ -762,22 +783,6 @@ def api_save_sftp_config(request):
         )
     else:
         test_res = {"success": True}
-
-    config_id = body.get("id")
-    client_id = body.get("client_id") or body.get("client")
-    
-    if not request.user.is_staff:
-        client = getattr(request.user, "client", None)
-        client_id = str(client.id) if client else None
-    config = None
-    if config_id:
-        config = SFTPConfig.objects.filter(id=config_id).first()
-
-    if not config:
-        if client_id:
-            config = SFTPConfig.objects.filter(connection_type=connection_type, client_id=client_id).first()
-        else:
-            config = SFTPConfig.objects.filter(connection_type=connection_type, client__isnull=True).first()
 
     if not config:
         config = SFTPConfig()
