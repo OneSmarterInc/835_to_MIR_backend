@@ -1162,7 +1162,7 @@ def api_admin_step_validate_835(request, client_id):
         
         # Save as ClientDocument now that it is valid
         filename = request.headers.get('X-Filename', '835_file.x12')
-        doc_name = f"Step 7: 835 File Validation"
+        doc_name = f"Step 8: 835 File Validation"
         from admin_panel.models import ClientDocument
         from django.core.files.base import ContentFile
         
@@ -1170,7 +1170,7 @@ def api_admin_step_validate_835(request, client_id):
             client=client_obj,
             document_name=doc_name,
             original_filename=filename,
-            document_type="Onboarding Step 7",
+            document_type="Onboarding Step 8",
             file_size=len(file_bytes),
             uploaded_by="Admin User"
         )
@@ -1179,6 +1179,36 @@ def api_admin_step_validate_835(request, client_id):
         # Process the EDI file content immediately through the pipeline (validation, conversion, SFTP upload)
         from edi835.services import process_edi835_file_content
         proc_res = process_edi835_file_content(raw_text, original_filename=filename, client=client_obj)
+
+        # Also send the raw 835 to the client's configured SFTP inbound_835_folder
+        try:
+            from edi835.models import SFTPConfig
+            import paramiko, io
+            cfg = SFTPConfig.objects.filter(client=client_obj).first()
+            if not cfg or cfg.use_default:
+                cfg = SFTPConfig.objects.filter(client__isnull=True).first()
+            if cfg and cfg.host and cfg.username and cfg.inbound_835_folder:
+                in_host = cfg.host
+                in_port = int(cfg.port or 22)
+                in_user = cfg.username
+                in_pass = cfg.password or ''
+                in_folder = cfg.inbound_835_folder.rstrip('/')
+                ssh = paramiko.SSHClient()
+                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+                ssh.connect(hostname=in_host, port=in_port, username=in_user, password=in_pass,
+                            timeout=10, look_for_keys=False, allow_agent=False)
+                sftp = ssh.open_sftp()
+                try:
+                    sftp.stat(in_folder)
+                except FileNotFoundError:
+                    sftp.mkdir(in_folder)
+                remote_path = f"{in_folder}/{filename}"
+                sftp.putfo(io.BytesIO(file_bytes), remote_path)
+                sftp.close()
+                ssh.close()
+        except Exception as sftp_inbound_err:
+            import logging
+            logging.getLogger(__name__).warning(f"Step 8: could not upload 835 to SFTP inbound: {sftp_inbound_err}")
 
         # Trigger success email to the user
         try:
@@ -1201,7 +1231,7 @@ def api_admin_step_validate_835(request, client_id):
             import logging
             logging.getLogger(__name__).error(f"Failed to send email on step 7 success: {e}")
 
-        step_def = OnboardingStepDefinition.objects.get(step_number=7)
+        step_def = OnboardingStepDefinition.objects.get(step_number=8)
         step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
         step_status.status = 'COMPLETED'
         step_status.save()
