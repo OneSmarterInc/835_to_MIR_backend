@@ -249,7 +249,9 @@ def api_login(request):
         login(request, user)
         logger.info(f"Auth success: User '{user.email}' successfully logged in (2FA pending).")
         
-        totp_enabled = getattr(user, "totp_enabled", False)
+        # A user is only truly TOTP-ready when BOTH totp_enabled AND totp_secret are set.
+        # Users created via createsuperuser have totp_enabled=True (model default) but no secret.
+        totp_enabled = getattr(user, "totp_enabled", False) and bool(user.totp_secret)
         if totp_enabled:
             request.session["totp_verified"] = False
             request.session["totp_setup_required"] = False
@@ -428,8 +430,8 @@ def api_totp_verify(request):
         return JsonResponse({"error": "Only POST allowed."}, status=405)
 
     user = request.user
-    if not user.totp_enabled:
-        return JsonResponse({"error": "2FA setup required."}, status=400)
+    if not user.totp_enabled or not user.totp_secret:
+        return JsonResponse({"error": "2FA setup required. Please set up your authenticator app first.", "next": "totp_setup"}, status=400)
 
     try:
         data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
