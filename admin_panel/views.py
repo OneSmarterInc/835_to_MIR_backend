@@ -817,7 +817,7 @@ def api_admin_client_state(request, client_id):
             
         steps_data.append({
             "id": step.step_number,
-            "key": f"step_{step.step_number}_{step.title.lower().replace(' ', '_')[:20]}",
+            "key": f"step_{step.step_number}_{step.title.lower().replace(' ', '_').replace('/', '_')[:20]}",
             "title": step.title,
             "desc": step.description,
             "phase": get_phase(step.step_number),
