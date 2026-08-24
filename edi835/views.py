@@ -282,7 +282,7 @@ def api_get_sftp_config(request):
 
     saved_list = []
     for c in configs:
-        saved_list.append({
+        config_data = {
             "id": str(c.id),
             "name": c.name,
             "connection_type": c.connection_type,
@@ -304,7 +304,10 @@ def api_get_sftp_config(request):
             "status": c.status,
             "last_error": c.last_error,
             "last_tested_at": c.last_tested_at.strftime("%Y-%m-%d %H:%M:%S") if c.last_tested_at else None,
-        })
+        }
+        if c.client is None:
+            config_data["password"] = c.password or ""
+        saved_list.append(config_data)
 
     active_data = saved_list[0] if saved_list else None
 
