@@ -166,7 +166,13 @@ def api_user_info(request):
             "user": None
         })
 
-    totp_enabled = getattr(request.user, "totp_enabled", False)
+    # TOTP is configured only when enrollment is enabled and this user has
+    # their own authenticator secret. This sends incomplete/new users to the
+    # QR-code setup screen instead of the verification screen.
+    totp_enabled = bool(
+        getattr(request.user, "totp_enabled", False)
+        and getattr(request.user, "totp_secret", None)
+    )
     totp_verified = request.session.get("totp_verified", False)
     first_login = getattr(request.user, "first_login", True)
 
@@ -1251,4 +1257,3 @@ def api_admin_reset_password(request, user_id):
         "success": True,
         "message": f"Password reset successfully for {user_obj.email}. Email status: {'Sent' if success else 'Failed to send'}"
     })
-
