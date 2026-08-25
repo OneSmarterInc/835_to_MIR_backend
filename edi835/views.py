@@ -282,10 +282,9 @@ def api_get_sftp_config(request):
     else:
         configs = SFTPConfig.objects.filter(client__isnull=True)
         
-    active_config = configs.first()
-
     saved_list = []
     for c in configs:
+        is_outbound = c.connection_type == "OUTBOUND"
         config_data = {
             "id": str(c.id),
             "name": c.name,
@@ -294,7 +293,6 @@ def api_get_sftp_config(request):
             "host": c.host,
             "port": c.port,
             "username": c.username,
-            "ssh_key": "",
             "auth_method": c.auth_method,
             "trust_unknown_key": c.trust_unknown_key,
             "inbound_837_folder": c.inbound_837_folder,
@@ -305,18 +303,20 @@ def api_get_sftp_config(request):
             "outbound_auth_method": c.outbound_auth_method,
             "outbound_trust_unknown_key": c.outbound_trust_unknown_key,
             "outbound_mir_folder": c.outbound_mir_folder,
+            "has_password": bool(c.outbound_password if is_outbound else c.password),
+            "has_ssh_key": bool(c.outbound_ssh_key if is_outbound else c.ssh_key),
             "status": c.status,
             "last_error": c.last_error,
             "last_tested_at": c.last_tested_at.strftime("%Y-%m-%d %H:%M:%S") if c.last_tested_at else None,
         }
-        if c.client is None:
-            config_data["password"] = c.password or ""
         saved_list.append(config_data)
 
     active_data = saved_list[0] if saved_list else None
 
     return JsonResponse({
+        "success": True,
         "active_config": active_data,
+        "configs": saved_list,
         "configurations": saved_list
     })
 
@@ -724,8 +724,8 @@ def api_save_sftp_config(request):
         host = (body.get("outbound_host") or body.get("host") or "").strip()
         port = int(body.get("outbound_port") or body.get("port") or 22)
         username = (body.get("outbound_username") or body.get("username") or "").strip()
-        password = (body.get("outbound_password") or body.get("password") or "").strip()
-        ssh_key = (body.get("outbound_ssh_key") or body.get("ssh_key") or "").strip()
+        incoming_password = (body.get("outbound_password") or body.get("password") or "").strip()
+        incoming_ssh_key = (body.get("outbound_ssh_key") or body.get("ssh_key") or "").strip()
         auth_method = (body.get("outbound_auth_method") or body.get("auth_method") or "Password").strip()
         trust_unknown_key = body.get("outbound_trust_unknown_key", body.get("trust_unknown_key", True))
         if isinstance(trust_unknown_key, str):
@@ -739,8 +739,8 @@ def api_save_sftp_config(request):
         host = (body.get("host") or "").strip()
         port = int(body.get("port") or 22)
         username = body.get("username", "").strip()
-        password = body.get("password", "").strip()
-        ssh_key = body.get("ssh_key", "").strip()
+        incoming_password = (body.get("password") or "").strip()
+        incoming_ssh_key = (body.get("ssh_key") or "").strip()
         auth_method = body.get("auth_method", "Password").strip()
         trust_unknown_key = body.get("trust_unknown_key", True)
         if isinstance(trust_unknown_key, str):
@@ -767,16 +767,41 @@ def api_save_sftp_config(request):
         else:
             config = SFTPConfig.objects.filter(connection_type=connection_type, client__isnull=True).first()
 
-    incoming_password = (body.get("password") or "").strip()
-
     if incoming_password:
         plain_password = incoming_password
-    elif config and config.password:
-        plain_password = decrypt_sftp_field(config.password)
     else:
-        plain_password = ""
-    if not ssh_key and config and config.ssh_key:
-        ssh_key = config.ssh_key
+        encrypted_password = ""
+        if config:
+            encrypted_password = (
+                config.outbound_password
+                if connection_type == "OUTBOUND"
+                else config.password
+            ) or ""
+        try:
+            plain_password = decrypt_sftp_field(encrypted_password) if encrypted_password else ""
+        except Exception:
+            return JsonResponse({
+                "success": False,
+                "error": "Saved SFTP password could not be decrypted. Verify SFTP_FIELD_ENCRYPTION_KEY.",
+            }, status=500)
+
+    if incoming_ssh_key:
+        plain_ssh_key = incoming_ssh_key
+    else:
+        encrypted_ssh_key = ""
+        if config:
+            encrypted_ssh_key = (
+                config.outbound_ssh_key
+                if connection_type == "OUTBOUND"
+                else config.ssh_key
+            ) or ""
+        try:
+            plain_ssh_key = decrypt_sftp_field(encrypted_ssh_key) if encrypted_ssh_key else ""
+        except Exception:
+            return JsonResponse({
+                "success": False,
+                "error": "Saved SFTP private key could not be decrypted. Verify SFTP_FIELD_ENCRYPTION_KEY.",
+            }, status=500)
 
     use_default = body.get("use_default", False)
     if isinstance(use_default, str):
@@ -788,8 +813,8 @@ def api_save_sftp_config(request):
             host=host,
             port=port,
             username=username,
-            password=password,
-            ssh_key=ssh_key,
+            password=plain_password,
+            ssh_key=plain_ssh_key,
             auth_method=auth_method,
             trust_unknown_key=trust_unknown_key,
             remote_folder=test_folder,
@@ -805,18 +830,31 @@ def api_save_sftp_config(request):
     config.use_same_server = use_same_server
     config.connection_type = connection_type
     config.use_default = use_default
-    config.host = host
-    config.port = port
-    config.username = username
-    if password:
-        config.password = password
-    if ssh_key:
-        config.ssh_key = ssh_key
-    config.auth_method = auth_method
-    config.trust_unknown_key = trust_unknown_key
-    config.inbound_837_folder = inbound_837_folder
-    config.inbound_835_folder = inbound_835_folder
-    config.outbound_mir_folder = outbound_mir_folder
+    if connection_type == "OUTBOUND":
+        config.outbound_host = host
+        config.outbound_port = port
+        config.outbound_username = username
+        config.outbound_auth_method = auth_method
+        config.outbound_trust_unknown_key = trust_unknown_key
+        config.outbound_mir_folder = outbound_mir_folder
+        if incoming_password:
+            config.outbound_password = encrypt_sftp_field(incoming_password)
+        if incoming_ssh_key:
+            config.outbound_ssh_key = encrypt_sftp_field(incoming_ssh_key)
+    else:
+        config.host = host
+        config.port = port
+        config.username = username
+        config.auth_method = auth_method
+        config.trust_unknown_key = trust_unknown_key
+        config.inbound_837_folder = inbound_837_folder
+        config.inbound_835_folder = inbound_835_folder
+        if use_same_server:
+            config.outbound_mir_folder = outbound_mir_folder
+        if incoming_password:
+            config.password = encrypt_sftp_field(incoming_password)
+        if incoming_ssh_key:
+            config.ssh_key = encrypt_sftp_field(incoming_ssh_key)
 
     if use_default:
         config.status = "CONNECTED"
@@ -1153,8 +1191,14 @@ def api_browse_sftp(request):
     host = body.get("host") or (config.host if config else None)
     port = int(body.get("port") or (config.port if config else 22) or 22)
     username = body.get("username") or (config.username if config else None)
-    password = body.get("password") or (config.password if config else (config.outbound_password if config else None))
-    ssh_key = body.get("ssh_key") or (config.ssh_key if config else None)
+    password = (body.get("password") or "").strip()
+    ssh_key = (body.get("ssh_key") or "").strip()
+    if config and not password:
+        encrypted_password = config.password or config.outbound_password or ""
+        password = decrypt_sftp_field(encrypted_password) if encrypted_password else ""
+    if config and not ssh_key:
+        encrypted_ssh_key = config.ssh_key or config.outbound_ssh_key or ""
+        ssh_key = decrypt_sftp_field(encrypted_ssh_key) if encrypted_ssh_key else ""
     auth_method = body.get("auth_method") or (config.auth_method if config else "Password")
     trust_unknown_key = body.get("trust_unknown_key", True)
 
@@ -1307,8 +1351,8 @@ def api_start_batch_conversion(request):
         inbound_host = config.host
         inbound_port = config.port or 22
         inbound_user = config.username
-        inbound_pass = config.password
-        inbound_key = config.ssh_key
+        inbound_pass = decrypt_sftp_field(config.password) if config.password else ""
+        inbound_key = decrypt_sftp_field(config.ssh_key) if config.ssh_key else ""
         inbound_auth = config.auth_method
         in_folder = config.inbound_835_folder
 
@@ -1430,8 +1474,12 @@ def api_start_batch_conversion(request):
                         ssh_del.load_system_host_keys()
                     pkey_del = None
                     if config.auth_method in ["SSH Key", "SSH Key + Password"]:
-                        pkey_del, _ = parse_ssh_private_key(config.ssh_key, password=config.password)
-                    pass_del = config.password if config.auth_method in ["Password", "SSH Key + Password"] else None
+                        cleanup_key = decrypt_sftp_field(config.ssh_key) if config.ssh_key else ""
+                        cleanup_password = decrypt_sftp_field(config.password) if config.password else ""
+                        pkey_del, _ = parse_ssh_private_key(cleanup_key, password=cleanup_password)
+                    else:
+                        cleanup_password = decrypt_sftp_field(config.password) if config.password else ""
+                    pass_del = cleanup_password if config.auth_method in ["Password", "SSH Key + Password"] else None
                     ssh_del.connect(
                         hostname=config.host,
                         port=config.port or 22,
@@ -1472,6 +1520,3 @@ def api_start_batch_conversion(request):
         "errors": errors,
         "message": msg,
     })
-
-
-
