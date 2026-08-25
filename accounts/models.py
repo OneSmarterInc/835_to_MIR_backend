@@ -92,8 +92,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     totp_secret = models.CharField(max_length=64, blank=True, null=True)
 
     # Whether TOTP setup has been completed
-    totp_enabled = models.BooleanField(default=True)
-
+    totp_enabled = bool(
+    getattr(request.user, "totp_enabled", False)
+    and getattr(request.user, "totp_secret", None))
+    
     # Recovery codes
     recovery_codes = models.JSONField(default=list, blank=True)
 
