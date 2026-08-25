@@ -1191,7 +1191,7 @@ def api_admin_step_validate_835(request, client_id):
                 in_host = cfg.host
                 in_port = int(cfg.port or 22)
                 in_user = cfg.username
-                in_pass = cfg.password or ''
+                in_pass = cfg.get_password()
                 in_folder = cfg.inbound_835_folder.rstrip('/')
                 ssh = paramiko.SSHClient()
                 ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -1491,12 +1491,6 @@ def api_admin_default_smtp(request):
     if request.method == 'GET':
         try:
             cfg = ClientSmtpConfig.objects.get(client__isnull=True)
-            decrypted_password = ''
-            if cfg.smtp_password:
-                try:
-                    decrypted_password = decrypt_smtp_password(cfg.smtp_password)
-                except Exception:
-                    pass
             return JsonResponse({
                 'success': True,
                 'config': {
@@ -1505,7 +1499,6 @@ def api_admin_default_smtp(request):
                     'smtp_host':     cfg.smtp_host,
                     'smtp_port':     cfg.smtp_port,
                     'smtp_username': cfg.smtp_username,
-                    'smtp_password': decrypted_password,
                     'security':      cfg.security,
                     'reply_to':      cfg.reply_to or '',
                     'has_password':  bool(cfg.smtp_password),
