@@ -1,5 +1,9 @@
 import os
 import json
+from project835.field_crypto import (
+    encrypt_sftp_field,
+    decrypt_sftp_field,
+)
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.decorators import login_required
@@ -763,8 +767,14 @@ def api_save_sftp_config(request):
         else:
             config = SFTPConfig.objects.filter(connection_type=connection_type, client__isnull=True).first()
 
-    if not password and config and config.password:
-        password = config.password
+    incoming_password = (body.get("password") or "").strip()
+
+    if incoming_password:
+        plain_password = incoming_password
+    elif config and config.password:
+        plain_password = decrypt_sftp_field(config.password)
+    else:
+        plain_password = ""
     if not ssh_key and config and config.ssh_key:
         ssh_key = config.ssh_key
 
