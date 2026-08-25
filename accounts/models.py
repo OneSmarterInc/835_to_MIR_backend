@@ -1,5 +1,10 @@
 import uuid
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin, BaseUserManager
+
+from django.contrib.auth.models import (
+    AbstractBaseUser,
+    PermissionsMixin,
+    BaseUserManager,
+)
 from django.db import models
 
 
@@ -18,21 +23,86 @@ class Client(models.Model):
         ("offboarded", "Offboarded"),
     ]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    name = models.CharField(max_length=255, help_text="Client / Organization Name")
-    client_code = models.CharField(max_length=50, unique=True, help_text="Unique Client Identifier")
-    email = models.EmailField(help_text="Primary Contact Email")
-    phone = models.CharField(max_length=50, blank=True, null=True, help_text="Contact Phone")
-    address = models.TextField(blank=True, null=True, help_text="Physical / Billing Address")
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="ACTIVE")
-    notes = models.TextField(blank=True, null=True, help_text="Administrative notes")
-    
-    claims_system = models.CharField(max_length=100, default="Vendor Hosted", help_text="Claims System (e.g., Epic, Facets)")
-    owner = models.CharField(max_length=100, blank=True, null=True, help_text="Assigned admin user")
-    stage = models.CharField(max_length=50, choices=STAGE_CHOICES, default="onboarding")
-    progress_pct = models.IntegerField(default=0, help_text="Onboarding progress percentage (0-100)")
-    live_since = models.DateTimeField(blank=True, null=True)
-    mir_filename_format = models.CharField(max_length=255, default="MIROUT_YYYY_MMDD_.MIR", help_text="Preferred MIR filename format")
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    name = models.CharField(
+        max_length=255,
+        help_text="Client / Organization Name",
+    )
+
+    client_code = models.CharField(
+        max_length=50,
+        unique=True,
+        help_text="Unique Client Identifier",
+    )
+
+    email = models.EmailField(
+        help_text="Primary Contact Email",
+    )
+
+    phone = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+        help_text="Contact Phone",
+    )
+
+    address = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Physical / Billing Address",
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default="ACTIVE",
+    )
+
+    notes = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Administrative notes",
+    )
+
+    claims_system = models.CharField(
+        max_length=100,
+        default="Vendor Hosted",
+        help_text="Claims System (e.g., Epic, Facets)",
+    )
+
+    owner = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Assigned admin user",
+    )
+
+    stage = models.CharField(
+        max_length=50,
+        choices=STAGE_CHOICES,
+        default="onboarding",
+    )
+
+    progress_pct = models.IntegerField(
+        default=0,
+        help_text="Onboarding progress percentage (0-100)",
+    )
+
+    live_since = models.DateTimeField(
+        blank=True,
+        null=True,
+    )
+
+    mir_filename_format = models.CharField(
+        max_length=255,
+        default="MIROUT_YYYY_MMDD_.MIR",
+        help_text="Preferred MIR filename format",
+    )
 
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -47,28 +117,47 @@ class Client(models.Model):
 
 class UserManager(BaseUserManager):
 
-    def create_user(self, email, name, mobile, password=None, **extra_fields):
+    def create_user(
+        self,
+        email,
+        name,
+        mobile,
+        password=None,
+        **extra_fields,
+    ):
         if not email:
             raise ValueError("Email is required")
+
         email = self.normalize_email(email)
+
         user = self.model(
             email=email,
             name=name,
             mobile=mobile,
-            **extra_fields
+            **extra_fields,
         )
+
         user.set_password(password)
         user.save(using=self._db)
+
         return user
 
-    def create_superuser(self, email, name, mobile, password=None, **extra_fields):
-        # Enforce Super Admin flags — a superuser is always staff and superuser
+    def create_superuser(
+        self,
+        email,
+        name,
+        mobile,
+        password=None,
+        **extra_fields,
+    ):
+        # Enforce Super Admin flags
         extra_fields["is_staff"] = True
         extra_fields["is_superuser"] = True
         extra_fields.setdefault("is_active", True)
 
         if extra_fields.get("is_staff") is not True:
             raise ValueError("Superuser must have is_staff=True.")
+
         if extra_fields.get("is_superuser") is not True:
             raise ValueError("Superuser must have is_superuser=True.")
 
@@ -77,33 +166,69 @@ class UserManager(BaseUserManager):
             name=name,
             mobile=mobile,
             password=password,
-            **extra_fields
+            **extra_fields,
         )
+
         return user
 
 
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
-    name = models.CharField(max_length=150)
-    mobile = models.CharField(max_length=20, unique=True)
-    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
+
+    name = models.CharField(
+        max_length=150,
+    )
+
+    mobile = models.CharField(
+        max_length=20,
+        unique=True,
+    )
+
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="users",
+    )
 
     # TOTP secret
-    totp_secret = models.CharField(max_length=64, blank=True, null=True)
+    totp_secret = models.CharField(
+        max_length=64,
+        blank=True,
+        null=True,
+    )
 
     # Whether TOTP setup has been completed
-    totp_enabled = bool(
-    getattr(request.user, "totp_enabled", False)
-    and getattr(request.user, "totp_secret", None))
-    
-    # Recovery codes
-    recovery_codes = models.JSONField(default=list, blank=True)
+    totp_enabled = models.BooleanField(
+        default=False,
+    )
 
-    is_active = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
-    first_login = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
+    # Recovery codes
+    recovery_codes = models.JSONField(
+        default=list,
+        blank=True,
+    )
+
+    is_active = models.BooleanField(
+        default=True,
+    )
+
+    is_staff = models.BooleanField(
+        default=False,
+    )
+
+    first_login = models.BooleanField(
+        default=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    updated_at = models.DateTimeField(
+        auto_now=True,
+    )
 
     objects = UserManager()
 
@@ -115,13 +240,40 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 class ClientContact(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="contacts")
-    role_name = models.CharField(max_length=100)
-    name = models.CharField(max_length=150)
-    email = models.EmailField(blank=True, null=True)
-    phone = models.CharField(max_length=50, blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.CASCADE,
+        related_name="contacts",
+    )
+
+    role_name = models.CharField(
+        max_length=100,
+    )
+
+    name = models.CharField(
+        max_length=150,
+    )
+
+    email = models.EmailField(
+        blank=True,
+        null=True,
+    )
+
+    phone = models.CharField(
+        max_length=50,
+        blank=True,
+        null=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
 
     class Meta:
         db_table = "client_contact"
@@ -132,9 +284,19 @@ class ClientContact(models.Model):
 
 
 class EmployeeRole(models.Model):
-    role_name = models.CharField(max_length=255, unique=True)
-    description = models.TextField(blank=True, null=True)
-    created_at = models.DateTimeField(auto_now_add=True)
+    role_name = models.CharField(
+        max_length=255,
+        unique=True,
+    )
+
+    description = models.TextField(
+        blank=True,
+        null=True,
+    )
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
 
     class Meta:
         db_table = "employee_role"
@@ -145,16 +307,41 @@ class EmployeeRole(models.Model):
 
 
 class ClientStepComment(models.Model):
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="step_comments")
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+    )
+
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.CASCADE,
+        related_name="step_comments",
+    )
+
     step_number = models.IntegerField()
+
     comment = models.TextField()
-    created_at = models.DateTimeField(auto_now_add=True)
-    author = models.CharField(max_length=100, default="System")
+
+    created_at = models.DateTimeField(
+        auto_now_add=True,
+    )
+
+    author = models.CharField(
+        max_length=100,
+        default="System",
+    )
 
     class Meta:
         db_table = "client_step_comment"
         ordering = ["-created_at"]
+
         indexes = [
-            models.Index(fields=["client", "step_number", "-created_at"]),
+            models.Index(
+                fields=[
+                    "client",
+                    "step_number",
+                    "-created_at",
+                ]
+            ),
         ]
