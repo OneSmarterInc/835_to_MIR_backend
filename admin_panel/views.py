@@ -1484,64 +1484,273 @@ def api_admin_client_smtp(request, client_id):
 
     return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
 
-
 @csrf_exempt
 def api_admin_default_smtp(request):
     """
-    GET  /admin-panel/api/default-smtp/  — load existing default config (password never returned)
-    POST /admin-panel/api/default-smtp/  — upsert default config (password stored encrypted)
+    GET:
+        Returns default SMTP configuration.
+        Password and encrypted ciphertext are never returned.
+
+    POST:
+        Creates or updates default SMTP configuration.
+        Password is encrypted before being stored.
+        An empty password preserves the existing password.
     """
-    if request.method == 'GET':
-        try:
-            cfg = ClientSmtpConfig.objects.get(client__isnull=True)
-            decrypted_password = ''
-            if cfg.smtp_password:
-                try:
-                    decrypted_password = decrypt_smtp_password(cfg.smtp_password)
-                except Exception:
-                    pass
-            return JsonResponse({
-                'success': True,
-                'config': {
-                    'sender_name':   cfg.sender_name,
-                    'sender_email':  cfg.sender_email,
-                    'smtp_host':     cfg.smtp_host,
-                    'smtp_port':     cfg.smtp_port,
-                    'smtp_username': cfg.smtp_username,
-                    'smtp_password': decrypted_password,
-                    'security':      cfg.security,
-                    'reply_to':      cfg.reply_to or '',
-                    'has_password':  bool(cfg.smtp_password),
-                }
-            })
-        except ClientSmtpConfig.DoesNotExist:
-            return JsonResponse({'success': True, 'config': None})
 
-    if request.method == 'POST':
+    # ---------------------------------------------------------
+    # GET DEFAULT SMTP CONFIGURATION
+    # ---------------------------------------------------------
+    if request.method == "GET":
         try:
-            data = json.loads(request.body.decode('utf-8'))
-            smtp_fields = {
-                'sender_name':   data.get('sender_name', '').strip(),
-                'sender_email':  data.get('sender_email', '').strip(),
-                'smtp_host':     data.get('smtp_host', '').strip(),
-                'smtp_port':     int(data.get('smtp_port', 587)),
-                'smtp_username': data.get('smtp_username', '').strip(),
-                'security':      data.get('security', 'STARTTLS').strip(),
-                'reply_to':      data.get('reply_to', '').strip() or None,
-            }
-            plain_password = data.get('smtp_password', '').strip()
-            if plain_password:
-                smtp_fields['smtp_password'] = encrypt_smtp_password(plain_password)
-            obj, created = ClientSmtpConfig.objects.update_or_create(
-                client=None,
-                defaults=smtp_fields
+            cfg = ClientSmtpConfig.objects.get(
+                client__isnull=True
             )
-            return JsonResponse({'success': True, 'created': created})
-        except Exception as e:
-            return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
-    return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
+            return JsonResponse(
+                {
+                    "success": True,
+                    "config": {
+                        "sender_name": cfg.sender_name,
+                        "sender_email": cfg.sender_email,
+                        "smtp_host": cfg.smtp_host,
+                        "smtp_port": cfg.smtp_port,
+                        "smtp_username": cfg.smtp_username,
+                        "security": cfg.security,
+                        "reply_to": cfg.reply_to or "",
 
+                        # Only tell frontend whether a password exists.
+                        # Never return plaintext or encrypted password.
+                        "has_password": bool(
+                            cfg.smtp_password
+                        ),
+                    },
+                }
+            )
+
+        except ClientSmtpConfig.DoesNotExist:
+            return JsonResponse(
+                {
+                    "success": True,
+                    "config": None,
+                }
+            )
+
+        except Exception:
+            logging.exception(
+                "Failed to load default SMTP configuration"
+            )
+
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": (
+                        "Failed to load default SMTP "
+                        "configuration."
+                    ),
+                },
+                status=500,
+            )
+
+    # ---------------------------------------------------------
+    # SAVE DEFAULT SMTP CONFIGURATION
+    # ---------------------------------------------------------
+    if request.method == "POST":
+        try:
+            data = json.loads(
+                request.body.decode("utf-8")
+            )
+
+            sender_name = (
+                data.get("sender_name") or ""
+            ).strip()
+
+            sender_email = (
+                data.get("sender_email") or ""
+            ).strip()
+
+            smtp_host = (
+                data.get("smtp_host") or ""
+            ).strip()
+
+            smtp_username = (
+                data.get("smtp_username") or ""
+            ).strip()
+
+            plain_password = (
+                data.get("smtp_password") or ""
+            ).strip()
+
+            security = (
+                data.get("security") or "STARTTLS"
+            ).strip().upper()
+
+            reply_to = (
+                data.get("reply_to") or ""
+            ).strip() or None
+
+            try:
+                smtp_port = int(
+                    data.get("smtp_port", 587)
+                )
+            except (ValueError, TypeError):
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "SMTP port must be a valid number."
+                        ),
+                    },
+                    status=400,
+                )
+
+            if smtp_port < 1 or smtp_port > 65535:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "SMTP port must be between "
+                            "1 and 65535."
+                        ),
+                    },
+                    status=400,
+                )
+
+            if not sender_name:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "Sender name is required.",
+                    },
+                    status=400,
+                )
+
+            if not sender_email:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "Sender email is required.",
+                    },
+                    status=400,
+                )
+
+            if not smtp_host:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "SMTP host is required.",
+                    },
+                    status=400,
+                )
+
+            if not smtp_username:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "SMTP username is required.",
+                    },
+                    status=400,
+                )
+
+            if security not in {
+                "STARTTLS",
+                "SSL_TLS",
+                "NONE",
+            }:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "Invalid SMTP security protocol."
+                        ),
+                    },
+                    status=400,
+                )
+
+            smtp_fields = {
+                "sender_name": sender_name,
+                "sender_email": sender_email,
+                "smtp_host": smtp_host,
+                "smtp_port": smtp_port,
+                "smtp_username": smtp_username,
+                "security": security,
+                "reply_to": reply_to,
+            }
+
+            # Only update the stored password when the user
+            # entered a new password.
+            if plain_password:
+                smtp_fields["smtp_password"] = (
+                    encrypt_smtp_password(
+                        plain_password
+                    )
+                )
+
+            config, created = (
+                ClientSmtpConfig.objects.update_or_create(
+                    client=None,
+                    defaults=smtp_fields,
+                )
+            )
+
+            return JsonResponse(
+                {
+                    "success": True,
+                    "created": created,
+                    "message": (
+                        "Default SMTP configuration saved "
+                        "successfully."
+                    ),
+                    "config": {
+                        "sender_name": config.sender_name,
+                        "sender_email": config.sender_email,
+                        "smtp_host": config.smtp_host,
+                        "smtp_port": config.smtp_port,
+                        "smtp_username": (
+                            config.smtp_username
+                        ),
+                        "security": config.security,
+                        "reply_to": (
+                            config.reply_to or ""
+                        ),
+                        "has_password": bool(
+                            config.smtp_password
+                        ),
+                    },
+                }
+            )
+
+        except json.JSONDecodeError:
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": "Invalid JSON request.",
+                },
+                status=400,
+            )
+
+        except Exception:
+            logging.exception(
+                "Failed to save default SMTP configuration"
+            )
+
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": (
+                        "Failed to save default SMTP "
+                        "configuration."
+                    ),
+                },
+                status=500,
+            )
+
+    return JsonResponse(
+        {
+            "success": False,
+            "error": "Method not allowed.",
+        },
+        status=405,
+    )
 
 
 from admin_panel.models import ClientDocument
