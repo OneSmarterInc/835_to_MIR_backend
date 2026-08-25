@@ -304,9 +304,9 @@ def api_get_sftp_config(request):
             "status": c.status,
             "last_error": c.last_error,
             "last_tested_at": c.last_tested_at.strftime("%Y-%m-%d %H:%M:%S") if c.last_tested_at else None,
+            "has_password": bool(c.password),
+            "has_outbound_password": bool(c.outbound_password),
         }
-        if c.client is None:
-            config_data["password"] = c.password or ""
         saved_list.append(config_data)
 
     active_data = saved_list[0] if saved_list else None
@@ -764,7 +764,7 @@ def api_save_sftp_config(request):
             config = SFTPConfig.objects.filter(connection_type=connection_type, client__isnull=True).first()
 
     if not password and config and config.password:
-        password = config.password
+        password = config.get_password()
     if not ssh_key and config and config.ssh_key:
         ssh_key = config.ssh_key
 
@@ -1143,7 +1143,10 @@ def api_browse_sftp(request):
     host = body.get("host") or (config.host if config else None)
     port = int(body.get("port") or (config.port if config else 22) or 22)
     username = body.get("username") or (config.username if config else None)
-    password = body.get("password") or (config.password if config else (config.outbound_password if config else None))
+    password = body.get("password") or (
+        config.get_password() if config and config.password
+        else (config.get_outbound_password() if config and config.outbound_password else None)
+    )
     ssh_key = body.get("ssh_key") or (config.ssh_key if config else None)
     auth_method = body.get("auth_method") or (config.auth_method if config else "Password")
     trust_unknown_key = body.get("trust_unknown_key", True)
@@ -1297,7 +1300,7 @@ def api_start_batch_conversion(request):
         inbound_host = config.host
         inbound_port = config.port or 22
         inbound_user = config.username
-        inbound_pass = config.password
+        inbound_pass = config.get_password()
         inbound_key = config.ssh_key
         inbound_auth = config.auth_method
         in_folder = config.inbound_835_folder
@@ -1420,8 +1423,8 @@ def api_start_batch_conversion(request):
                         ssh_del.load_system_host_keys()
                     pkey_del = None
                     if config.auth_method in ["SSH Key", "SSH Key + Password"]:
-                        pkey_del, _ = parse_ssh_private_key(config.ssh_key, password=config.password)
-                    pass_del = config.password if config.auth_method in ["Password", "SSH Key + Password"] else None
+                        pkey_del, _ = parse_ssh_private_key(config.ssh_key, password=config.get_password())
+                    pass_del = config.get_password() if config.auth_method in ["Password", "SSH Key + Password"] else None
                     ssh_del.connect(
                         hostname=config.host,
                         port=config.port or 22,
