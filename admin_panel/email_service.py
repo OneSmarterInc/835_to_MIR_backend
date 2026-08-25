@@ -2,7 +2,7 @@ import logging
 from django.core.mail import EmailMultiAlternatives
 from django.core.mail.backends.smtp import EmailBackend
 from admin_panel.models import ClientSmtpConfig
-from admin_panel.smtp_crypto import decrypt_smtp_password
+from project835.field_crypto import decrypt_smtp_password
 from accounts.models import User
 from django.utils.html import strip_tags
 
