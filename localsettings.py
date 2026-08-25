@@ -34,7 +34,9 @@ USE_X_FORWARDED_HOST = True
 # an environment variable instead of hardcoding here.
 # Rotate this key only if you re-encrypt all existing rows.
 # ============================================================
-SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "4xx_IBlROjL-jqvIVAF0VuN76EoOHbLoXOGNSfuwXLY=")
+SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY")
+if not SMTP_FIELD_ENCRYPTION_KEY:
+    raise RuntimeError("SMTP_FIELD_ENCRYPTION_KEY must be set in the environment.")
 
 
 # ============================================================
