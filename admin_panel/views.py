@@ -2,6 +2,9 @@ from project835.field_crypto import (
     encrypt_smtp_password,
     decrypt_smtp_password,
 )
+from project835.decorators import (
+    admin_api_required,
+)
 import json
 import logging
 from django.db import models, transaction
@@ -1489,6 +1492,7 @@ def api_admin_client_smtp(request, client_id):
     return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
 
 @csrf_exempt
+@admin_api_required
 def api_admin_default_smtp(request):
     """
     GET:

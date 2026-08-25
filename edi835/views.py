@@ -1,8 +1,13 @@
 import os
+from project835.decorators import (
+    admin_api_required,
+)
 import json
 from project835.field_crypto import (
     encrypt_sftp_field,
     decrypt_sftp_field,
+    get_sftp_runtime_credentials,
+    SFTPCredentialError,
 )
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
@@ -269,57 +274,159 @@ def api_archive_files_list(request):
 
 
 @csrf_exempt
+@admin_api_required
 def api_get_sftp_config(request):
     """
-    API Endpoint: Returns active SFTP configuration and list of saved configurations from DB.
+    Returns saved SFTP configuration metadata.
+
+    Passwords, encrypted ciphertext and SSH private keys
+    are never returned to the frontend.
     """
-    client_id = request.GET.get('client_id') or request.GET.get('client')
-    if not client_id and request.user.is_authenticated and not request.user.is_staff and request.user.client:
-        client_id = request.user.client.id
+
+    client_id = (
+        request.GET.get("client_id")
+        or request.GET.get("client")
+    )
+
+    if (
+        not client_id
+        and request.user.is_authenticated
+        and not request.user.is_staff
+    ):
+        client = getattr(
+            request.user,
+            "client",
+            None,
+        )
+
+        client_id = (
+            client.id
+            if client
+            else None
+        )
 
     if client_id:
-        configs = SFTPConfig.objects.filter(client_id=client_id)
+        configs = SFTPConfig.objects.filter(
+            client_id=client_id
+        )
     else:
-        configs = SFTPConfig.objects.filter(client__isnull=True)
-        
+        configs = SFTPConfig.objects.filter(
+            client__isnull=True
+        )
+
     saved_list = []
-    for c in configs:
-        is_outbound = c.connection_type == "OUTBOUND"
+
+    for config in configs:
         config_data = {
-            "id": str(c.id),
-            "name": c.name,
-            "connection_type": c.connection_type,
-            "use_same_server": c.use_same_server,
-            "host": c.host,
-            "port": c.port,
-            "username": c.username,
-            "auth_method": c.auth_method,
-            "trust_unknown_key": c.trust_unknown_key,
-            "inbound_837_folder": c.inbound_837_folder,
-            "inbound_835_folder": c.inbound_835_folder,
-            "outbound_host": c.outbound_host,
-            "outbound_port": c.outbound_port,
-            "outbound_username": c.outbound_username,
-            "outbound_auth_method": c.outbound_auth_method,
-            "outbound_trust_unknown_key": c.outbound_trust_unknown_key,
-            "outbound_mir_folder": c.outbound_mir_folder,
-            "has_password": bool(c.outbound_password if is_outbound else c.password),
-            "has_ssh_key": bool(c.outbound_ssh_key if is_outbound else c.ssh_key),
-            "status": c.status,
-            "last_error": c.last_error,
-            "last_tested_at": c.last_tested_at.strftime("%Y-%m-%d %H:%M:%S") if c.last_tested_at else None,
+            "id": str(config.id),
+            "name": config.name,
+
+            "client_id": (
+                str(config.client_id)
+                if config.client_id
+                else None
+            ),
+
+            "connection_type": (
+                config.connection_type
+            ),
+
+            "use_same_server": (
+                config.use_same_server
+            ),
+
+            "use_default": config.use_default,
+
+            # Inbound/unified non-sensitive settings
+            "host": config.host,
+            "port": config.port,
+            "username": config.username,
+            "auth_method": config.auth_method,
+
+            "trust_unknown_key": (
+                config.trust_unknown_key
+            ),
+
+            "inbound_837_folder": (
+                config.inbound_837_folder
+            ),
+
+            "inbound_835_folder": (
+                config.inbound_835_folder
+            ),
+
+            # Outbound non-sensitive settings
+            "outbound_host": (
+                config.outbound_host
+            ),
+
+            "outbound_port": (
+                config.outbound_port
+            ),
+
+            "outbound_username": (
+                config.outbound_username
+            ),
+
+            "outbound_auth_method": (
+                config.outbound_auth_method
+            ),
+
+            "outbound_trust_unknown_key": (
+                config.outbound_trust_unknown_key
+            ),
+
+            "outbound_mir_folder": (
+                config.outbound_mir_folder
+            ),
+
+            # Credential presence flags only
+            "has_password": bool(
+                config.password
+            ),
+
+            "has_ssh_key": bool(
+                config.ssh_key
+            ),
+
+            "has_outbound_password": bool(
+                config.outbound_password
+            ),
+
+            "has_outbound_ssh_key": bool(
+                config.outbound_ssh_key
+            ),
+
+            "status": config.status,
+            "last_error": config.last_error,
+
+            "last_tested_at": (
+                config.last_tested_at.strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+                if config.last_tested_at
+                else None
+            ),
         }
+
         saved_list.append(config_data)
 
-    active_data = saved_list[0] if saved_list else None
+    active_config = (
+        saved_list[0]
+        if saved_list
+        else None
+    )
 
-    return JsonResponse({
-        "success": True,
-        "active_config": active_data,
-        "configs": saved_list,
-        "configurations": saved_list
-    })
+    return JsonResponse(
+        {
+            "success": True,
+            "active_config": active_config,
 
+            # Keep both response names for frontend compatibility.
+            "configs": saved_list,
+            "configurations": saved_list,
+        }
+    )
 
 def parse_ssh_private_key(ssh_key_str, password=None):
     """
@@ -665,13 +772,24 @@ def api_sftp_connect(request):
     except Exception:
         body = request.POST
 
-    host = (body.get("host") or "").strip()
-    port_raw = body.get("port", 22)
-    username = (body.get("username") or "").strip()
-    password = (body.get("password") or "").strip()
-    ssh_key = (body.get("ssh_key") or "").strip()
-    auth_method = body.get("auth_method", "Password").strip()
-    trust_unknown_key = body.get("trust_unknown_key", True)
+    config = None
+    config_id = body.get("config_id") or body.get("id")
+    if config_id:
+        config = SFTPConfig.objects.filter(id=config_id).first()
+    try:
+        saved = get_sftp_runtime_credentials(config, outbound=False) if config else {}
+    except SFTPCredentialError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+    host = (body.get("host") or saved.get("host") or "").strip()
+    port_raw = body.get("port") or saved.get("port") or 22
+    username = (body.get("username") or saved.get("username") or "").strip()
+    password = body.get("password") or saved.get("password") or ""
+    ssh_key = body.get("ssh_key") or saved.get("ssh_key") or ""
+    auth_method = body.get("auth_method") or saved.get("auth_method") or "Password"
+    trust_unknown_key = body.get(
+        "trust_unknown_key", saved.get("trust_unknown_key", True)
+    )
     if isinstance(trust_unknown_key, str):
         trust_unknown_key = (trust_unknown_key.lower() == "true")
 
@@ -695,13 +813,14 @@ def api_sftp_connect(request):
         ssh_key=ssh_key,
         auth_method=auth_method,
         trust_unknown_key=trust_unknown_key,
-        remote_folder=body.get("inbound_835_folder", "/")
+        remote_folder=body.get("inbound_835_folder") or saved.get("remote_folder") or "/"
     )
 
     return JsonResponse(res, status=200)
 
 
 @csrf_exempt
+@admin_api_required
 def api_save_sftp_config(request):
     """
     API Endpoint: Saves/updates SFTP configuration in DB and performs connection test verification.
@@ -932,12 +1051,30 @@ def api_verify_sftp_paths(request):
     except Exception:
         body = request.POST
 
-    host = (body.get("host") or "").strip()
-    port = int(body.get("port", 22) or 22)
-    username = (body.get("username") or "").strip()
-    password = (body.get("password") or "").strip()
-    auth_method = body.get("auth_method", "Password").strip()
-    trust_unknown_key = body.get("trust_unknown_key", True)
+    config = None
+    config_id = body.get("config_id") or body.get("id")
+    if config_id:
+        config = SFTPConfig.objects.filter(id=config_id).first()
+    if not config:
+        client = getattr(request.user, "client", None)
+        if client:
+            config = SFTPConfig.objects.filter(client=client).first()
+        elif getattr(request.user, "is_staff", False):
+            config = SFTPConfig.objects.filter(client__isnull=True).first()
+    try:
+        saved = get_sftp_runtime_credentials(config, outbound=False) if config else {}
+    except SFTPCredentialError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+    host = (body.get("host") or saved.get("host") or "").strip()
+    port = int(body.get("port") or saved.get("port") or 22)
+    username = (body.get("username") or saved.get("username") or "").strip()
+    password = body.get("password") or saved.get("password") or ""
+    ssh_key = body.get("ssh_key") or saved.get("ssh_key") or ""
+    auth_method = body.get("auth_method") or saved.get("auth_method") or "Password"
+    trust_unknown_key = body.get(
+        "trust_unknown_key", saved.get("trust_unknown_key", True)
+    )
     if isinstance(trust_unknown_key, str):
         trust_unknown_key = (trust_unknown_key.lower() == "true")
 
@@ -960,11 +1097,22 @@ def api_verify_sftp_paths(request):
         if trust_unknown_key:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
 
+        pkey = None
+        if auth_method in ["SSH Key", "SSH Key + Password"]:
+            pkey, key_error = parse_ssh_private_key(ssh_key, password=password)
+            if not pkey:
+                return JsonResponse({
+                    "success": False,
+                    "error": f"SSH private key error: {key_error}",
+                }, status=400)
+
+        pass_val = password if auth_method in ["Password", "SSH Key + Password"] else None
         ssh.connect(
             hostname=host,
             port=port,
             username=username,
-            password=password if auth_method == "Password" else None,
+            password=pass_val,
+            pkey=pkey,
             timeout=8,
             banner_timeout=8,
             auth_timeout=8,
@@ -1164,43 +1312,60 @@ def get_cached_sftp_client(host, port, username, password=None, ssh_key=None, au
 
 
 @csrf_exempt
+@admin_api_required
 def api_browse_sftp(request):
     """
     API Endpoint: POST /api/sftp/browse/
     Browses remote SFTP directory natively via Paramiko (in-app browser).
     Returns folder and file listings for specified remote path.
     """
-    if request.method not in ["GET", "POST"]:
+    if request.method != "POST":
         return JsonResponse({"success": False, "error": "Method not allowed."}, status=405)
 
+    if not request.user or not request.user.is_authenticated:
+        return JsonResponse({"success": False, "error": "Authentication is required."}, status=401)
+
     try:
-        body = json.loads(request.body.decode("utf-8")) if (request.body and request.method == "POST") else request.GET
+        body = json.loads(request.body.decode("utf-8")) if request.body else {}
     except Exception:
-        body = request.GET
+        return JsonResponse({"success": False, "error": "Invalid JSON request."}, status=400)
 
     remote_path = body.get("path") or "."
     config_id = body.get("config_id")
 
-    config = None
-    if config_id:
-        config = SFTPConfig.objects.filter(id=config_id).first()
-    if not config:
-        config = SFTPConfig.objects.first()
+    if not config_id:
+        return JsonResponse({"success": False, "error": "SFTP config_id is required."}, status=400)
 
-    # Allow custom host/credentials in payload or fallback to saved DB config
-    host = body.get("host") or (config.host if config else None)
-    port = int(body.get("port") or (config.port if config else 22) or 22)
-    username = body.get("username") or (config.username if config else None)
-    password = (body.get("password") or "").strip()
-    ssh_key = (body.get("ssh_key") or "").strip()
-    if config and not password:
-        encrypted_password = config.password or config.outbound_password or ""
-        password = decrypt_sftp_field(encrypted_password) if encrypted_password else ""
-    if config and not ssh_key:
-        encrypted_ssh_key = config.ssh_key or config.outbound_ssh_key or ""
-        ssh_key = decrypt_sftp_field(encrypted_ssh_key) if encrypted_ssh_key else ""
-    auth_method = body.get("auth_method") or (config.auth_method if config else "Password")
-    trust_unknown_key = body.get("trust_unknown_key", True)
+    config = SFTPConfig.objects.filter(id=config_id).first()
+    if not config:
+        return JsonResponse({"success": False, "error": "SFTP configuration was not found."}, status=404)
+
+    is_staff = bool(getattr(request.user, "is_staff", False))
+    request_client = getattr(request.user, "client", None)
+    if config.client_id is None:
+        if not is_staff:
+            return JsonResponse({"success": False, "error": "Administrator access is required."}, status=403)
+    else:
+        same_client = request_client and str(request_client.id) == str(config.client_id)
+        if not is_staff and not same_client:
+            return JsonResponse({
+                "success": False,
+                "error": "You are not authorized to use this SFTP configuration.",
+            }, status=403)
+
+    try:
+        saved = get_sftp_runtime_credentials(config, outbound=False)
+    except SFTPCredentialError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+    # Only config_id and path come from the browser. Credentials stay server-side.
+    host = saved["host"]
+    port = saved["port"]
+    username = saved["username"]
+    password = saved["password"]
+    ssh_key = saved["ssh_key"]
+    auth_method = saved["auth_method"]
+    trust_unknown_key = saved["trust_unknown_key"]
 
     if not host or not username:
         return JsonResponse({
@@ -1221,7 +1386,9 @@ def api_browse_sftp(request):
 
     pkey = None
     if auth_method in ["SSH Key", "SSH Key + Password"]:
-        pkey, _ = parse_ssh_private_key(ssh_key, password=password)
+        pkey, key_error = parse_ssh_private_key(ssh_key, password=password)
+        if not pkey:
+            return JsonResponse({"success": False, "error": f"SSH private key error: {key_error}"}, status=400)
 
     pass_val = password if auth_method in ["Password", "SSH Key + Password"] else None
 
@@ -1348,16 +1515,22 @@ def api_start_batch_conversion(request):
 
     # 1. Process remote SFTP Inbound folder if configuration is present
     if config and config.host and config.username and config.inbound_835_folder:
-        inbound_host = config.host
-        inbound_port = config.port or 22
-        inbound_user = config.username
-        inbound_pass = decrypt_sftp_field(config.password) if config.password else ""
-        inbound_key = decrypt_sftp_field(config.ssh_key) if config.ssh_key else ""
-        inbound_auth = config.auth_method
-        in_folder = config.inbound_835_folder
+        try:
+            inbound_credentials = get_sftp_runtime_credentials(config, outbound=False)
+        except SFTPCredentialError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=500)
+
+        inbound_host = inbound_credentials["host"]
+        inbound_port = inbound_credentials["port"]
+        inbound_user = inbound_credentials["username"]
+        inbound_pass = inbound_credentials["password"]
+        inbound_key = inbound_credentials["ssh_key"]
+        inbound_auth = inbound_credentials["auth_method"]
+        inbound_trust_unknown_key = inbound_credentials["trust_unknown_key"]
+        in_folder = inbound_credentials["remote_folder"]
 
         ssh = paramiko.SSHClient()
-        if config.trust_unknown_key:
+        if inbound_trust_unknown_key:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
             ssh.load_system_host_keys()
@@ -1468,22 +1641,21 @@ def api_start_batch_conversion(request):
             if sftp_batch_items and config and config.host and config.username and config.inbound_835_folder:
                 try:
                     ssh_del = paramiko.SSHClient()
-                    if config.trust_unknown_key:
+                    if inbound_credentials["trust_unknown_key"]:
                         ssh_del.set_missing_host_key_policy(paramiko.AutoAddPolicy())
                     else:
                         ssh_del.load_system_host_keys()
                     pkey_del = None
-                    if config.auth_method in ["SSH Key", "SSH Key + Password"]:
-                        cleanup_key = decrypt_sftp_field(config.ssh_key) if config.ssh_key else ""
-                        cleanup_password = decrypt_sftp_field(config.password) if config.password else ""
+                    cleanup_key = inbound_credentials["ssh_key"]
+                    cleanup_password = inbound_credentials["password"]
+                    cleanup_auth = inbound_credentials["auth_method"]
+                    if cleanup_auth in ["SSH Key", "SSH Key + Password"]:
                         pkey_del, _ = parse_ssh_private_key(cleanup_key, password=cleanup_password)
-                    else:
-                        cleanup_password = decrypt_sftp_field(config.password) if config.password else ""
-                    pass_del = cleanup_password if config.auth_method in ["Password", "SSH Key + Password"] else None
+                    pass_del = cleanup_password if cleanup_auth in ["Password", "SSH Key + Password"] else None
                     ssh_del.connect(
-                        hostname=config.host,
-                        port=config.port or 22,
-                        username=config.username,
+                        hostname=inbound_credentials["host"],
+                        port=inbound_credentials["port"],
+                        username=inbound_credentials["username"],
                         password=pass_del,
                         pkey=pkey_del,
                         timeout=8,
