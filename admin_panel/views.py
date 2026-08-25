@@ -8,7 +8,10 @@ from django.views.decorators.csrf import csrf_exempt
 from accounts.models import Client, User
 from edi835.models import EDI835File
 from .models import OnboardingStepDefinition, ClientStepStatus, GoLiveStepDefinition, ClientGoLiveStatus, ClientTestEnvironment, AuditLog, ClientSmtpConfig, ClientDocument
-from .smtp_crypto import encrypt_smtp_password, decrypt_smtp_password
+from project835.field_crypto import (
+    encrypt_smtp_password,
+    decrypt_smtp_password,
+)
 from .document_validator import extract_text_from_file_bytes, validate_document_text
 from validation import (
     validate_step_upload,
