@@ -183,7 +183,7 @@ class ClientSmtpConfig(models.Model):
     smtp_host     = models.CharField(max_length=255, default='smtp.gmail.com')
     smtp_port     = models.IntegerField(default=587)
     smtp_username = models.CharField(max_length=255, default='support@onesmarter.com')
-    smtp_password = models.CharField(max_length=255, blank=True)
+    smtp_password = models.TextField(blank=True)
     security      = models.CharField(max_length=20, choices=SECURITY_CHOICES, default='STARTTLS')
     reply_to      = models.EmailField(blank=True, null=True)
     use_default   = models.BooleanField(default=False, help_text="Whether to use default SMTP settings")
