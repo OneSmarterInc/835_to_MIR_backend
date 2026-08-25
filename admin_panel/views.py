@@ -1,3 +1,7 @@
+from project835.field_crypto import (
+    encrypt_smtp_password,
+    decrypt_smtp_password,
+)
 import json
 import logging
 from django.db import models, transaction
