@@ -169,5 +169,34 @@ class SFTPConfig(models.Model):
         verbose_name_plural = "SFTP Configurations"
         ordering = ["-updated_at"]
 
+    def get_password(self):
+        """Return the decrypted inbound/unified password for connection use."""
+        from .sftp_crypto import decrypt_sftp_secret
+        return decrypt_sftp_secret(self.password)
+
+    def get_outbound_password(self):
+        """Return the decrypted outbound password for connection use."""
+        from .sftp_crypto import decrypt_sftp_secret
+        return decrypt_sftp_secret(self.outbound_password)
+
+    def save(self, *args, **kwargs):
+        """Encrypt SFTP passwords before every database write."""
+        from cryptography.fernet import InvalidToken
+        from admin_panel.smtp_crypto import _fernet
+        from .sftp_crypto import encrypt_sftp_secret
+
+        def encrypt_if_plain(value):
+            if not value:
+                return value
+            try:
+                _fernet().decrypt(value.encode())
+                return value
+            except (InvalidToken, ValueError, TypeError):
+                return encrypt_sftp_secret(value)
+
+        self.password = encrypt_if_plain(self.password)
+        self.outbound_password = encrypt_if_plain(self.outbound_password)
+        super().save(*args, **kwargs)
+
     def __str__(self):
         return f"{self.connection_type} - {self.host or 'Unconfigured'}"
