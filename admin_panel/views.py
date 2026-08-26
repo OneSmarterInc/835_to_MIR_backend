@@ -841,6 +841,7 @@ def api_admin_client_state(request, client_id):
             
         steps_data.append({
             "id": step.step_number,
+            "displayNumber": onboarding_process_position(step.step_number) + 1,
             "key": f"step_{step.step_number}_{step.title.lower().replace(' ', '_').replace('/', '_')[:20]}",
             "title": step.title,
             "desc": step.description,
