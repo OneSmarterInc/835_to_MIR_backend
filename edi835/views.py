@@ -3,7 +3,6 @@ import uuid
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
-    json_api_errors,
 )
 import json
 from project835.field_crypto import (
@@ -1711,7 +1710,6 @@ def api_browse_sftp(request):
 
 @csrf_exempt
 @authenticated_api_required
-@json_api_errors
 def api_start_batch_conversion(request):
     """
     API Endpoint: POST /api/start-batch-conversion/
@@ -1778,14 +1776,6 @@ def api_start_batch_conversion(request):
         client = config.client
     processed_files = []
     errors = []
-    sftp_batch_items = []
-    inbound_credentials = None
-
-    if not config:
-        return JsonResponse({
-            "success": False,
-            "error": "No inbound SFTP configuration is available for this client.",
-        }, status=400)
 
     if config and config.status != "CONNECTED":
         return JsonResponse({
@@ -1794,41 +1784,6 @@ def api_start_batch_conversion(request):
                 "The latest inbound SFTP configuration is not connected "
                 f"(status: {config.status}). Test and save the latest connection first."
             ),
-        }, status=400)
-
-    if not config.host or not config.username or not config.inbound_835_folder:
-        return JsonResponse({
-            "success": False,
-            "error": "The inbound SFTP host, username, or 835 folder is incomplete.",
-        }, status=400)
-
-    outbound_config = resolve_sftp_config(client=client, outbound=True)
-    if not outbound_config:
-        return JsonResponse({
-            "success": False,
-            "error": "No outbound SFTP configuration is available for this client.",
-        }, status=400)
-    if outbound_config.status != "CONNECTED":
-        return JsonResponse({
-            "success": False,
-            "error": (
-                "The latest outbound SFTP configuration is not connected "
-                f"(status: {outbound_config.status}). Test and save it first."
-            ),
-        }, status=400)
-
-    try:
-        outbound_credentials = get_sftp_runtime_credentials(outbound_config, outbound=True)
-    except SFTPCredentialError as exc:
-        return JsonResponse({"success": False, "error": str(exc)}, status=400)
-    if not (
-        outbound_credentials.get("host")
-        and outbound_credentials.get("username")
-        and outbound_credentials.get("remote_folder")
-    ):
-        return JsonResponse({
-            "success": False,
-            "error": "The outbound SFTP host, username, or MIR folder is incomplete.",
         }, status=400)
 
     # 1. Process remote SFTP Inbound folder if configuration is present
@@ -1891,34 +1846,41 @@ def api_start_batch_conversion(request):
                     if not fname.startswith(".") and ext in ALLOWED_EXTENSIONS:
                         files_to_process.append(fname)
 
-            for fname in files_to_process:
-                remote_file_path = posixpath.join(remote_in_dir, fname)
-                try:
-                    with sftp.open(remote_file_path, "rb") as rf:
-                        raw_bytes = rf.read()
-                    
-                    if raw_bytes.startswith(b"\xef\xbb\xbf"):
-                        raw_bytes = raw_bytes[3:]
+            sftp_batch_items = []
 
-                    edi_content = raw_bytes.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
-                    if edi_content and "CLP" in edi_content:
-                        sftp_batch_items.append({
-                            "filename": fname,
-                            "content": edi_content,
-                            "remote_path": remote_file_path,
-                        })
-                except Exception as file_err:
-                    errors.append(f"{fname}: {str(file_err)}")
+for fname in files_to_process:
+    remote_file_path = posixpath.join(remote_in_dir, fname)
 
-        except Exception as sftp_err:
-            errors.append(f"SFTP Inbound Access Error: {str(sftp_err)}")
-        finally:
-            if sftp:
-                try: sftp.close()
-                except Exception: pass
-            if ssh:
-                try: ssh.close()
-                except Exception: pass
+    try:
+        with sftp.open(remote_file_path, "rb") as rf:
+            try:
+                rf.settimeout(30)
+            except (AttributeError, OSError):
+                pass
+
+            raw_bytes = rf.read()
+
+        if raw_bytes.startswith(b"\xef\xbb\xbf"):
+            raw_bytes = raw_bytes[3:]
+
+        edi_content = (
+            raw_bytes
+            .decode("utf-8", errors="replace")
+            .lstrip("\ufeff")
+            .strip()
+        )
+
+        if edi_content and "CLP" in edi_content:
+            sftp_batch_items.append({
+                "filename": fname,
+                "content": edi_content,
+                "remote_path": remote_file_path,
+            })
+
+    except Exception as file_err:
+        errors.append(
+            f"{fname}: Failed to read SFTP file: {str(file_err)}"
+        )
 
     # 2. Also process any local files dropped into media/edi835/input/ directory
     local_batch_items = []
@@ -1951,17 +1913,7 @@ def api_start_batch_conversion(request):
     # Combine all SFTP and local inbound items into ONE SINGLE batch conversion for a single MIR file
     combined_items = sftp_batch_items + local_batch_items
     if combined_items:
-        try:
-            batch_res = process_multiple_edi835_files(combined_items, client=client)
-        except Exception as batch_exc:
-            logger.exception("Combined SFTP batch conversion failed")
-            return JsonResponse({
-                "success": False,
-                "error": f"Combined MIR conversion failed: {batch_exc}",
-                "processed_count": 0,
-                "files": [item["filename"] for item in combined_items],
-                "errors": errors,
-            }, status=500)
+        batch_res = process_multiple_edi835_files(combined_items, client=client)
         if batch_res.get("success"):
             if not batch_res.get("sftp_uploaded"):
                 errors.append(
