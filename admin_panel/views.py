@@ -1218,6 +1218,12 @@ def api_admin_step_validate_835(request, client_id):
 
         db_record = proc_res.get("db_record")
         if not db_record or not db_record.present_in_sftp:
+            from edi835.services import resolve_sftp_config
+            outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
+            upload_error = (
+                getattr(outbound_cfg, "last_error", None)
+                or "The configured outbound SFTP folder rejected the upload."
+            )
             checks.append({
                 "ok": True,
                 "label": "MIR Conversion",
@@ -1226,11 +1232,11 @@ def api_admin_step_validate_835(request, client_id):
             checks.append({
                 "ok": False,
                 "label": "SFTP Upload",
-                "detail": "MIR was created locally but could not be uploaded to the configured outbound SFTP folder.",
+                "detail": upload_error,
             })
             return JsonResponse({
                 "success": False,
-                "error": "MIR conversion succeeded, but the MIR upload to outbound SFTP failed. Verify the connected outbound configuration and folder permissions.",
+                "error": f"MIR conversion succeeded, but outbound SFTP upload failed: {upload_error}",
                 "checks": checks,
                 "file_id": str(db_record.id) if db_record else None,
             }, status=502)
