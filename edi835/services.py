@@ -36,6 +36,7 @@ def resolve_sftp_config(client=None, outbound=False):
     return config or pick(SFTPConfig.objects.filter(client__isnull=True))
 
 
+
 def get_edi835_storage_dirs():
     """
     Returns dictionary of local/FTP storage directories under media/edi835/.
@@ -65,6 +66,7 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
     import logging
     logger = logging.getLogger(__name__)
 
+    cfg = None
     try:
         import paramiko
 
@@ -131,31 +133,30 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
         )
         sftp = ssh.open_sftp()
 
-        # Ensure directory exists on remote SFTP server
-        p = out_folder.strip("/")
-        parts = p.split("/") if p else []
-        curr = ""
-        for part in parts:
-            curr += "/" + part
-            try:
-                sftp.stat(curr)
-            except FileNotFoundError:
-                try:
-                    sftp.mkdir(curr)
-                except Exception:
-                    pass
-            except Exception:
-                pass
+        # The configured folder was verified by Save & Test. Do not silently
+        # ignore path errors or try to create directories the account may not
+        # own; surface the real server response instead.
+        sftp.stat(out_folder)
 
         remote_path = f"{out_folder.rstrip('/')}/{mir_filename}"
         sftp.put(str(local_file_path), remote_path)
 
         sftp.close()
         ssh.close()
+        if cfg.last_error:
+            cfg.last_error = None
+            cfg.save(update_fields=["last_error", "updated_at"])
         logger.info(f"upload_mir_to_sftp: Successfully pushed {mir_filename} to remote SFTP outbound folder {remote_path}")
         return True
     except Exception as e:
-        logger.error(f"upload_mir_to_sftp failed to upload {mir_filename}: {e}", exc_info=True)
+        error_message = f"MIR upload failed for '{mir_filename}': {e}"
+        logger.error(error_message, exc_info=True)
+        try:
+            if cfg:
+                cfg.last_error = error_message[:2000]
+                cfg.save(update_fields=["last_error", "updated_at"])
+        except Exception:
+            logger.exception("Could not persist the SFTP upload error")
         return False
 
 
@@ -213,7 +214,8 @@ def push_file_record_to_sftp(file_id):
         rec.save(update_fields=["present_in_sftp"])
         return True, "Successfully pushed MIR file to remote SFTP outbound server!"
 
-    return False, "Failed to upload MIR file to SFTP outbound server. Check SFTP credentials and outbound folder path."
+    cfg.refresh_from_db(fields=["last_error"])
+    return False, (cfg.last_error or "Failed to upload MIR file to SFTP outbound server. Check SFTP credentials and outbound folder path.")
 
 
 def upload_835_to_sftp(local_file_path, filename):
@@ -546,4 +548,3 @@ def sync_folder_observer():
 
     if to_update:
         EDI835File.objects.bulk_update(to_update, ["present_in_sftp", "present_in_archive_folder"])
-
