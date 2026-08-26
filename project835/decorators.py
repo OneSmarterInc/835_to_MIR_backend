@@ -1,6 +1,30 @@
 from functools import wraps
+import logging
 
 from django.http import JsonResponse
+
+
+logger = logging.getLogger(__name__)
+
+
+def json_api_errors(view_function):
+    """Guarantee JSON for unexpected API failures while logging the traceback."""
+
+    @wraps(view_function)
+    def wrapped_view(request, *args, **kwargs):
+        try:
+            return view_function(request, *args, **kwargs)
+        except Exception as exc:
+            logger.exception("Unhandled API failure in %s", view_function.__name__)
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": f"Batch pipeline failed: {exc}",
+                },
+                status=500,
+            )
+
+    return wrapped_view
 
 
 def admin_api_required(view_function):
