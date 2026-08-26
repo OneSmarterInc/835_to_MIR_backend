@@ -13,7 +13,7 @@ def export_mir_file(mir_text, output_dir, mir_filename):
     Returns normalized path.
     """
     os.makedirs(output_dir, exist_ok=True)
-    if not mir_filename.endswith(".mir"):
+    if not mir_filename.lower().endswith(".mir"):
         mir_filename = f"{mir_filename}.mir"
     file_path = os.path.join(output_dir, mir_filename)
 
@@ -29,7 +29,7 @@ def archive_mir_file(mir_text, archive_dir, mir_filename):
     Returns normalized path.
     """
     os.makedirs(archive_dir, exist_ok=True)
-    if not mir_filename.endswith(".mir"):
+    if not mir_filename.lower().endswith(".mir"):
         mir_filename = f"{mir_filename}.mir"
     file_path = os.path.join(archive_dir, mir_filename)
 
