@@ -750,7 +750,7 @@ def api_admin_client_state(request, client_id):
             (5, "Claims system identified and verified", "Identify client claims vendor software system."),
             (6, "SMTP / Email Configuration", "Configure SMTP credentials to utilize for onboarding notifications."),
             (7, "Delivery method agreed", "Configure secure transfer mechanism (SFTP, API drop)."),
-            (8, "Sample 835 received and validated", "Validate structural integrity of sample X12 835 file."),
+            (8, "Validate 835 and Push MIR to SFTP", "Validate the 835, convert it to MIR, and upload the MIR to the configured outbound SFTP folder."),
             (9, "Mapping rules written & configured", "Open Mapping Application to configure 835 conversion."),
             (10, "MIR Output Filename Format & Create User", "Define output MIR file naming convention and create SFTP user logins."),
             (11, "Side-by-Side 835 Conversion Review", "Verify side-by-side conversion of sample 835 files."),
@@ -1209,35 +1209,44 @@ def api_admin_step_validate_835(request, client_id):
         from edi835.services import process_edi835_file_content
         proc_res = process_edi835_file_content(raw_text, original_filename=filename, client=client_obj)
 
-        # Also send the raw 835 to the client's configured SFTP inbound_835_folder
-        try:
-            from edi835.models import SFTPConfig
-            import paramiko, io
-            cfg = SFTPConfig.objects.filter(client=client_obj).first()
-            if not cfg or cfg.use_default:
-                cfg = SFTPConfig.objects.filter(client__isnull=True).first()
-            if cfg and cfg.host and cfg.username and cfg.inbound_835_folder:
-                in_host = cfg.host
-                in_port = int(cfg.port or 22)
-                in_user = cfg.username
-                in_pass = cfg.password or ''
-                in_folder = cfg.inbound_835_folder.rstrip('/')
-                ssh = paramiko.SSHClient()
-                ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                ssh.connect(hostname=in_host, port=in_port, username=in_user, password=in_pass,
-                            timeout=10, look_for_keys=False, allow_agent=False)
-                sftp = ssh.open_sftp()
-                try:
-                    sftp.stat(in_folder)
-                except FileNotFoundError:
-                    sftp.mkdir(in_folder)
-                remote_path = f"{in_folder}/{filename}"
-                sftp.putfo(io.BytesIO(file_bytes), remote_path)
-                sftp.close()
-                ssh.close()
-        except Exception as sftp_inbound_err:
-            import logging
-            logging.getLogger(__name__).warning(f"Step 8: could not upload 835 to SFTP inbound: {sftp_inbound_err}")
+        if not proc_res.get("success"):
+            return JsonResponse({
+                "success": False,
+                "error": f"835 validation passed, but MIR conversion failed: {proc_res.get('error', 'Unknown conversion error')}",
+                "checks": checks,
+            }, status=400)
+
+        db_record = proc_res.get("db_record")
+        if not db_record or not db_record.present_in_sftp:
+            checks.append({
+                "ok": True,
+                "label": "MIR Conversion",
+                "detail": "835 converted to MIR successfully.",
+            })
+            checks.append({
+                "ok": False,
+                "label": "SFTP Upload",
+                "detail": "MIR was created locally but could not be uploaded to the configured outbound SFTP folder.",
+            })
+            return JsonResponse({
+                "success": False,
+                "error": "MIR conversion succeeded, but the MIR upload to outbound SFTP failed. Verify the connected outbound configuration and folder permissions.",
+                "checks": checks,
+                "file_id": str(db_record.id) if db_record else None,
+            }, status=502)
+
+        checks.extend([
+            {
+                "ok": True,
+                "label": "MIR Conversion",
+                "detail": "835 converted to MIR successfully.",
+            },
+            {
+                "ok": True,
+                "label": "SFTP Upload",
+                "detail": "Generated MIR uploaded to the configured outbound SFTP folder.",
+            },
+        ])
 
         # Trigger success email to the user
         try:
@@ -1266,7 +1275,13 @@ def api_admin_step_validate_835(request, client_id):
         step_status.save()
         update_client_onboarding_stats(client_obj)
 
-        return JsonResponse({"success": True, "checks": checks})
+        return JsonResponse({
+            "success": True,
+            "message": "835 validated, converted to MIR, and uploaded to outbound SFTP successfully.",
+            "checks": checks,
+            "file_id": str(db_record.id),
+            "mir_output_path": db_record.output_path,
+        })
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
