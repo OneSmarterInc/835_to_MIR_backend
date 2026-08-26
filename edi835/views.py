@@ -3,6 +3,7 @@ import uuid
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
+    json_api_errors,
 )
 import json
 from project835.field_crypto import (
@@ -1710,6 +1711,7 @@ def api_browse_sftp(request):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def api_start_batch_conversion(request):
     """
     API Endpoint: POST /api/start-batch-conversion/
@@ -1776,6 +1778,14 @@ def api_start_batch_conversion(request):
         client = config.client
     processed_files = []
     errors = []
+    sftp_batch_items = []
+    inbound_credentials = None
+
+    if not config:
+        return JsonResponse({
+            "success": False,
+            "error": "No inbound SFTP configuration is available for this client.",
+        }, status=400)
 
     if config and config.status != "CONNECTED":
         return JsonResponse({
@@ -1784,6 +1794,41 @@ def api_start_batch_conversion(request):
                 "The latest inbound SFTP configuration is not connected "
                 f"(status: {config.status}). Test and save the latest connection first."
             ),
+        }, status=400)
+
+    if not config.host or not config.username or not config.inbound_835_folder:
+        return JsonResponse({
+            "success": False,
+            "error": "The inbound SFTP host, username, or 835 folder is incomplete.",
+        }, status=400)
+
+    outbound_config = resolve_sftp_config(client=client, outbound=True)
+    if not outbound_config:
+        return JsonResponse({
+            "success": False,
+            "error": "No outbound SFTP configuration is available for this client.",
+        }, status=400)
+    if outbound_config.status != "CONNECTED":
+        return JsonResponse({
+            "success": False,
+            "error": (
+                "The latest outbound SFTP configuration is not connected "
+                f"(status: {outbound_config.status}). Test and save it first."
+            ),
+        }, status=400)
+
+    try:
+        outbound_credentials = get_sftp_runtime_credentials(outbound_config, outbound=True)
+    except SFTPCredentialError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    if not (
+        outbound_credentials.get("host")
+        and outbound_credentials.get("username")
+        and outbound_credentials.get("remote_folder")
+    ):
+        return JsonResponse({
+            "success": False,
+            "error": "The outbound SFTP host, username, or MIR folder is incomplete.",
         }, status=400)
 
     # 1. Process remote SFTP Inbound folder if configuration is present
@@ -1846,7 +1891,6 @@ def api_start_batch_conversion(request):
                     if not fname.startswith(".") and ext in ALLOWED_EXTENSIONS:
                         files_to_process.append(fname)
 
-            sftp_batch_items = []
             for fname in files_to_process:
                 remote_file_path = posixpath.join(remote_in_dir, fname)
                 try:
@@ -1907,7 +1951,17 @@ def api_start_batch_conversion(request):
     # Combine all SFTP and local inbound items into ONE SINGLE batch conversion for a single MIR file
     combined_items = sftp_batch_items + local_batch_items
     if combined_items:
-        batch_res = process_multiple_edi835_files(combined_items, client=client)
+        try:
+            batch_res = process_multiple_edi835_files(combined_items, client=client)
+        except Exception as batch_exc:
+            logger.exception("Combined SFTP batch conversion failed")
+            return JsonResponse({
+                "success": False,
+                "error": f"Combined MIR conversion failed: {batch_exc}",
+                "processed_count": 0,
+                "files": [item["filename"] for item in combined_items],
+                "errors": errors,
+            }, status=500)
         if batch_res.get("success"):
             if not batch_res.get("sftp_uploaded"):
                 errors.append(
