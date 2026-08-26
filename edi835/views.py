@@ -173,6 +173,8 @@ def tracked_files_list(request):
 
         data.append({
             "id": str(r.id),
+            "client_id": str(r.client_id) if r.client_id else None,
+            "client_name": r.client.name if r.client else "Global System Default",
             "original_filename": r.original_filename,
             "stored_filename": r.stored_filename,
             "status": r.status,
