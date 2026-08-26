@@ -8,6 +8,7 @@ from project835.field_crypto import (
     encrypt_sftp_field,
     decrypt_sftp_field,
     get_sftp_runtime_credentials,
+    FieldEncryptionError,
     SFTPCredentialError,
 )
 from django.http import JsonResponse
@@ -961,10 +962,17 @@ def api_save_sftp_config(request):
         config.outbound_auth_method = auth_method
         config.outbound_trust_unknown_key = trust_unknown_key
         config.outbound_mir_folder = outbound_mir_folder
-        if incoming_password:
-            config.outbound_password = encrypt_sftp_field(incoming_password)
-        if incoming_ssh_key:
-            config.outbound_ssh_key = encrypt_sftp_field(incoming_ssh_key)
+        try:
+            if incoming_password:
+                config.outbound_password = encrypt_sftp_field(incoming_password)
+            if incoming_ssh_key:
+                config.outbound_ssh_key = encrypt_sftp_field(incoming_ssh_key)
+        except FieldEncryptionError as exc:
+            return JsonResponse({
+                "success": False,
+                "error": str(exc),
+                "error_type": "SFTP_ENCRYPTION_CONFIGURATION_ERROR",
+            }, status=500)
     else:
         config.host = host
         config.port = port
@@ -975,10 +983,17 @@ def api_save_sftp_config(request):
         config.inbound_835_folder = inbound_835_folder
         if use_same_server:
             config.outbound_mir_folder = outbound_mir_folder
-        if incoming_password:
-            config.password = encrypt_sftp_field(incoming_password)
-        if incoming_ssh_key:
-            config.ssh_key = encrypt_sftp_field(incoming_ssh_key)
+        try:
+            if incoming_password:
+                config.password = encrypt_sftp_field(incoming_password)
+            if incoming_ssh_key:
+                config.ssh_key = encrypt_sftp_field(incoming_ssh_key)
+        except FieldEncryptionError as exc:
+            return JsonResponse({
+                "success": False,
+                "error": str(exc),
+                "error_type": "SFTP_ENCRYPTION_CONFIGURATION_ERROR",
+            }, status=500)
 
     if use_default:
         config.status = "CONNECTED"
