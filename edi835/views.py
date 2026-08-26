@@ -1,5 +1,8 @@
 import os
 import uuid
+import threading
+import logging
+from types import SimpleNamespace
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
@@ -1709,10 +1712,11 @@ def api_browse_sftp(request):
             except Exception: pass
 
 
-@csrf_exempt
-@authenticated_api_required
-@json_api_errors
-def api_start_batch_conversion(request):
+_batch_jobs = {}
+_batch_jobs_lock = threading.Lock()
+
+
+def _execute_batch_conversion(request):
     """
     API Endpoint: POST /api/start-batch-conversion/
     Automated Inbound SFTP Batch Pipeline:
@@ -2035,3 +2039,101 @@ def api_start_batch_conversion(request):
         "message": errors[-1] if batch_failed and errors else msg,
         "error": errors[-1] if batch_failed and errors else None,
     }, status=502 if batch_failed else 200)
+
+
+def _run_batch_job(job_id, request_context):
+    """Execute a long SFTP batch outside the Gunicorn request lifecycle."""
+    try:
+        response = _execute_batch_conversion(request_context)
+        try:
+            payload = json.loads(response.content.decode("utf-8"))
+        except Exception:
+            payload = {
+                "success": False,
+                "error": "The batch worker returned an invalid response.",
+            }
+        state = "COMPLETED" if payload.get("success") else "FAILED"
+        status_code = response.status_code
+    except Exception as exc:
+        logging.getLogger(__name__).exception("Background SFTP batch failed")
+        state = "FAILED"
+        status_code = 500
+        payload = {
+            "success": False,
+            "error": f"Batch pipeline failed: {exc}",
+        }
+
+    with _batch_jobs_lock:
+        _batch_jobs[job_id].update({
+            "state": state,
+            "status_code": status_code,
+            "result": payload,
+            "finished_at": timezone.now().isoformat(),
+        })
+
+
+@csrf_exempt
+@json_api_errors
+@authenticated_api_required
+def api_start_batch_conversion(request):
+    """Start the SFTP batch asynchronously or return an existing job status."""
+    if request.method == "GET":
+        job_id = (request.GET.get("job_id") or "").strip()
+        if not job_id:
+            return JsonResponse({
+                "success": False,
+                "error": "job_id is required.",
+            }, status=400)
+        with _batch_jobs_lock:
+            job = _batch_jobs.get(job_id)
+            job_data = dict(job) if job else None
+        if not job_data:
+            return JsonResponse({
+                "success": False,
+                "error": "Batch job was not found or the server was restarted.",
+            }, status=404)
+        if job_data.get("owner_user_id") != str(request.user.id):
+            return JsonResponse({
+                "success": False,
+                "error": "You are not authorized to view this batch job.",
+            }, status=403)
+        job_data.pop("owner_user_id", None)
+        return JsonResponse({"success": True, "job": job_data})
+
+    if request.method != "POST":
+        return JsonResponse({
+            "success": False,
+            "error": "Method not allowed.",
+        }, status=405)
+
+    request_body = bytes(request.body or b"")
+    request_context = SimpleNamespace(
+        method="POST",
+        body=request_body,
+        user=request.user,
+    )
+    job_id = str(uuid.uuid4())
+    with _batch_jobs_lock:
+        _batch_jobs[job_id] = {
+            "id": job_id,
+            "owner_user_id": str(request.user.id),
+            "state": "RUNNING",
+            "started_at": timezone.now().isoformat(),
+            "finished_at": None,
+            "status_code": None,
+            "result": None,
+        }
+
+    worker = threading.Thread(
+        target=_run_batch_job,
+        args=(job_id, request_context),
+        daemon=True,
+        name=f"sftp-batch-{job_id[:8]}",
+    )
+    worker.start()
+    return JsonResponse({
+        "success": True,
+        "job_id": job_id,
+        "state": "RUNNING",
+        "message": "SFTP batch pipeline started.",
+    }, status=202)
