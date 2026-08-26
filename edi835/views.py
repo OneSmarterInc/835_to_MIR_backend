@@ -139,16 +139,10 @@ def tracked_files_list(request):
     data = []
     records_to_update = []
     for r in records:
+        # This flag records a confirmed remote SFTP delivery. Never infer it
+        # from a local output/archive file, because local conversion does not
+        # prove that the remote upload succeeded.
         in_sftp = r.present_in_sftp
-        if not in_sftp:
-            if r.output_path and os.path.exists(Path(settings.BASE_DIR) / r.output_path):
-                in_sftp = True
-            elif r.status in ["ARCHIVED", "COMPLETED"]:
-                in_sftp = True
-            elif r.stored_filename and os.path.exists(input_dir / r.stored_filename):
-                in_sftp = True
-            elif r.original_filename and os.path.exists(input_dir / r.original_filename):
-                in_sftp = True
 
         in_archive = False
         if r.stored_filename and os.path.exists(archive_dir / r.stored_filename):
