@@ -1574,8 +1574,29 @@ def api_browse_sftp(request):
                 "error": "You are not authorized to use this SFTP configuration.",
             }, status=403)
 
+    # A client-scoped ``use_default`` row is an assignment pointer.  Resolve
+    # it to the effective global row before accessing encrypted credentials;
+    # the pointer intentionally does not contain a copy of admin secrets.
+    credential_config = config
+    browse_outbound = config.connection_type == "OUTBOUND"
+    if config.use_default:
+        from .services import resolve_sftp_config
+
+        credential_config = resolve_sftp_config(
+            client=config.client,
+            outbound=browse_outbound,
+        )
+        if not credential_config or credential_config.use_default:
+            return JsonResponse({
+                "success": False,
+                "error": "The administrator-assigned SFTP configuration could not be resolved.",
+            }, status=400)
+
     try:
-        saved = get_sftp_runtime_credentials(config, outbound=False)
+        saved = get_sftp_runtime_credentials(
+            credential_config,
+            outbound=browse_outbound,
+        )
     except SFTPCredentialError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
@@ -1732,6 +1753,24 @@ def api_start_batch_conversion(request):
     if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
+    # System administrators may run the batch for the client selected in the
+    # admin conversion screen. Client users remain locked to their own tenant.
+    if request.method == "POST" and request.user.is_staff and not client:
+        try:
+            request_body = json.loads(request.body.decode("utf-8")) if request.body else {}
+        except (TypeError, ValueError, UnicodeDecodeError):
+            request_body = {}
+        selected_client_id = request_body.get("client_id") or request_body.get("client")
+        if selected_client_id:
+            from accounts.models import Client
+            try:
+                client = Client.objects.get(id=selected_client_id)
+            except (Client.DoesNotExist, ValueError):
+                return JsonResponse({
+                    "success": False,
+                    "error": "The selected client was not found.",
+                }, status=404)
+
     config = resolve_sftp_config(client=client, outbound=False)
     if not client and config:
         client = config.client
@@ -1870,9 +1909,22 @@ def api_start_batch_conversion(request):
     if combined_items:
         batch_res = process_multiple_edi835_files(combined_items, client=client)
         if batch_res.get("success"):
-            processed_files.extend([item["filename"] for item in combined_items])
-            # Clean up SFTP remote files if SFTP client is available or reconnect if needed
-            if sftp_batch_items and config and config.host and config.username and config.inbound_835_folder:
+            if not batch_res.get("sftp_uploaded"):
+                errors.append(
+                    "The files were converted into one combined MIR, but the outbound SFTP upload failed. "
+                    "Inbound SFTP files were retained so the batch can be retried safely."
+                )
+            else:
+                processed_files.extend([item["filename"] for item in combined_items])
+            # Clean up SFTP remote files only after confirmed outbound delivery.
+            if (
+                batch_res.get("sftp_uploaded")
+                and sftp_batch_items
+                and config
+                and config.host
+                and config.username
+                and config.inbound_835_folder
+            ):
                 try:
                     ssh_del = paramiko.SSHClient()
                     if inbound_credentials["trust_unknown_key"]:
@@ -1909,20 +1961,23 @@ def api_start_batch_conversion(request):
                 except Exception as del_conn_err:
                     logger.warning(f"Cleanup error removing remote SFTP files: {del_conn_err}")
 
-            for item in local_batch_items:
-                try:
-                    os.remove(item["local_path"])
-                except Exception:
-                    pass
+            if batch_res.get("sftp_uploaded"):
+                for item in local_batch_items:
+                    try:
+                        os.remove(item["local_path"])
+                    except Exception:
+                        pass
         else:
             errors.append(f"Batch conversion error: {batch_res.get('error')}")
 
     msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
+    batch_failed = bool(combined_items and not processed_files)
     return JsonResponse({
-        "success": True,
+        "success": not batch_failed,
         "processed_count": len(processed_files),
         "files": processed_files,
         "errors": errors,
-        "message": msg,
-    })
+        "message": errors[-1] if batch_failed and errors else msg,
+        "error": errors[-1] if batch_failed and errors else None,
+    }, status=502 if batch_failed else 200)
