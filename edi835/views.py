@@ -872,7 +872,18 @@ def api_sftp_connect(request):
     config = None
     config_id = body.get("config_id") or body.get("id")
     if config_id:
-        config = SFTPConfig.objects.filter(id=config_id).first()
+        config_qs = SFTPConfig.objects.filter(id=config_id)
+        actor_client_id = getattr(request.user, "client_id", None)
+        if actor_client_id:
+            config_qs = config_qs.filter(client_id=actor_client_id)
+        elif not request.user.is_staff:
+            config_qs = config_qs.none()
+        config = config_qs.first()
+        if not config:
+            return JsonResponse({
+                "success": False,
+                "error": "SFTP configuration was not found for your client.",
+            }, status=404)
     try:
         saved = get_sftp_runtime_credentials(config, outbound=False) if config else {}
     except SFTPCredentialError as exc:
@@ -970,12 +981,25 @@ def api_save_sftp_config(request):
     config_id = body.get("id")
     client_id = body.get("client_id") or body.get("client")
     
-    if not request.user.is_staff:
-        client = getattr(request.user, "client", None)
-        client_id = str(client.id) if client else None
+    actor_client_id = getattr(request.user, "client_id", None)
+    if actor_client_id:
+        client_id = str(actor_client_id)
+    elif not request.user.is_staff:
+        return JsonResponse({
+            "success": False,
+            "error": "Your account is not associated with a client.",
+        }, status=403)
     config = None
     if config_id:
-        config = SFTPConfig.objects.filter(id=config_id).first()
+        config_qs = SFTPConfig.objects.filter(id=config_id)
+        if actor_client_id:
+            config_qs = config_qs.filter(client_id=actor_client_id)
+        config = config_qs.first()
+        if not config:
+            return JsonResponse({
+                "success": False,
+                "error": "SFTP configuration was not found for your client.",
+            }, status=404)
 
     if not config:
         if client_id:
@@ -1287,6 +1311,7 @@ def api_verify_sftp_paths(request):
 
 
 @csrf_exempt
+@authenticated_api_required
 def api_delete_sftp_config(request):
     """
     API Endpoint: Deletes SFTP configuration from DB.
@@ -1306,10 +1331,14 @@ def api_delete_sftp_config(request):
     from admin_panel.models import log_audit_event
 
     if config_id:
-        config = SFTPConfig.objects.filter(id=config_id).first()
+        config_qs = SFTPConfig.objects.filter(id=config_id)
+        actor_client_id = getattr(request.user, "client_id", None)
+        if actor_client_id:
+            config_qs = config_qs.filter(client_id=actor_client_id)
+        elif not request.user.is_staff:
+            config_qs = config_qs.none()
+        config = config_qs.first()
         if config:
-            if not request.user.is_staff and config.client != getattr(request.user, "client", None):
-                return JsonResponse({"error": "Unauthorized to delete this config."}, status=403)
             log_audit_event(
                 module="SYSTEM",
                 action="SFTP_CONFIG_DELETED",
@@ -1318,19 +1347,16 @@ def api_delete_sftp_config(request):
                 client=config.client
             )
             config.delete()
-    else:
-        if not request.user.is_staff:
-            SFTPConfig.objects.filter(client=getattr(request.user, "client", None)).delete()
         else:
-            SFTPConfig.objects.all().delete()
-        log_audit_event(
-            module="SYSTEM",
-            action="SFTP_CONFIG_ALL_DELETED",
-            details="All SFTP Configurations deleted.",
-            performed_by=user_name,
-            client=None
-        )
-        SFTPConfig.objects.all().delete()
+            return JsonResponse({
+                "success": False,
+                "error": "SFTP configuration was not found for your client.",
+            }, status=404)
+    else:
+        return JsonResponse({
+            "success": False,
+            "error": "Configuration ID is required.",
+        }, status=400)
 
     return JsonResponse({"success": True})
 
