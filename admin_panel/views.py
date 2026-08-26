@@ -30,6 +30,19 @@ from validation import (
 )
 
 
+# Workflow order is intentionally independent from the permanent/displayed
+# step numbers. Step 10 must be completed before Steps 8 and 9.
+ONBOARDING_PROCESS_ORDER = (1, 2, 3, 4, 5, 6, 7, 10, 8, 9, 11, 12, 13, 14, 15)
+ONBOARDING_PROCESS_POSITION = {
+    step_number: position
+    for position, step_number in enumerate(ONBOARDING_PROCESS_ORDER)
+}
+
+
+def onboarding_process_position(step_number):
+    return ONBOARDING_PROCESS_POSITION.get(step_number, len(ONBOARDING_PROCESS_ORDER))
+
+
 @csrf_exempt
 def api_admin_stats(request):
     """
@@ -122,7 +135,7 @@ def api_admin_clients(request):
         if onboarding_incomplete:
             completed_steps = {ss.step.step_number for ss in c.completed_onboarding_steps}
             in_progress_step = 1
-            for num in range(1, total_onboarding_steps + 1):
+            for num in ONBOARDING_PROCESS_ORDER:
                 if num not in completed_steps:
                     in_progress_step = num
                     break
@@ -750,6 +763,11 @@ def api_admin_client_state(request, client_id):
             OnboardingStepDefinition.objects.create(step_number=num, title=title, description=desc)
         step_defs = OnboardingStepDefinition.objects.all().order_by('step_number')
 
+    step_defs = sorted(
+        step_defs,
+        key=lambda step: onboarding_process_position(step.step_number),
+    )
+
     steps_data = []
     
     action_types = {
@@ -773,7 +791,7 @@ def api_admin_client_state(request, client_id):
     def get_phase(step_number):
         if step_number <= 4:
             return "PHASE ONE - PAPER RECORD DATA"
-        elif step_number <= 9:
+        elif step_number <= 9 or step_number == 10:
             return "PHASE TWO - UNDERSTAND THEIR SYSTEM"
         elif step_number <= 13:
             return "PHASE THREE - MOVE IT ON TEST"
@@ -1098,10 +1116,13 @@ def api_admin_step_redo(request, client_id, step_key):
                 step_status.status = 'IN_PROGRESS'
                 step_status.save()
 
-                # Reset ALL SUBSEQUENT steps to PENDING (locked) — preserve uploaded docs
+                # Reset every later workflow action to PENDING. Workflow order
+                # differs from numeric order because Step 10 precedes Step 8.
+                current_position = onboarding_process_position(step_num)
+                subsequent_step_numbers = ONBOARDING_PROCESS_ORDER[current_position + 1:]
                 subsequent_statuses = ClientStepStatus.objects.filter(
                     client=client_obj,
-                    step__step_number__gt=step_num,
+                    step__step_number__in=subsequent_step_numbers,
                 ).exclude(status='PENDING').select_related('step')
                 for sub_status in subsequent_statuses:
                     sub_status.status = 'PENDING'
