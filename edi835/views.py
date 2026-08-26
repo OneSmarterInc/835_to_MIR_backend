@@ -1281,7 +1281,7 @@ def api_delete_sftp_config(request):
 def api_push_to_sftp(request):
     """
     API Endpoint: POST /api/sftp/push/
-    Pushes an individual file record (both 835 and MIR) to SFTP server on demand.
+    Pushes an individual record's generated MIR to SFTP on demand.
     """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST method allowed."}, status=405)
@@ -1307,6 +1307,16 @@ def api_push_to_sftp(request):
                 "success": False,
                 "error": "You are not authorized to push this file.",
             }, status=403)
+
+    # Make retries and rapid/double clicks safe. Once delivery is recorded,
+    # return the existing result without sending a duplicate MIR file.
+    if file_record.present_in_sftp:
+        return JsonResponse({
+            "success": True,
+            "message": "MIR file is already uploaded to SFTP.",
+            "already_uploaded": True,
+            "error": None,
+        })
 
     from .services import push_file_record_to_sftp
     success, message = push_file_record_to_sftp(file_id)
