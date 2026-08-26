@@ -1533,7 +1533,7 @@ def get_cached_sftp_client(host, port, username, password=None, ssh_key=None, au
 
 
 @csrf_exempt
-@admin_api_required
+@authenticated_api_required
 def api_browse_sftp(request):
     """
     API Endpoint: POST /api/sftp/browse/
