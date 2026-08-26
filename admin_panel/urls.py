@@ -83,6 +83,11 @@ urlpatterns = [
     path("api/clients/<uuid:client_id>/offboarding/steps/<int:step_num>/redo/", api_admin_offboarding_step_redo),
     path("api/users/", api_admin_users, name="admin_api_users"),
     path("api/users", api_admin_users),
+    path(
+    "api/clients/<uuid:client_id>/edi-files/<uuid:file_id>/<str:file_type>/",
+    api_admin_edi_file,
+    name="admin_api_edi_file"
+),
     path("api/users/create/", api_admin_create_user, name="admin_api_create_user"),
     path("api/users/create", api_admin_create_user),
     path("api/users/<int:user_id>/update/", api_admin_update_user, name="admin_api_update_user"),
