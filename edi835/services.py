@@ -552,16 +552,9 @@ def sync_folder_observer():
     # 2. Sync physical disk existence for all DB records
     to_update = []
     for r in EDI835File.objects.all().iterator():
+        # Remote delivery is updated only by a successful SFTP upload. A local
+        # MIR/output/archive file must not turn the SFTP status green.
         in_sftp = r.present_in_sftp
-        if not in_sftp:
-            if r.output_path and os.path.exists(Path(settings.BASE_DIR) / r.output_path):
-                in_sftp = True
-            elif r.status in ["ARCHIVED", "COMPLETED"]:
-                in_sftp = True
-            elif r.stored_filename and os.path.exists(input_dir / r.stored_filename):
-                in_sftp = True
-            elif r.original_filename and os.path.exists(input_dir / r.original_filename):
-                in_sftp = True
 
         in_archive = False
         if r.stored_filename and os.path.exists(archive_dir / r.stored_filename):
