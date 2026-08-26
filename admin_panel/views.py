@@ -7,10 +7,12 @@ from project835.decorators import (
 )
 import json
 import logging
+from pathlib import Path
 from django.db import models, transaction
 from django.db.models import Count, Prefetch, Q
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.utils import timezone
 
 from accounts.models import Client, User
 from edi835.models import EDI835File
@@ -1254,26 +1256,72 @@ def api_admin_step_validate_835(request, client_id):
             },
         ])
 
-        # Trigger success email to the user
+        # Notify the active client users created during onboarding. This runs
+        # only after the MIR has been successfully uploaded to SFTP and uses
+        # the SMTP configuration saved for this client in Step 6.
+        email_sent = False
+        email_recipients = []
+        email_error = None
         try:
-            from admin_panel.email_service import send_client_email
-            email_subj = f"OneSmarter: 835 File Validation & Delivery Successful"
-            sftp_status_str = "and uploaded to your configured SFTP server" if proc_res.get("db_record") and proc_res["db_record"].present_in_sftp else "but SFTP upload is pending/not configured"
+            from admin_panel.email_service import send_client_email, get_client_users
+            from django.utils.html import escape
+
+            email_recipients = get_client_users(client_obj)
+            outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
+            outbound_folder = getattr(outbound_cfg, "outbound_mir_folder", None) or "/"
+            mir_filename = Path(db_record.output_path).name if db_record.output_path else "Generated MIR file"
+            delivered_at = timezone.localtime().strftime("%B %d, %Y at %I:%M %p %Z")
+
+            email_subj = f"MIR Delivery Confirmation – {filename}"
             email_html = f"""
-            <h3>Test 835 Validation & Conversion Successful</h3>
-            <p>Dear Partner,</p>
-            <p>We are pleased to inform you that your test 835 file <b>{filename}</b> has been successfully validated, converted to MIR format, {sftp_status_str}.</p>
-            <p><b>Conversion details:</b></p>
-            <ul>
-                <li>Claims identified: {proc_res.get('claims_count', 0)}</li>
-                <li>Services processed: {proc_res.get('services_count', 0)}</li>
-                <li>Records processed: {proc_res.get('records_count', 0)}</li>
-            </ul>
+            <div style="font-family:Arial,sans-serif;color:#1f2937;line-height:1.6;max-width:680px">
+              <h2 style="color:#0f766e;margin-bottom:8px">835 Validation and MIR Delivery Completed</h2>
+              <p>Dear {escape(client_obj.name)} Team,</p>
+              <p>
+                The submitted 835 file has passed validation, was converted successfully to MIR format,
+                and the generated MIR file was uploaded to your configured outbound SFTP location.
+              </p>
+              <table style="border-collapse:collapse;width:100%;margin:18px 0">
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Source 835 file</td><td style="padding:8px;border:1px solid #d1d5db">{escape(filename)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Generated MIR file</td><td style="padding:8px;border:1px solid #d1d5db">{escape(mir_filename)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Validation</td><td style="padding:8px;border:1px solid #d1d5db">Passed</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">SFTP delivery</td><td style="padding:8px;border:1px solid #d1d5db">Successful</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Outbound folder</td><td style="padding:8px;border:1px solid #d1d5db">{escape(outbound_folder)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Claims identified</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('claims_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Services processed</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('services_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">MIR records created</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('records_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Completed at</td><td style="padding:8px;border:1px solid #d1d5db">{escape(delivered_at)}</td></tr>
+              </table>
+              <p>No further action is required unless you are unable to locate the MIR file in the outbound SFTP folder.</p>
+              <p>Sincerely,<br><strong>OneSmarter Inc.</strong></p>
+            </div>
             """
-            send_client_email(client_obj, email_subj, email_html)
-        except Exception as e:
-            import logging
-            logging.getLogger(__name__).error(f"Failed to send email on step 7 success: {e}")
+            if not email_recipients:
+                email_error = "No active client-user email address is available."
+            else:
+                email_sent = send_client_email(
+                    client_obj,
+                    email_subj,
+                    email_html,
+                    to_emails=email_recipients,
+                )
+                if not email_sent:
+                    email_error = "The client SMTP server did not send the notification."
+        except Exception as exc:
+            email_error = str(exc)
+            logging.getLogger(__name__).exception(
+                "Step 9 delivery email failed for client %s", client_obj.id
+            )
+
+        checks.append({
+            "ok": email_sent,
+            "label": "Client Email Notification",
+            "detail": (
+                f"Delivery confirmation sent to {', '.join(email_recipients)}."
+                if email_sent
+                else email_error or "Delivery confirmation email was not sent."
+            ),
+        })
 
         step_def = OnboardingStepDefinition.objects.get(step_number=8)
         step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
@@ -1287,6 +1335,9 @@ def api_admin_step_validate_835(request, client_id):
             "checks": checks,
             "file_id": str(db_record.id),
             "mir_output_path": db_record.output_path,
+            "email_sent": email_sent,
+            "email_recipients": email_recipients,
+            "email_error": email_error,
         })
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
