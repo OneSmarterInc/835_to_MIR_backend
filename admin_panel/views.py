@@ -798,7 +798,6 @@ def api_admin_client_state(request, client_id):
         else:
             return "PHASE FOUR - LIVE"
 
-    in_progress_found = False
     for step in step_defs:
         st = status_map.get(step.id, 'PENDING')
         
@@ -810,9 +809,6 @@ def api_admin_client_state(request, client_id):
             
         is_in_progress = st == 'IN_PROGRESS'
         
-        if is_in_progress:
-            in_progress_found = True
-            
         is_file_step = step.step_number in [1, 2, 3, 14]
 
         extra_data = {}
@@ -859,13 +855,14 @@ def api_admin_client_state(request, client_id):
             "latestNote": latest_comments.get(step.step_number, None)
         })
 
-    # Auto advance: only if NO step is currently IN_PROGRESS
-    # After a redo, the redone step is IN_PROGRESS — don't auto-advance past it
-    if not in_progress_found:
-        for s in steps_data:
-            if not s["done"]:
-                s["inProgress"] = True
-                break
+    # Derive the single active action from canonical process order. This also
+    # migrates clients whose old state marked Step 8 active before Step 10.
+    active_step_assigned = False
+    for s in steps_data:
+        s["inProgress"] = False
+        if not active_step_assigned and not s["done"]:
+            s["inProgress"] = True
+            active_step_assigned = True
 
     client_dict = {
         "id": str(client_obj.id),
