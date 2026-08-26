@@ -1,4 +1,5 @@
 import os
+import uuid
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
@@ -724,8 +725,43 @@ def test_sftp_connection(host, port, username, password=None, ssh_key=None, auth
                     remote_folders.append(attr.filename)
                 else:
                     remote_files.append({"name": attr.filename, "size": attr.st_size})
+            # A connection test for an outbound folder must prove that the
+            # application can actually create files there, not only login.
+            # Otherwise a read-only account is incorrectly saved as CONNECTED.
+            if remote_folder and remote_folder.strip("/"):
+                probe_name = f".mir_write_test_{uuid.uuid4().hex}.tmp"
+                probe_path = f"{target_dir.rstrip('/')}/{probe_name}"
+                try:
+                    with sftp.open(probe_path, "wb") as probe:
+                        probe.write(b"MIR SFTP write test\n")
+                    sftp.remove(probe_path)
+                except Exception as write_err:
+                    try:
+                        sftp.remove(probe_path)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "SFTP target folder is not writable: %s (%s)",
+                        target_dir,
+                        write_err,
+                    )
+                    return {
+                        "success": False,
+                        "error": (
+                            f"SFTP folder '{target_dir}' is not writable: "
+                            f"{str(write_err)}"
+                        ),
+                        "error_type": "SFTP_FOLDER_NOT_WRITABLE",
+                        "stages": stages,
+                    }
         except Exception as e:
-            logger.warning(f"Could not list directory contents: {e}")
+            logger.warning("Could not access SFTP target folder %s: %s", target_dir, e)
+            return {
+                "success": False,
+                "error": f"SFTP folder '{target_dir}' is not accessible: {str(e)}",
+                "error_type": "SFTP_FOLDER_INACCESSIBLE",
+                "stages": stages,
+            }
 
         logger.info("SFTP connection completed successfully")
         return {
