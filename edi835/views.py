@@ -405,6 +405,66 @@ def api_get_sftp_config(request):
 
         saved_list.append(config_data)
 
+    # A client-level `use_default` row is an assignment pointer, not a second
+    # copy of the credentials. Hydrate that tenant row from the latest global
+    # database configuration so the client form/table display the connection
+    # actually used by pull and push operations.
+    if client_id:
+        for config_data in saved_list:
+            if not config_data.get("use_default"):
+                continue
+
+            connection_type = config_data.get("connection_type") or "UNIFIED"
+            compatible_types = (
+                ["OUTBOUND", "UNIFIED"]
+                if connection_type == "OUTBOUND"
+                else ["INBOUND", "UNIFIED"]
+                if connection_type == "INBOUND"
+                else ["UNIFIED"]
+            )
+            effective = (
+                SFTPConfig.objects.filter(
+                    client__isnull=True,
+                    connection_type__in=compatible_types,
+                )
+                .order_by("-updated_at")
+                .first()
+            )
+            if not effective:
+                config_data["status"] = "PENDING"
+                config_data["last_error"] = "The assigned default SFTP configuration was not found."
+                continue
+
+            config_data.update({
+                "name": f"{effective.name} (Assigned by Admin)",
+                "use_same_server": effective.use_same_server,
+                "host": effective.host,
+                "port": effective.port,
+                "username": effective.username,
+                "auth_method": effective.auth_method,
+                "trust_unknown_key": effective.trust_unknown_key,
+                "inbound_837_folder": effective.inbound_837_folder,
+                "inbound_835_folder": effective.inbound_835_folder,
+                "outbound_host": effective.outbound_host,
+                "outbound_port": effective.outbound_port,
+                "outbound_username": effective.outbound_username,
+                "outbound_auth_method": effective.outbound_auth_method,
+                "outbound_trust_unknown_key": effective.outbound_trust_unknown_key,
+                "outbound_mir_folder": effective.outbound_mir_folder,
+                "has_password": bool(effective.password),
+                "has_ssh_key": bool(effective.ssh_key),
+                "has_outbound_password": bool(effective.outbound_password),
+                "has_outbound_ssh_key": bool(effective.outbound_ssh_key),
+                "status": effective.status,
+                "last_error": effective.last_error,
+                "last_tested_at": (
+                    effective.last_tested_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if effective.last_tested_at else None
+                ),
+                "updated_at": effective.updated_at.isoformat() if effective.updated_at else None,
+                "inherited_from_default": True,
+            })
+
     # Build the effective form configuration from the database. Unified mode
     # uses one row; separate-server mode combines the client's latest INBOUND
     # and OUTBOUND rows so both halves created by an admin appear to the user.
