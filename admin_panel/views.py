@@ -1926,7 +1926,121 @@ def api_admin_client_edi_files(request, client_id):
             "error_message": f.error_message
         })
     return JsonResponse({"success": True, "files": file_list})
+@csrf_exempt
+def api_admin_edi_file(request, client_id, file_id, file_type):
+    """
+    GET /admin-panel/api/clients/<client_id>/edi-files/<file_id>/<file_type>/
 
+    file_type:
+      - input   -> original 835/X12 file
+      - mir     -> generated MIR file
+
+    Used by the Admin Files/Archive page for View and Download.
+    """
+    if request.method != "GET":
+        return JsonResponse(
+            {"success": False, "error": "Only GET allowed"},
+            status=405
+        )
+
+    if file_type not in ["input", "mir"]:
+        return JsonResponse(
+            {"success": False, "error": "Invalid file type"},
+            status=400
+        )
+
+    try:
+        file_record = EDI835File.objects.get(
+            id=file_id,
+            client_id=client_id
+        )
+    except EDI835File.DoesNotExist:
+        return JsonResponse(
+            {"success": False, "error": "File record not found"},
+            status=404
+        )
+
+    from pathlib import Path
+    from django.conf import settings
+    from django.http import FileResponse
+    import mimetypes
+    import os
+
+    # ---------------------------------------------------------
+    # Determine which physical file to serve
+    # ---------------------------------------------------------
+    if file_type == "mir":
+        relative_path = file_record.output_path
+
+        if not relative_path:
+            return JsonResponse(
+                {"success": False, "error": "MIR file has not been generated yet."},
+                status=404
+            )
+
+        filename = os.path.basename(relative_path)
+
+    else:
+        # Prefer archived 835 because processed files are moved
+        # from processing -> archive.
+        relative_path = file_record.archive_path or file_record.input_path
+
+        if not relative_path:
+            return JsonResponse(
+                {"success": False, "error": "Original 835 file was not found."},
+                status=404
+            )
+
+        filename = file_record.original_filename or os.path.basename(relative_path)
+
+    # ---------------------------------------------------------
+    # Resolve physical path
+    # ---------------------------------------------------------
+    file_path = Path(settings.BASE_DIR) / relative_path
+
+    if not file_path.exists() or not file_path.is_file():
+        return JsonResponse(
+            {
+                "success": False,
+                "error": f"Physical file not found: {filename}"
+            },
+            status=404
+        )
+
+    # ---------------------------------------------------------
+    # Content type
+    # ---------------------------------------------------------
+    content_type, _ = mimetypes.guess_type(str(file_path))
+
+    if not content_type:
+        if file_type == "mir":
+            content_type = "text/plain"
+        else:
+            content_type = "text/plain"
+
+    # ---------------------------------------------------------
+    # View vs download
+    # ---------------------------------------------------------
+    download = request.GET.get("download", "").lower() in [
+        "1",
+        "true",
+        "yes"
+    ]
+
+    disposition = "attachment" if download else "inline"
+
+    response = FileResponse(
+        open(file_path, "rb"),
+        content_type=content_type
+    )
+
+    response["Content-Disposition"] = (
+        f'{disposition}; filename="{filename}"'
+    )
+
+    response["X-OneSmarter-Filename"] = filename
+
+    return response
 
 from admin_panel.models import ClientTestEnvironment
 
