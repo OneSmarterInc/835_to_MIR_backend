@@ -285,11 +285,7 @@ def api_get_sftp_config(request):
         or request.GET.get("client")
     )
 
-    if (
-        not client_id
-        and request.user.is_authenticated
-        and not request.user.is_staff
-    ):
+    if request.user.is_authenticated and not request.user.is_staff:
         client = getattr(
             request.user,
             "client",
@@ -305,11 +301,11 @@ def api_get_sftp_config(request):
     if client_id:
         configs = SFTPConfig.objects.filter(
             client_id=client_id
-        )
+        ).order_by("-updated_at")
     else:
         configs = SFTPConfig.objects.filter(
             client__isnull=True
-        )
+        ).order_by("-updated_at")
 
     saved_list = []
 
@@ -404,15 +400,83 @@ def api_get_sftp_config(request):
                 if config.last_tested_at
                 else None
             ),
+            "updated_at": config.updated_at.isoformat() if config.updated_at else None,
         }
 
         saved_list.append(config_data)
 
-    active_config = (
-        saved_list[0]
-        if saved_list
-        else None
-    )
+    # Build the effective form configuration from the database. Unified mode
+    # uses one row; separate-server mode combines the client's latest INBOUND
+    # and OUTBOUND rows so both halves created by an admin appear to the user.
+    unified = next((c for c in saved_list if c["connection_type"] == "UNIFIED"), None)
+    inbound = next((c for c in saved_list if c["connection_type"] == "INBOUND"), None)
+    outbound = next((c for c in saved_list if c["connection_type"] == "OUTBOUND"), None)
+
+    latest_connection_type = saved_list[0]["connection_type"] if saved_list else None
+    if unified and (
+        latest_connection_type == "UNIFIED"
+        or (not inbound and not outbound)
+    ):
+        active_config = unified
+    elif inbound or outbound:
+        active_config = {
+            "id": (inbound or outbound).get("id"),
+            "name": "Separate Inbound / Outbound SFTP",
+            "client_id": (inbound or outbound).get("client_id"),
+            "connection_type": "SEPARATE",
+            "use_same_server": False,
+            "use_default": bool(
+                (inbound and inbound.get("use_default"))
+                or (outbound and outbound.get("use_default"))
+            ),
+            "host": inbound.get("host") if inbound else "",
+            "port": inbound.get("port") if inbound else 22,
+            "username": inbound.get("username") if inbound else "",
+            "auth_method": inbound.get("auth_method") if inbound else "Password",
+            "trust_unknown_key": inbound.get("trust_unknown_key") if inbound else True,
+            "inbound_837_folder": inbound.get("inbound_837_folder") if inbound else "",
+            "inbound_835_folder": inbound.get("inbound_835_folder") if inbound else "",
+            "outbound_host": outbound.get("outbound_host") if outbound else "",
+            "outbound_port": outbound.get("outbound_port") if outbound else 22,
+            "outbound_username": outbound.get("outbound_username") if outbound else "",
+            "outbound_auth_method": outbound.get("outbound_auth_method") if outbound else "Password",
+            "outbound_trust_unknown_key": outbound.get("outbound_trust_unknown_key") if outbound else True,
+            "outbound_mir_folder": outbound.get("outbound_mir_folder") if outbound else "",
+            "has_password": bool(inbound and inbound.get("has_password")),
+            "has_ssh_key": bool(inbound and inbound.get("has_ssh_key")),
+            "has_outbound_password": bool(outbound and outbound.get("has_outbound_password")),
+            "has_outbound_ssh_key": bool(outbound and outbound.get("has_outbound_ssh_key")),
+            "status": (
+                "CONNECTED"
+                if inbound and outbound
+                and inbound.get("status") == "CONNECTED"
+                and outbound.get("status") == "CONNECTED"
+                else "FAILED"
+                if (inbound and inbound.get("status") == "FAILED")
+                or (outbound and outbound.get("status") == "FAILED")
+                else "PENDING"
+            ),
+            "last_error": (
+                (inbound and inbound.get("last_error"))
+                or (outbound and outbound.get("last_error"))
+            ),
+            "last_tested_at": max(
+                [v for v in [
+                    inbound and inbound.get("last_tested_at"),
+                    outbound and outbound.get("last_tested_at"),
+                ] if v],
+                default=None,
+            ),
+            "updated_at": max(
+                [v for v in [
+                    inbound and inbound.get("updated_at"),
+                    outbound and outbound.get("updated_at"),
+                ] if v],
+                default=None,
+            ),
+        }
+    else:
+        active_config = unified
 
     return JsonResponse(
         {
