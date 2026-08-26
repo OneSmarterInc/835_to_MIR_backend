@@ -187,10 +187,7 @@ def tracked_files_list(request):
         EDI835File.objects.bulk_update(
             records_to_update, ["present_in_sftp", "present_in_archive_folder"]
         )
-    return JsonResponse({
-    "success": True,
-    "files": data,
-})
+    return JsonResponse({"files": data})
 
 
 def api_get_metrics(request):
@@ -1244,6 +1241,7 @@ def api_delete_sftp_config(request):
     return JsonResponse({"success": True})
 
 @csrf_exempt
+@authenticated_api_required
 def api_push_to_sftp(request):
     """
     API Endpoint: POST /api/sftp/push/
@@ -1260,6 +1258,19 @@ def api_push_to_sftp(request):
     file_id = body.get("file_id")
     if not file_id:
         return JsonResponse({"success": False, "error": "File ID is required."}, status=400)
+
+    try:
+        file_record = EDI835File.objects.select_related("client").get(id=file_id)
+    except (EDI835File.DoesNotExist, ValueError):
+        return JsonResponse({"success": False, "error": "File record not found."}, status=404)
+
+    if not request.user.is_staff:
+        request_client = getattr(request.user, "client", None)
+        if not request_client or file_record.client_id != request_client.id:
+            return JsonResponse({
+                "success": False,
+                "error": "You are not authorized to push this file.",
+            }, status=403)
 
     from .services import push_file_record_to_sftp
     success, message = push_file_record_to_sftp(file_id)
