@@ -285,27 +285,27 @@ def api_get_sftp_config(request):
         or request.GET.get("client")
     )
 
-    if request.user.is_authenticated and not request.user.is_staff:
-        client = getattr(
-            request.user,
-            "client",
-            None,
-        )
+    if request.user.is_authenticated:
+        authenticated_client_id = getattr(request.user, "client_id", None)
 
-        client_id = (
-            client.id
-            if client
-            else None
-        )
+        # Tenant isolation: every account associated with a client is scoped
+        # to that client, even if it has a staff-like role. Only a system
+        # administrator without a client association may select client_id.
+        if authenticated_client_id:
+            client_id = authenticated_client_id
+        elif not request.user.is_staff:
+            client_id = None
 
     if client_id:
         configs = SFTPConfig.objects.filter(
             client_id=client_id
         ).order_by("-updated_at")
-    else:
+    elif request.user.is_staff:
         configs = SFTPConfig.objects.filter(
             client__isnull=True
         ).order_by("-updated_at")
+    else:
+        configs = SFTPConfig.objects.none()
 
     saved_list = []
 
