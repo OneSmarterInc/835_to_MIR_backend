@@ -1628,6 +1628,7 @@ def api_browse_sftp(request):
 
 
 @csrf_exempt
+@authenticated_api_required
 def api_start_batch_conversion(request):
     """
     API Endpoint: POST /api/start-batch-conversion/
@@ -1651,7 +1652,13 @@ def api_start_batch_conversion(request):
     from pathlib import Path
     from django.conf import settings
     from .models import SFTPConfig, EDI835File
-    from .services import get_edi835_storage_dirs, process_edi835_file_content, upload_mir_to_sftp, process_multiple_edi835_files
+    from .services import (
+        get_edi835_storage_dirs,
+        process_edi835_file_content,
+        upload_mir_to_sftp,
+        process_multiple_edi835_files,
+        resolve_sftp_config,
+    )
     from converter.services.validator import EDI835Validator
 
     logger = logging.getLogger(__name__)
@@ -1665,14 +1672,20 @@ def api_start_batch_conversion(request):
     if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
-    if client:
-        config = SFTPConfig.objects.filter(client=client).first()
-    else:
-        config = SFTPConfig.objects.first()
-        if config:
-            client = config.client
+    config = resolve_sftp_config(client=client, outbound=False)
+    if not client and config:
+        client = config.client
     processed_files = []
     errors = []
+
+    if config and config.status != "CONNECTED":
+        return JsonResponse({
+            "success": False,
+            "error": (
+                "The latest inbound SFTP configuration is not connected "
+                f"(status: {config.status}). Test and save the latest connection first."
+            ),
+        }, status=400)
 
     # 1. Process remote SFTP Inbound folder if configuration is present
     if config and config.host and config.username and config.inbound_835_folder:
