@@ -1206,7 +1206,7 @@ def api_admin_step_validate_835(request, client_id):
         doc.file.save(filename, ContentFile(file_bytes), save=True)
         
         # Process the EDI file content immediately through the pipeline (validation, conversion, SFTP upload)
-        from edi835.services import process_edi835_file_content
+        from edi835.services import process_edi835_file_content, resolve_sftp_config
         proc_res = process_edi835_file_content(raw_text, original_filename=filename, client=client_obj)
 
         if not proc_res.get("success"):
@@ -1218,7 +1218,6 @@ def api_admin_step_validate_835(request, client_id):
 
         db_record = proc_res.get("db_record")
         if not db_record or not db_record.present_in_sftp:
-            from edi835.services import resolve_sftp_config
             outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
             upload_error = (
                 getattr(outbound_cfg, "last_error", None)
