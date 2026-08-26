@@ -67,6 +67,8 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
     logger = logging.getLogger(__name__)
 
     cfg = None
+    ssh = None
+    sftp = None
     try:
         import paramiko
 
@@ -103,6 +105,13 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
             logger.warning("upload_mir_to_sftp: Missing host, username, or outbound_mir_folder.")
             return False
 
+        local_path = Path(local_file_path)
+        if not local_path.is_file():
+            raise RuntimeError(
+                "The generated MIR file is unavailable in temporary storage. "
+                "Please retry the conversion."
+            )
+
         ssh = paramiko.SSHClient()
         if trust_unknown_key:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
@@ -133,26 +142,33 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
         )
         sftp = ssh.open_sftp()
 
-        # The configured folder was verified by Save & Test. Do not silently
-        # ignore path errors or try to create directories the account may not
-        # own; surface the real server response instead.
-        sftp.stat(out_folder)
+        # Enter the exact outbound directory selected in Step 7 and upload the
+        # MIR by basename. This avoids joining server-specific absolute/chroot
+        # paths on the Django host.
+        try:
+            sftp.chdir(out_folder)
+        except Exception as folder_error:
+            raise RuntimeError(
+                f"The Step 7 outbound SFTP folder '{out_folder}' is not accessible: "
+                f"{folder_error}"
+            ) from folder_error
+
+        try:
+            sftp.put(str(local_path), mir_filename)
+        except Exception as upload_error:
+            raise RuntimeError(
+                f"The SFTP server rejected the upload to '{out_folder}': "
+                f"{upload_error}"
+            ) from upload_error
 
         remote_path = f"{out_folder.rstrip('/')}/{mir_filename}"
-        sftp.put(str(local_file_path), remote_path)
-
-        sftp.close()
-        ssh.close()
         if cfg.last_error:
             cfg.last_error = None
             cfg.save(update_fields=["last_error", "updated_at"])
         logger.info(f"upload_mir_to_sftp: Successfully pushed {mir_filename} to remote SFTP outbound folder {remote_path}")
         return True
     except Exception as e:
-        if isinstance(e, FileNotFoundError):
-            public_reason = "The generated MIR file was not found before upload."
-        else:
-            public_reason = str(e)
+        public_reason = str(e)
         error_message = f"MIR upload failed for '{mir_filename}': {public_reason}"
         logger.error(error_message, exc_info=True)
         try:
@@ -162,6 +178,17 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
         except Exception:
             logger.exception("Could not persist the SFTP upload error")
         return False
+    finally:
+        if sftp:
+            try:
+                sftp.close()
+            except Exception:
+                pass
+        if ssh:
+            try:
+                ssh.close()
+            except Exception:
+                pass
 
 
 def push_file_record_to_sftp(file_id):
