@@ -23,12 +23,12 @@ def resolve_sftp_config(client=None, outbound=False):
     from .models import SFTPConfig
 
     def pick(queryset):
-        preferred_type = "OUTBOUND" if outbound else "INBOUND"
-        return (
-            queryset.filter(connection_type=preferred_type).first()
-            or queryset.filter(connection_type="UNIFIED").first()
-            or queryset.first()
-        )
+        compatible_types = ["OUTBOUND", "UNIFIED"] if outbound else ["INBOUND", "UNIFIED"]
+        compatible = queryset.filter(connection_type__in=compatible_types).order_by("-updated_at")
+        # Step 7 saves a client-specific UNIFIED configuration. Choose the
+        # newest connected compatible record, so an old OUTBOUND row cannot
+        # silently override the SFTP setup agreed during onboarding.
+        return compatible.filter(status="CONNECTED").first() or compatible.first()
 
     config = pick(SFTPConfig.objects.filter(client=client)) if client else None
     if config and config.use_default:
@@ -149,7 +149,11 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
         logger.info(f"upload_mir_to_sftp: Successfully pushed {mir_filename} to remote SFTP outbound folder {remote_path}")
         return True
     except Exception as e:
-        error_message = f"MIR upload failed for '{mir_filename}': {e}"
+        if isinstance(e, FileNotFoundError):
+            public_reason = "The generated MIR file was not found before upload."
+        else:
+            public_reason = str(e)
+        error_message = f"MIR upload failed for '{mir_filename}': {public_reason}"
         logger.error(error_message, exc_info=True)
         try:
             if cfg:
@@ -313,8 +317,8 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         mir_text = res["text"]
 
         # Step 4: Write converted MIR file to output/ folder
-        output_mir_path = dirs["output"] / mir_filename
-        export_mir_file(mir_text, dirs["output"], mir_filename)
+        output_mir_path = Path(export_mir_file(mir_text, dirs["output"], mir_filename))
+        mir_filename = output_mir_path.name
         rel_output_path = (Path("media") / "edi835" / "output" / mir_filename).as_posix()
 
         # Step 4b: Upload converted .mir file directly to configured SFTP outbound folder if active config exists
@@ -428,9 +432,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
     mir_filename = f"{combined_base_name}.mir"
-    output_mir_path = dirs["output"] / mir_filename
-
-    export_mir_file(mir_text, dirs["output"], mir_filename)
+    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], mir_filename))
+    mir_filename = output_mir_path.name
     rel_output_path = (Path("media") / "edi835" / "output" / mir_filename).as_posix()
 
     # Upload single combined MIR file directly to configured SFTP outbound folder
