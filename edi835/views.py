@@ -137,7 +137,10 @@ def tracked_files_list(request):
 
     client = getattr(request.user, "client", None)
     if request.user.is_staff:
-        records = EDI835File.objects.select_related("client").order_by('-uploaded_at')[:200]
+        records = EDI835File.objects.select_related("client")
+        if request.GET.get("scope") == "global":
+            records = records.filter(client__isnull=True)
+        records = records.order_by('-uploaded_at')[:200]
     else:
         records = EDI835File.objects.filter(client=client).order_by('-uploaded_at')[:200]
     data = []
@@ -1974,7 +1977,7 @@ def _execute_batch_conversion(request):
                 )
             else:
                 processed_files.extend([item["filename"] for item in combined_items])
-            # Clean up SFTP remote files only after confirmed outbound delivery.
+            # Clean up SFTP remote files if SFTP client is available or reconnect if needed
             if (
                 batch_res.get("sftp_uploaded")
                 and sftp_batch_items
@@ -2106,6 +2109,7 @@ def api_start_batch_conversion(request):
             "error": "Method not allowed.",
         }, status=405)
 
+    # Cache request data and detach the minimum context needed by the worker.
     request_body = bytes(request.body or b"")
     request_context = SimpleNamespace(
         method="POST",
