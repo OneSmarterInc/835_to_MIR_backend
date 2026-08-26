@@ -1009,7 +1009,6 @@ def api_admin_step_upload(request, client_id, step_key):
                 html = f"<h3>File Upload Successful</h3><p>The file <b>{filename}</b> was successfully uploaded and passed all validations.</p>"
                 send_client_email(client_obj, subject, html)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
             return JsonResponse({
@@ -1184,7 +1183,6 @@ def api_admin_step_validate_835(request, client_id):
                 html = f"<h3>835 File Validation Failed</h3><p>The file <b>{filename_to_report}</b> failed X12 validation.</p><p><b>Reason:</b> {err_msg}</p>"
                 send_client_email(client_obj, subject, html)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
             return JsonResponse({"success": False, "error": err_msg, "checks": checks}, status=400)
