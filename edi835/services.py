@@ -18,6 +18,41 @@ from .mir_exporter import export_mir_file
 logger = logging.getLogger("edi835")
 
 
+def resolve_mir_filename(client=None, fallback_base="MIR", now=None):
+    """Resolve the client-facing MIR filename and supported date/time tokens."""
+    now = now or timezone.localtime()
+    default_format = "MIROUT_YYYY_MMDD_.MIR"
+    format_value = (
+        getattr(client, "mir_filename_format", None)
+        if client
+        else None
+    ) or default_format
+
+    resolved = os.path.basename(str(format_value).strip())
+    replacements = (
+        ("YYYY", now.strftime("%Y")),
+        ("MM", now.strftime("%m")),
+        ("DD", now.strftime("%d")),
+        ("hh", now.strftime("%H")),
+        ("mm", now.strftime("%M")),
+        ("ss", now.strftime("%S")),
+    )
+    for token, value in replacements:
+        resolved = resolved.replace(token, value)
+
+    if not resolved:
+        resolved = fallback_base
+    if not resolved.lower().endswith(".mir"):
+        resolved += ".mir"
+    return resolved
+
+
+def local_mir_filename(client, delivery_filename):
+    """Namespace a locally stored MIR by tenant while preserving SFTP naming."""
+    client_prefix = str(client.id) if client else "system"
+    return f"{client_prefix}_{os.path.basename(delivery_filename)}"
+
+
 def resolve_sftp_config(client=None, outbound=False):
     """Resolve the correct tenant or global SFTP row for a transfer direction."""
     from .models import SFTPConfig
@@ -219,20 +254,7 @@ def push_file_record_to_sftp(file_id):
     if rec.output_path:
         base_name = os.path.splitext(stored_name)[0]
         # Resolve mir_filename dynamically
-        now = timezone.now()
-        fmt = "MIROUT_YYYY_MMDD_.MIR"
-        if client and getattr(client, "mir_filename_format", None):
-            fmt = client.mir_filename_format
-            
-        resolved_name = fmt
-        resolved_name = resolved_name.replace("YYYY", now.strftime("%Y"))
-        resolved_name = resolved_name.replace("MM", now.strftime("%m"))
-        resolved_name = resolved_name.replace("DD", now.strftime("%d"))
-        
-        if not resolved_name.upper().endswith(".MIR"):
-            resolved_name += ".mir"
-            
-        mir_filename = resolved_name
+        mir_filename = resolve_mir_filename(client=client, fallback_base=base_name)
         mir_path = Path(settings.BASE_DIR) / rec.output_path
         if not os.path.exists(mir_path):
             mir_path = dirs["output"] / f"{base_name}.mir"
@@ -286,18 +308,11 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     base_name = os.path.splitext(original_filename)[0]
 
     # Resolve mir_filename dynamically using client's format
-    if client:
-        now = timezone.now()
-        fmt = getattr(client, "mir_filename_format", "MIROUT_YYYY_MMDD_.MIR") or "MIROUT_YYYY_MMDD_.MIR"
-        resolved_name = fmt
-        resolved_name = resolved_name.replace("YYYY", now.strftime("%Y"))
-        resolved_name = resolved_name.replace("MM", now.strftime("%m"))
-        resolved_name = resolved_name.replace("DD", now.strftime("%d"))
-        if not resolved_name.upper().endswith(".MIR"):
-            resolved_name += ".mir"
-        mir_filename = resolved_name
-    else:
-        mir_filename = f"{base_name}.mir"
+    delivery_mir_filename = resolve_mir_filename(
+        client=client,
+        fallback_base=base_name,
+    )
+    stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
 
     # Prefix with UUID to prevent file overwrite collisions
     stored_filename = f"{file_uuid}_{original_filename}"
@@ -344,12 +359,15 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         mir_text = res["text"]
 
         # Step 4: Write converted MIR file to output/ folder
-        output_mir_path = Path(export_mir_file(mir_text, dirs["output"], mir_filename))
-        mir_filename = output_mir_path.name
-        rel_output_path = (Path("media") / "edi835" / "output" / mir_filename).as_posix()
+        output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
+        rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
         # Step 4b: Upload converted .mir file directly to configured SFTP outbound folder if active config exists
-        sftp_uploaded = upload_mir_to_sftp(output_mir_path, mir_filename, client=client)
+        sftp_uploaded = upload_mir_to_sftp(
+            output_mir_path,
+            delivery_mir_filename,
+            client=client,
+        )
 
         # Step 5: Move original 835/x12 EDI file from processing/ to archive/
         archived_835_path = dirs["archive"] / stored_filename
@@ -458,13 +476,20 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
-    mir_filename = f"{combined_base_name}.mir"
-    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], mir_filename))
-    mir_filename = output_mir_path.name
-    rel_output_path = (Path("media") / "edi835" / "output" / mir_filename).as_posix()
+    delivery_mir_filename = resolve_mir_filename(
+        client=client,
+        fallback_base=combined_base_name,
+    )
+    stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
+    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
+    rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
     # Upload single combined MIR file directly to configured SFTP outbound folder
-    sftp_uploaded = upload_mir_to_sftp(output_mir_path, mir_filename, client=client)
+    sftp_uploaded = upload_mir_to_sftp(
+        output_mir_path,
+        delivery_mir_filename,
+        client=client,
+    )
 
     # Combine all input file names into a single string for table 835 IN column
     combined_inputs_str = ", ".join(file_names)
@@ -494,7 +519,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     return {
         "success": True,
         "mir_text": mir_text,
-        "combined_filename": mir_filename,
+        "combined_filename": delivery_mir_filename,
+        "stored_filename": stored_mir_filename,
         "files_count": len(file_names),
         "claims_count": claims_count,
         "services_count": services_count,
