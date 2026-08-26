@@ -25,10 +25,10 @@ def resolve_sftp_config(client=None, outbound=False):
     def pick(queryset):
         compatible_types = ["OUTBOUND", "UNIFIED"] if outbound else ["INBOUND", "UNIFIED"]
         compatible = queryset.filter(connection_type__in=compatible_types).order_by("-updated_at")
-        # Step 7 saves a client-specific UNIFIED configuration. Choose the
-        # newest connected compatible record, so an old OUTBOUND row cannot
-        # silently override the SFTP setup agreed during onboarding.
-        return compatible.filter(status="CONNECTED").first() or compatible.first()
+        # The latest compatible client record is authoritative regardless of
+        # whether an admin or client user saved it. Never silently fall back to
+        # an older connection merely because it is still marked CONNECTED.
+        return compatible.first()
 
     config = pick(SFTPConfig.objects.filter(client=client)) if client else None
     if config and config.use_default:
