@@ -53,13 +53,18 @@ def _merge_saved(saved: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def get_mappings(client=None) -> list[dict[str, Any]]:
-    from admin_panel.models import MirMappingField
     base = defaults()
-    by_id = {f["id"]: f for f in base}
-    
+
     if client is None:
         return base
-        
+
+    # Import Django models only when client-specific persisted mappings are
+    # actually requested. This keeps the public converter usable as a
+    # standalone 835-to-MIR utility without Django settings or a database.
+    from admin_panel.models import MirMappingField
+
+    by_id = {f["id"]: f for f in base}
+
     saved_records = MirMappingField.objects.filter(client=client)
     if not saved_records.exists():
         return base

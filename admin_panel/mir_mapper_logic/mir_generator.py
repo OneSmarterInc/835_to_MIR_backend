@@ -89,7 +89,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None) -> Tuple[List[str
         inherited_reason = claim_primary_reason(claim)
         for sequence, chunk in enumerate(chunks, start=1):
             if config.SERVICE_OVERFLOW_MODE == "truncate" and len(services) > config.MAX_SERVICE_LINES_PER_RECORD:
-                header_service_count = len(services) % 100
+                header_service_count = len(chunk)
             else:
                 header_service_count = len(chunk)
             record = _header(claim, sequence, max_sequence, header_service_count, fields)

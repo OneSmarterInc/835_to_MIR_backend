@@ -47,8 +47,8 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         proc_file = self.dirs["processing"] / stored_name
         self.assertFalse(os.path.exists(proc_file))
 
-        # 3. output/ folder has converted .mir file using uploaded base name
-        out_mir = self.dirs["output"] / "TEST_RUN_FILE.mir"
+        # 3. output/ folder has the namespaced MIR file recorded by the pipeline
+        out_mir = self.dirs["output"] / Path(db_rec.output_path).name
         self.assertTrue(os.path.exists(out_mir))
 
         # 4. archive/ folder contains ONLY the x12/835 file (no .mir file in archive/)
@@ -89,7 +89,7 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertEqual(res["claims_count"], 2)
         
         # Verify single MIR file was created in output directory
-        output_file = self.dirs["output"] / res["combined_filename"]
+        output_file = self.dirs["output"] / res["stored_filename"]
         self.assertTrue(os.path.exists(output_file))
 
         # Check DB record
@@ -97,4 +97,3 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertEqual(db_rec.status, "ARCHIVED")
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
-

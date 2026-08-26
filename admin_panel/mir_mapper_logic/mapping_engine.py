@@ -8,11 +8,16 @@ from typing import Any
 
 from . import config
 from .mir_mapper import (
+    claim_disposition,
     claim_primary_reason,
     co_adjustment_total,
     covered_charge,
+    mir_patient_liability,
     patient_liability,
     payment_reductions,
+    payment_reduction_slots,
+    prepriced_amount,
+    process_code_indicator,
     service_status_and_reason,
     signed_amount,
     signed_count,
@@ -89,8 +94,14 @@ def _formula_env(claim: Claim, service: ServiceLine | None, inherited_reason: st
         "PR_ADJUSTMENTS": pr,
         "COVERED_AMOUNT": covered_charge(svc),
         "CLAIM_PRIMARY_REASON": lambda: claim_primary_reason(claim),
+        "CLAIM_DISPOSITION": lambda: claim_disposition(claim),
+        "PROCESS_INDICATOR": lambda: process_code_indicator(claim),
         "SERVICE_STATUS": lambda: service_status_and_reason(svc, claim.status, inherited_reason)[0],
         "SERVICE_REASON": lambda: service_status_and_reason(svc, claim.status, inherited_reason)[1],
+        "PREPRICED_AMOUNT": lambda: prepriced_amount(svc, claim.status, inherited_reason),
+        "MIR_PATIENT_LIABILITY": lambda: mir_patient_liability(svc, claim.status, inherited_reason),
+        "REDUCTION_REASON": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[0],
+        "REDUCTION_AMOUNT": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[1],
         "PR_REASON": lambda slot: f"{config.PAYMENT_REDUCTION_CODE_PREFIX}{int(slot)}" if int(slot) in payment_reductions(svc) else "",
         "PR_AMOUNT": lambda slot: payment_reductions(svc).get(int(slot), Decimal("0")),
         "MAX": max,
@@ -111,8 +122,13 @@ _FORMULA_ALIASES = {
 }
 _CLAIM_FORMULA_VALUES = {"CLP03", "CLP04", "CLP05", "CO_ADJUSTMENTS", "PR_ADJUSTMENTS"}
 _SERVICE_FORMULA_VALUES = {"SVC02", "SVC03", "SVC05", "COVERED_AMOUNT"}
-_CLAIM_FORMULA_FUNCTIONS = {"CLAIM_PRIMARY_REASON", "MAX", "MIN", "ABS"}
-_SERVICE_FORMULA_FUNCTIONS = {"SERVICE_STATUS", "SERVICE_REASON", "PR_REASON", "PR_AMOUNT"}
+_CLAIM_FORMULA_FUNCTIONS = {
+    "CLAIM_PRIMARY_REASON", "CLAIM_DISPOSITION", "PROCESS_INDICATOR", "MAX", "MIN", "ABS"
+}
+_SERVICE_FORMULA_FUNCTIONS = {
+    "SERVICE_STATUS", "SERVICE_REASON", "PREPRICED_AMOUNT", "MIR_PATIENT_LIABILITY",
+    "PR_REASON", "PR_AMOUNT", "REDUCTION_REASON", "REDUCTION_AMOUNT",
+}
 
 
 def normalize_formula(rule: str) -> str:
@@ -159,16 +175,19 @@ def validate_formula(rule: str, scope: str) -> None:
             if node.keywords:
                 raise ValueError("formula keywords are not supported")
             argument_types = [check(argument) for argument in node.args]
-            if node.func.id in {"CLAIM_PRIMARY_REASON", "SERVICE_STATUS", "SERVICE_REASON"}:
+            if node.func.id in {
+                "CLAIM_PRIMARY_REASON", "CLAIM_DISPOSITION", "PROCESS_INDICATOR",
+                "SERVICE_STATUS", "SERVICE_REASON", "PREPRICED_AMOUNT", "MIR_PATIENT_LIABILITY",
+            }:
                 if argument_types:
                     raise ValueError(f"formula function {node.func.id} takes no arguments")
-                return "text"
-            if node.func.id in {"PR_REASON", "PR_AMOUNT"}:
+                return "number" if node.func.id in {"PREPRICED_AMOUNT", "MIR_PATIENT_LIABILITY"} else "text"
+            if node.func.id in {"PR_REASON", "PR_AMOUNT", "REDUCTION_REASON", "REDUCTION_AMOUNT"}:
                 if len(node.args) != 1 or not isinstance(node.args[0], ast.Constant) or not isinstance(node.args[0].value, int):
                     raise ValueError(f"formula function {node.func.id} requires one integer slot")
                 if not config.PAYMENT_REDUCTION_MIN_REASON <= node.args[0].value <= config.PAYMENT_REDUCTION_MAX_REASON:
                     raise ValueError(f"formula function {node.func.id} slot is out of range")
-                return "text" if node.func.id == "PR_REASON" else "number"
+                return "text" if node.func.id in {"PR_REASON", "REDUCTION_REASON"} else "number"
             if node.func.id in {"MAX", "MIN"}:
                 if len(argument_types) < 2 or any(kind != "number" for kind in argument_types):
                     raise ValueError(f"formula function {node.func.id} requires at least two numeric arguments")
