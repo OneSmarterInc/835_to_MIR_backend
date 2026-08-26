@@ -2009,6 +2009,8 @@ def api_admin_client_edi_files(request, client_id):
             "services_count": f.services_count,
             "records_count": f.records_count,
             "ingestion_source": f.ingestion_source,
+            "present_in_sftp": f.present_in_sftp,
+            "present_in_archive_folder": f.present_in_archive_folder,
             "uploaded_at": f.uploaded_at.strftime("%Y-%m-%dT%H:%M:%SZ") if f.uploaded_at else "",
             "processing_completed_at": f.processing_completed_at.strftime("%Y-%m-%dT%H:%M:%SZ") if f.processing_completed_at else "",
             "error_message": f.error_message
