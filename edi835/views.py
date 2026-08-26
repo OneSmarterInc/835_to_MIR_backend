@@ -127,7 +127,14 @@ def tracked_files_list(request):
     Returns JSON list of tracked 835File DB records with synced physical disk existence flags.
     """
     # Trigger Folder Observer to discover untracked files & sync disk presence
-    sync_folder_observer()
+    try:
+        sync_folder_observer()
+    except Exception:
+        # Disk synchronization is supplemental. Database history must remain
+        # visible even if a physical folder is temporarily unavailable.
+        logging.getLogger(__name__).exception(
+            "Tracked-files folder synchronization failed"
+        )
 
     from django.conf import settings
     from pathlib import Path
