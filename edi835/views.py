@@ -186,7 +186,10 @@ def tracked_files_list(request):
         EDI835File.objects.bulk_update(
             records_to_update, ["present_in_sftp", "present_in_archive_folder"]
         )
-    return JsonResponse({"files": data})
+    return JsonResponse({
+    "success": True,
+    "files": data,
+})
 
 
 def api_get_metrics(request):
