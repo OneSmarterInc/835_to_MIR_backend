@@ -6,6 +6,10 @@ from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
 from django.db import models
+from project835.field_crypto import (
+    get_sftp_runtime_credentials,
+    SFTPCredentialError,
+)
 
 from .models import EDI835File
 from .parser import parse_835_to_mir, EDI835Validator
@@ -13,6 +17,23 @@ from .mir_exporter import export_mir_file
 
 logger = logging.getLogger("edi835")
 
+
+def resolve_sftp_config(client=None, outbound=False):
+    """Resolve the correct tenant or global SFTP row for a transfer direction."""
+    from .models import SFTPConfig
+
+    def pick(queryset):
+        preferred_type = "OUTBOUND" if outbound else "INBOUND"
+        return (
+            queryset.filter(connection_type=preferred_type).first()
+            or queryset.filter(connection_type="UNIFIED").first()
+            or queryset.first()
+        )
+
+    config = pick(SFTPConfig.objects.filter(client=client)) if client else None
+    if config and config.use_default:
+        config = None
+    return config or pick(SFTPConfig.objects.filter(client__isnull=True))
 
 
 def get_edi835_storage_dirs():
@@ -45,34 +66,43 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
     logger = logging.getLogger(__name__)
 
     try:
-        from .models import SFTPConfig
         import paramiko
 
-        if client:
-            cfg = SFTPConfig.objects.filter(client=client).first()
-            if not cfg or cfg.use_default:
-                cfg = SFTPConfig.objects.filter(client__isnull=True).first()
-        else:
-            cfg = SFTPConfig.objects.filter(client__isnull=True).first()
+        cfg = resolve_sftp_config(client=client, outbound=True)
 
         if not cfg:
             logger.warning("upload_mir_to_sftp: No SFTPConfig found in database.")
             return False
 
-        out_host = cfg.outbound_host if (not cfg.use_same_server and cfg.outbound_host) else cfg.host
-        out_port = int(cfg.outbound_port if (not cfg.use_same_server and cfg.outbound_port) else (cfg.port or 22))
-        out_user = cfg.outbound_username if (not cfg.use_same_server and cfg.outbound_username) else cfg.username
-        out_pass = cfg.outbound_password if (not cfg.use_same_server and cfg.outbound_password) else cfg.password
-        out_key = cfg.outbound_ssh_key if (not cfg.use_same_server and cfg.outbound_ssh_key) else cfg.ssh_key
-        out_auth = (cfg.outbound_auth_method if (not cfg.use_same_server and cfg.outbound_auth_method) else cfg.auth_method) or "Password"
-        out_folder = cfg.outbound_mir_folder or "/"
+        if cfg.status != "CONNECTED":
+            logger.warning(
+                "upload_mir_to_sftp: SFTPConfig %s is not connected (status=%s).",
+                cfg.id,
+                cfg.status,
+            )
+            return False
 
-        if not out_host or not out_user or not cfg.outbound_mir_folder:
+        try:
+            credentials = get_sftp_runtime_credentials(cfg, outbound=True)
+        except SFTPCredentialError as exc:
+            logger.error("upload_mir_to_sftp: %s", exc)
+            return False
+
+        out_host = credentials["host"]
+        out_port = credentials["port"]
+        out_user = credentials["username"]
+        out_pass = credentials["password"]
+        out_key = credentials["ssh_key"]
+        out_auth = credentials["auth_method"]
+        out_folder = credentials["remote_folder"]
+        trust_unknown_key = credentials["trust_unknown_key"]
+
+        if not out_host or not out_user or not out_folder:
             logger.warning("upload_mir_to_sftp: Missing host, username, or outbound_mir_folder.")
             return False
 
         ssh = paramiko.SSHClient()
-        if cfg.trust_unknown_key:
+        if trust_unknown_key:
             ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         else:
             ssh.load_system_host_keys()
@@ -134,19 +164,14 @@ def push_file_record_to_sftp(file_id):
     Pushes converted MIR file for a specific record ID to SFTP outbound folder.
     Returns (success_boolean, message_string).
     """
-    from .models import SFTPConfig, EDI835File
+    from .models import EDI835File
     try:
         rec = EDI835File.objects.select_related("client").get(id=file_id)
     except (EDI835File.DoesNotExist, ValueError):
         return False, "File record not found in database."
 
     client = rec.client
-    if client:
-        cfg = SFTPConfig.objects.filter(client=client).first()
-        if not cfg or cfg.use_default:
-            cfg = SFTPConfig.objects.filter(client__isnull=True).first()
-    else:
-        cfg = SFTPConfig.objects.filter(client__isnull=True).first()
+    cfg = resolve_sftp_config(client=client, outbound=True)
 
     if not cfg:
         return False, "No SFTP connection configuration found. Please setup SFTP in Connections section first."
