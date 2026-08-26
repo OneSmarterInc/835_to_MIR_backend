@@ -1,6 +1,7 @@
 import os
 from project835.decorators import (
     admin_api_required,
+    authenticated_api_required,
 )
 import json
 from project835.field_crypto import (
@@ -274,7 +275,7 @@ def api_archive_files_list(request):
 
 
 @csrf_exempt
-@admin_api_required
+@authenticated_api_required
 def api_get_sftp_config(request):
     """
     Returns saved SFTP configuration metadata.
@@ -759,6 +760,7 @@ def test_sftp_connection(host, port, username, password=None, ssh_key=None, auth
 
 
 @csrf_exempt
+@authenticated_api_required
 def api_sftp_connect(request):
     """
     API Endpoint: POST /api/sftp/connect
@@ -820,7 +822,7 @@ def api_sftp_connect(request):
 
 
 @csrf_exempt
-@admin_api_required
+@authenticated_api_required
 def api_save_sftp_config(request):
     """
     API Endpoint: Saves/updates SFTP configuration in DB and performs connection test verification.
