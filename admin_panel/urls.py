@@ -22,6 +22,7 @@ from .views import (
     api_admin_document_download,
     api_admin_document_delete,
     api_admin_client_edi_files,
+    api_admin_edi_file,
     api_admin_client_test_environment,
     api_admin_golive_state,
     api_admin_golive_step_upload,
