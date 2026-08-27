@@ -1,0 +1,21 @@
+[Unit]
+Description=MIR isolated batch conversion worker
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=www-data
+WorkingDirectory=/var/www/835_to_MIR_backend
+EnvironmentFile=-/etc/default/mir
+ExecStart=/var/www/835_to_MIR_backend/venv/bin/python manage.py run_batch_worker
+Restart=always
+RestartSec=3
+Nice=5
+OOMScoreAdjust=500
+MemoryHigh=1G
+MemoryMax=1200M
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

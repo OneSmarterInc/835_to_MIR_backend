@@ -1,5 +1,6 @@
 import os
 import shutil
+import tempfile
 from decimal import Decimal
 from pathlib import Path
 from django.test import TestCase, Client, override_settings
@@ -177,6 +178,28 @@ class MIRPersistenceTestCase(TestCase):
             MIRServiceLine.objects.filter(mir_claim=claim).count(),
             51,
         )
+
+
+class DurableBatchJobTestCase(TestCase):
+    def test_job_status_is_durable_and_interrupted_jobs_fail_safely(self):
+        from .batch_jobs import active_job_for, read_job, recover_interrupted_jobs, write_job
+
+        with tempfile.TemporaryDirectory() as media_root, self.settings(MEDIA_ROOT=media_root):
+            job = {
+                "id": "11111111-1111-1111-1111-111111111111",
+                "owner_user_id": "7",
+                "client_id": "client-1",
+                "scope_key": "client-1",
+                "state": "RUNNING",
+                "started_at": "2026-08-27T00:00:00+00:00",
+            }
+            write_job(job)
+            self.assertEqual(read_job(job["id"])["state"], "RUNNING")
+            self.assertEqual(active_job_for("client-1")["id"], job["id"])
+            self.assertEqual(recover_interrupted_jobs(), 1)
+            recovered = read_job(job["id"])
+            self.assertEqual(recovered["state"], "FAILED")
+            self.assertIn("safe retry", recovered["result"]["error"])
 
 
 @override_settings(RECON_PROCESS_SYNCHRONOUS=True)
