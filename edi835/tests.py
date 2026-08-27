@@ -263,3 +263,25 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.json()["files"]], [str(global_recon.id)])
         self.assertEqual(response.json()["files"][0]["client_name"], "Global System Default")
+
+    def test_mir_claims_are_returned_without_any_recon_file(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+
+        mir_text, _ = generate_mir_text([
+            Claim(claim_number="MIR-ONLY-1", services=[ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00"))])
+        ])
+        source = EDI835File.objects.create(
+            client=self.tenant, original_filename="mir-only.835", stored_filename="mir-only.835",
+        )
+        mir_file = store_mir_file(source_835=source, mir_filename="mir-only.MIR", mir_text=mir_text)
+        mir_file.claims.get().service_lines.update(
+            charge_amount=Decimal("25.00"), paid_amount=Decimal("20.00")
+        )
+
+        response = self.client.get("/edi835/api/reconciliation/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["selected_recon_file_id"])
+        self.assertEqual(len(response.json()["claims"]), 1)
+        self.assertEqual(response.json()["claims"][0]["claim_id"], "MIR-ONLY-1")
+        self.assertEqual(response.json()["claims"][0]["status"], "NOT_IN_RECON")
