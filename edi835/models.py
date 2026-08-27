@@ -294,3 +294,155 @@ class MIRServiceLine(models.Model):
                 name="mir_service_position_1_50",
             ),
         ]
+
+
+class RECONFile(models.Model):
+    STATUS_CHOICES = [
+        ("UPLOADED", "Uploaded"),
+        ("PROCESSING", "Processing"),
+        ("PROCESSED", "Processed"),
+        ("FAILED", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(
+        "accounts.Client",
+        on_delete=models.CASCADE,
+        related_name="recon_files",
+    )
+    uploaded_by = models.ForeignKey(
+        "accounts.User",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="uploaded_recon_files",
+    )
+    original_filename = models.CharField(max_length=255)
+    stored_filename = models.CharField(max_length=255)
+    file_content = models.TextField()
+    file_hash = models.CharField(max_length=64, db_index=True)
+    file_size = models.BigIntegerField(default=0)
+    record_count = models.PositiveIntegerField(default=0)
+    claim_count = models.PositiveIntegerField(default=0)
+    service_count = models.PositiveIntegerField(default=0)
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    total_paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="UPLOADED")
+    processing_error = models.TextField(blank=True, default="")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "recon_file"
+        ordering = ["-uploaded_at"]
+        constraints = [
+            models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_recon_hash"),
+        ]
+        indexes = [
+            models.Index(fields=["client", "-uploaded_at"]),
+            models.Index(fields=["client", "status"]),
+        ]
+
+
+class RECONClaim(models.Model):
+    recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="claims")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_claims")
+    claim_sequence = models.PositiveIntegerField()
+    claim_control_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    member_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    patient_control_number = models.CharField(max_length=100, blank=True, default="")
+    record_type = models.CharField(max_length=30, blank=True, default="")
+    claim_status = models.CharField(max_length=30, blank=True, default="")
+    service_count = models.PositiveIntegerField(default=0)
+    charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    allowed_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    adjustment_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    raw_record = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "recon_claim"
+        ordering = ["claim_sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["recon_file", "claim_sequence"], name="uniq_recon_claim_sequence"),
+        ]
+        indexes = [
+            models.Index(fields=["client", "claim_control_number"]),
+        ]
+
+
+class RECONServiceLine(models.Model):
+    recon_claim = models.ForeignKey(RECONClaim, on_delete=models.CASCADE, related_name="service_lines")
+    recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="service_lines")
+    service_sequence = models.PositiveIntegerField()
+    source_row_number = models.PositiveIntegerField()
+    service_line_number = models.CharField(max_length=30, blank=True, default="")
+    procedure_code = models.CharField(max_length=50, blank=True, default="")
+    revenue_code = models.CharField(max_length=30, blank=True, default="")
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    units = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    allowed_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    adjustment_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    reason_code = models.CharField(max_length=30, blank=True, default="")
+    raw_service = models.TextField()
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "recon_service_line"
+        ordering = ["service_sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["recon_claim", "service_sequence"], name="uniq_recon_service_sequence"),
+        ]
+
+
+class RECONProcessingRun(models.Model):
+    STATUS_CHOICES = [
+        ("PROCESSING", "Processing"),
+        ("COMPLETED", "Completed"),
+        ("FAILED", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="processing_runs")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_processing_runs")
+    started_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="recon_processing_runs"
+    )
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PROCESSING")
+    claims_created = models.PositiveIntegerField(default=0)
+    services_created = models.PositiveIntegerField(default=0)
+    invalid_records = models.PositiveIntegerField(default=0)
+    started_at = models.DateTimeField(auto_now_add=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+    error_message = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "recon_processing_run"
+        ordering = ["-started_at"]
+
+
+class RECONProcessingError(models.Model):
+    processing_run = models.ForeignKey(RECONProcessingRun, on_delete=models.CASCADE, related_name="errors")
+    recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="processing_errors")
+    row_number = models.PositiveIntegerField()
+    claim_control_number = models.CharField(max_length=100, blank=True, default="")
+    error_code = models.CharField(max_length=50)
+    error_message = models.TextField()
+    raw_record = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "recon_processing_error"
+        ordering = ["row_number"]

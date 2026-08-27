@@ -1,5 +1,8 @@
 from django.contrib import admin
-from .models import EDI835File, MIRClaim, MIRClaimChunk, MIRFile, MIRServiceLine
+from .models import (
+    EDI835File, MIRClaim, MIRClaimChunk, MIRFile, MIRServiceLine,
+    RECONClaim, RECONFile, RECONProcessingError, RECONProcessingRun, RECONServiceLine,
+)
 
 
 @admin.register(EDI835File)
@@ -50,3 +53,32 @@ class MIRClaimChunkAdmin(admin.ModelAdmin):
 class MIRServiceLineAdmin(admin.ModelAdmin):
     list_display = ("mir_claim", "service_sequence", "charge_amount", "paid_amount", "reason_code")
     search_fields = ("mir_claim__claim_control_number", "reason_code")
+
+
+@admin.register(RECONFile)
+class RECONFileAdmin(admin.ModelAdmin):
+    list_display = ("original_filename", "client", "status", "claim_count", "service_count", "uploaded_at")
+    list_filter = ("status", "client", "uploaded_at")
+    search_fields = ("original_filename", "file_hash", "client__name", "client__client_code")
+    readonly_fields = ("file_hash", "file_size", "uploaded_at", "processed_at")
+
+
+@admin.register(RECONClaim)
+class RECONClaimAdmin(admin.ModelAdmin):
+    list_display = ("claim_control_number", "client", "service_count", "charge_amount", "paid_amount")
+    search_fields = ("claim_control_number", "member_id", "patient_control_number")
+
+
+@admin.register(RECONServiceLine)
+class RECONServiceLineAdmin(admin.ModelAdmin):
+    list_display = ("recon_claim", "service_sequence", "procedure_code", "charge_amount", "paid_amount")
+
+
+@admin.register(RECONProcessingRun)
+class RECONProcessingRunAdmin(admin.ModelAdmin):
+    list_display = ("recon_file", "status", "claims_created", "services_created", "started_at")
+
+
+@admin.register(RECONProcessingError)
+class RECONProcessingErrorAdmin(admin.ModelAdmin):
+    list_display = ("recon_file", "row_number", "error_code", "created_at")

@@ -3,7 +3,8 @@ import shutil
 from decimal import Decimal
 from pathlib import Path
 from django.test import TestCase, Client
-from .models import EDI835File, MIRServiceLine
+from accounts.models import Client as AccountClient, User
+from .models import EDI835File, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
 from .services import process_edi835_file_content, get_edi835_storage_dirs
 
@@ -140,3 +141,63 @@ class MIRPersistenceTestCase(TestCase):
             MIRServiceLine.objects.filter(mir_claim=claim).count(),
             51,
         )
+
+
+class RECONResultAPITestCase(TestCase):
+    def setUp(self):
+        self.tenant = AccountClient.objects.create(
+            name="Test Health Plan",
+            client_code="TESTHP",
+            email="plan@example.com",
+        )
+        self.other_tenant = AccountClient.objects.create(
+            name="Other Health Plan",
+            client_code="OTHER",
+            email="other@example.com",
+        )
+        self.user = User.objects.create_user(
+            email="result@example.com",
+            name="Result User",
+            mobile="1111111111",
+            password="test-password",
+            client=self.tenant,
+        )
+        self.client.force_login(self.user)
+
+    def test_upload_process_and_tenant_scoped_listing(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        content = (
+            "Claim ID,Member ID,Line Number,Procedure Code,Charge Amount,Paid Amount\n"
+            "CLAIM-100,MEMBER-1,1,99213,100.00,80.00\n"
+            "CLAIM-100,MEMBER-1,2,99214,50.00,40.00\n"
+            "CLAIM-200,MEMBER-2,1,99215,75.00,60.00\n"
+        )
+        response = self.client.post(
+            "/edi835/api/recon/upload/",
+            {"recon_file": SimpleUploadedFile("recon.csv", content.encode("utf-8"), content_type="text/csv")},
+        )
+        self.assertEqual(response.status_code, 201)
+        file_id = response.json()["file"]["id"]
+
+        response = self.client.post(f"/edi835/api/recon/files/{file_id}/process/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["file"]["claim_count"], 2)
+        self.assertEqual(response.json()["file"]["service_count"], 3)
+        recon = RECONFile.objects.get(id=file_id)
+        self.assertEqual(recon.claims.count(), 2)
+        self.assertEqual(recon.service_lines.count(), 3)
+        self.assertEqual(str(recon.total_charge_amount), "225.00")
+        self.assertEqual(str(recon.total_paid_amount), "180.00")
+
+        RECONFile.objects.create(
+            client=self.other_tenant,
+            original_filename="hidden.csv",
+            stored_filename="hidden.csv",
+            file_content="hidden",
+            file_hash="f" * 64,
+            file_size=6,
+        )
+        response = self.client.get("/edi835/api/recon/files/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.json()["files"]], [file_id])
