@@ -1,10 +1,13 @@
 import hashlib
 import os
+import subprocess
+import sys
 import uuid
 
 from django.conf import settings
 from django.db import IntegrityError
 from django.http import JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
@@ -12,7 +15,7 @@ from project835.decorators import authenticated_api_required
 
 from .models import MIRClaim, RECONFile
 from .recon_service import process_recon_file
-from .reconciliation_service import latest_recon_file, reconciliation_rows
+from .reconciliation_service import latest_recon_file, normalize_claim_id, reconciliation_rows
 
 
 def _request_client(request, supplied_client_id=None):
@@ -133,22 +136,35 @@ def recon_process(request, file_id):
     recon = _visible_file(request, file_id)
     if not recon:
         return JsonResponse({"success": False, "error": "RECON file was not found."}, status=404)
+    if recon.status == "PROCESSING":
+        return JsonResponse({"success": True, "file": _serialize_file(recon), "background": True}, status=202)
+    if getattr(settings, "RECON_PROCESS_SYNCHRONOUS", False):
+        try:
+            process_recon_file(recon, request.user)
+        except Exception as exc:
+            return JsonResponse({"success": False, "error": str(exc), "file": _serialize_file(recon)}, status=400)
+        recon.refresh_from_db()
+        return JsonResponse({"success": True, "file": _serialize_file(recon), "background": False})
     try:
-        run = process_recon_file(recon, request.user)
+        recon.status = "PROCESSING"
+        recon.processing_started_at = timezone.now()
+        recon.processing_error = ""
+        recon.save(update_fields=["status", "processing_started_at", "processing_error", "updated_at"])
+        subprocess.Popen(
+            [sys.executable, os.path.join(settings.BASE_DIR, "manage.py"), "process_recon_file", str(recon.id)],
+            cwd=settings.BASE_DIR,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
     except Exception as exc:
+        recon.status = "FAILED"
+        recon.processing_error = str(exc)
+        recon.save(update_fields=["status", "processing_error", "updated_at"])
         return JsonResponse({"success": False, "error": str(exc), "file": _serialize_file(recon)}, status=400)
-    recon.refresh_from_db()
-    return JsonResponse({
-        "success": True,
-        "file": _serialize_file(recon),
-        "run": {
-            "id": str(run.id),
-            "status": run.status,
-            "claims_created": run.claims_created,
-            "services_created": run.services_created,
-            "invalid_records": run.invalid_records,
-        },
-    })
+    return JsonResponse({"success": True, "file": _serialize_file(recon), "background": True}, status=202)
 
 
 @csrf_exempt
@@ -214,7 +230,10 @@ def reconciliation_claim_detail(request, claim_id):
     recon = latest_recon_file(claim.mir_file.client, request.GET.get("recon_file_id") or None)
     row = reconciliation_rows(claim.mir_file.client, recon)
     summary = next((item for item in row if item["mir_claim_id"] == claim.id), None)
-    recon_claim = recon.claims.filter(claim_control_number=claim.claim_control_number).first() if recon else None
+    recon_claim = next((
+        item for item in recon.claims.all()
+        if normalize_claim_id(item.claim_control_number) == normalize_claim_id(claim.claim_control_number)
+    ), None) if recon else None
     mir_services = [{
         "sequence": item.service_sequence, "procedure_code": item.procedure_code,
         "service_date": item.service_date, "units": str(item.units),

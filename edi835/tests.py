@@ -2,7 +2,7 @@ import os
 import shutil
 from decimal import Decimal
 from pathlib import Path
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 from accounts.models import Client as AccountClient, User
 from .models import EDI835File, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
@@ -143,6 +143,7 @@ class MIRPersistenceTestCase(TestCase):
         )
 
 
+@override_settings(RECON_PROCESS_SYNCHRONOUS=True)
 class RECONResultAPITestCase(TestCase):
     def setUp(self):
         self.tenant = AccountClient.objects.create(
@@ -215,13 +216,10 @@ class RECONResultAPITestCase(TestCase):
         source = EDI835File.objects.create(
             client=self.tenant, original_filename="source.835", stored_filename="source.835",
         )
-        mir_file = store_mir_file(source_835=source, mir_filename="source.MIR", mir_text=mir_text)
-        mir_file.claims.get().service_lines.update(
-            charge_amount=Decimal("10.00"), paid_amount=Decimal("8.00")
-        )
+        store_mir_file(source_835=source, mir_filename="source.MIR", mir_text=mir_text)
         content = (
             "Claim ID,Member ID,Line Number,Charge Amount,Paid Amount\n"
-            "CLAIM-75,MEMBER-75,1,750.00,600.00\n"
+            "claim_75,MEMBER-75,1,750.00,600.00\n"
         )
         uploaded = self.client.post("/edi835/api/recon/upload/", {
             "recon_file": SimpleUploadedFile("latest.csv", content.encode(), content_type="text/csv")
@@ -231,7 +229,7 @@ class RECONResultAPITestCase(TestCase):
         response = self.client.get("/edi835/api/reconciliation/")
         self.assertEqual(response.status_code, 200)
         row = response.json()["claims"][0]
-        self.assertEqual(row["claim_id"], "CLAIM-75")
+        self.assertEqual(row["claim_id"], "CLAIM75")
         self.assertEqual(row["mir_service_count"], 75)
         self.assertEqual(Decimal(row["mir_charge_amount"]), Decimal("750.00"))
         self.assertEqual(Decimal(row["amount_to_pay"]), Decimal("600.00"))
@@ -274,14 +272,11 @@ class RECONResultAPITestCase(TestCase):
         source = EDI835File.objects.create(
             client=self.tenant, original_filename="mir-only.835", stored_filename="mir-only.835",
         )
-        mir_file = store_mir_file(source_835=source, mir_filename="mir-only.MIR", mir_text=mir_text)
-        mir_file.claims.get().service_lines.update(
-            charge_amount=Decimal("25.00"), paid_amount=Decimal("20.00")
-        )
+        store_mir_file(source_835=source, mir_filename="mir-only.MIR", mir_text=mir_text)
 
         response = self.client.get("/edi835/api/reconciliation/")
         self.assertEqual(response.status_code, 200)
         self.assertIsNone(response.json()["selected_recon_file_id"])
         self.assertEqual(len(response.json()["claims"]), 1)
-        self.assertEqual(response.json()["claims"][0]["claim_id"], "MIR-ONLY-1")
+        self.assertEqual(response.json()["claims"][0]["claim_id"], "MIRONLY1")
         self.assertEqual(response.json()["claims"][0]["status"], "NOT_IN_RECON")

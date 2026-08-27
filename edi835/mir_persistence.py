@@ -20,7 +20,7 @@ def _extract_fields(raw: str, fields: list[dict], scopes: set[str]) -> dict[str,
             continue
         start = int(field["start"]) - 1
         length = int(field["length"])
-        key = str(field.get("name") or field.get("id"))
+        key = str(field.get("target") or field.get("name") or field.get("id"))
         values[key] = raw[start:start + length].strip()
     return values
 

@@ -12,6 +12,7 @@ from django.db import transaction
 from django.utils import timezone
 
 from .models import (
+    MIRClaim,
     RECONClaim,
     RECONFile,
     RECONProcessingError,
@@ -21,7 +22,7 @@ from .models import (
 
 
 ALIASES = {
-    "claim_control_number": {"claimid", "claimnumber", "claimcontrolnumber", "claim", "icn", "clp01"},
+    "claim_control_number": {"claimid", "claimnumber", "claimcontrolnumber", "claim", "icn", "clp01", "claimno", "claimidentifier"},
     "member_id": {"memberid", "subscriberid", "member", "patientid"},
     "patient_control_number": {"patientcontrolnumber", "patientaccountnumber", "pcn"},
     "record_type": {"recordtype", "type"},
@@ -34,7 +35,7 @@ ALIASES = {
     "units": {"units", "serviceunits"},
     "charge_amount": {"chargeamount", "chargedamount", "billedamount", "totalcharge"},
     "allowed_amount": {"allowedamount", "approvedamount"},
-    "paid_amount": {"paidamount", "paymentamount", "totalpaid"},
+    "paid_amount": {"paidamount", "paymentamount", "totalpaid", "claimpaidamount", "netpaidamount", "checkamount", "amountinrecon", "reconamount"},
     "patient_responsibility": {"patientresponsibility", "patientamount", "patientliability"},
     "adjustment_amount": {"adjustmentamount", "adjustedamount"},
     "reason_code": {"reasoncode", "adjustmentreason", "remarkcode"},
@@ -75,14 +76,24 @@ def _detect_delimiter(text: str) -> str | None:
     return None
 
 
-def _fixed_width_claim_id(raw: str, row_number: int) -> str:
+def _claim_key(value: str) -> str:
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
+
+
+def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict:
     # The exact fixed-width RECON layout is client-specific. Preserve the row
     # and use the first stable long identifier until a client layout is mapped.
-    candidates = re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]{7,}", raw)
-    return candidates[0][:100] if candidates else f"ROW-{row_number}"
+    compact_raw = _claim_key(raw)
+    known = sorted((value for value in (known_claim_ids or []) if value), key=len, reverse=True)
+    claim_id = next((value for value in known if _claim_key(value) in compact_raw), "")
+    if not claim_id:
+        candidates = re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]{7,}", raw)
+        claim_id = candidates[0][:100] if candidates else f"ROW-{row_number}"
+    amounts = re.findall(r"(?<![A-Za-z0-9])(?:\(?[-+]?\$?\d[\d,]*\.\d{2}\)?)(?!\d)", raw)
+    return {"claim_control_number": claim_id, "paid_amount": amounts[-1] if amounts else ""}
 
 
-def parse_recon_rows(text: str) -> list[dict]:
+def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         raise ValueError("The RECON file is empty.")
@@ -93,7 +104,7 @@ def parse_recon_rows(text: str) -> list[dict]:
             {
                 "row_number": number,
                 "raw": raw,
-                "data": {"claim_control_number": _fixed_width_claim_id(raw, number)},
+                "data": _fixed_width_data(raw, number, known_claim_ids),
                 "segment_data": {"raw_fixed_width": raw},
             }
             for number, raw in enumerate(lines, start=1)
@@ -143,7 +154,12 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
     recon_file.save(update_fields=["status", "processing_started_at", "processing_error", "updated_at"])
 
     try:
-        rows = parse_recon_rows(recon_file.file_content)
+        known_claim_ids = list(
+            MIRClaim.objects.filter(mir_file__client=recon_file.client)
+            .exclude(claim_control_number="")
+            .values_list("claim_control_number", flat=True)
+        )
+        rows = parse_recon_rows(recon_file.file_content, known_claim_ids)
         recon_file.claims.all().delete()
         grouped: OrderedDict[str, list[dict]] = OrderedDict()
         for row in rows:

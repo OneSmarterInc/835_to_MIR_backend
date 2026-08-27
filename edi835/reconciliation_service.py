@@ -6,6 +6,7 @@ the 50-service physical-row limit.
 """
 
 from decimal import Decimal
+import re
 
 from django.db.models import Sum
 from django.db.models.functions import Coalesce
@@ -14,6 +15,10 @@ from .models import MIRClaim, RECONClaim, RECONFile
 
 
 ZERO = Decimal("0.00")
+
+
+def normalize_claim_id(value):
+    return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
 
 
 def latest_recon_file(client, recon_file_id=None):
@@ -49,7 +54,7 @@ def reconciliation_rows(client, recon_file=None):
     recon_by_claim = {}
     if recon_file:
         for claim in recon_file.claims.all().order_by("claim_sequence"):
-            recon_by_claim.setdefault(claim.claim_control_number.strip(), claim)
+            recon_by_claim.setdefault(normalize_claim_id(claim.claim_control_number), claim)
 
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
@@ -62,7 +67,7 @@ def reconciliation_rows(client, recon_file=None):
     )
     output = []
     for claim in claims:
-        claim_number = claim.claim_control_number.strip()
+        claim_number = normalize_claim_id(claim.claim_control_number)
         recon_claim = recon_by_claim.get(claim_number)
         recon_paid = _money(recon_claim.paid_amount if recon_claim else ZERO)
         status, remaining = reconciliation_status(claim.mir_payable, recon_paid, bool(recon_claim))
@@ -83,6 +88,7 @@ def reconciliation_rows(client, recon_file=None):
             "recon_charge_amount": str(recon_claim.charge_amount) if recon_claim else "0.00",
             "recon_paid_amount": str(recon_paid),
             "remaining_amount": str(remaining),
+            "difference_amount": str(remaining),
             "status": status,
         })
     return output
