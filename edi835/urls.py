@@ -15,7 +15,10 @@ from .views import (
 )
 
 from converter.views import api_download_archive_zip
-from .recon_views import recon_detail, recon_files, recon_process, recon_upload
+from .recon_views import (
+    recon_detail, recon_files, recon_process, recon_upload,
+    reconciliation_claim_detail, reconciliation_results,
+)
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
@@ -36,4 +39,6 @@ urlpatterns = [
     path("api/recon/upload/", recon_upload, name="recon_upload"),
     path("api/recon/files/<uuid:file_id>/process/", recon_process, name="recon_process"),
     path("api/recon/files/<uuid:file_id>/", recon_detail, name="recon_detail"),
+    path("api/reconciliation/", reconciliation_results, name="reconciliation_results"),
+    path("api/reconciliation/claims/<int:claim_id>/", reconciliation_claim_detail, name="reconciliation_claim_detail"),
 ]

@@ -10,8 +10,9 @@ from django.views.decorators.csrf import csrf_exempt
 from accounts.models import Client
 from project835.decorators import authenticated_api_required
 
-from .models import RECONFile
+from .models import MIRClaim, RECONFile
 from .recon_service import process_recon_file
+from .reconciliation_service import latest_recon_file, reconciliation_rows
 
 
 def _request_client(request, supplied_client_id=None):
@@ -173,3 +174,62 @@ def recon_detail(request, file_id):
         "error_message": error.error_message,
     } for error in recon.processing_errors.all()[:200]]
     return JsonResponse({"success": True, "file": _serialize_file(recon), "claims": claims, "errors": errors})
+
+
+@csrf_exempt
+@authenticated_api_required
+def reconciliation_results(request):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    client = _request_client(request, request.GET.get("client_id"))
+    if not client:
+        return JsonResponse({"success": False, "error": "Select a client."}, status=400)
+    recon = latest_recon_file(client, request.GET.get("recon_file_id") or None)
+    files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
+    return JsonResponse({
+        "success": True,
+        "selected_recon_file_id": str(recon.id) if recon else None,
+        "recon_files": [_serialize_file(item) for item in files],
+        "claims": reconciliation_rows(client, recon),
+    })
+
+
+@csrf_exempt
+@authenticated_api_required
+def reconciliation_claim_detail(request, claim_id):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    queryset = MIRClaim.objects.select_related("mir_file", "mir_file__client")
+    if getattr(request.user, "client_id", None):
+        queryset = queryset.filter(mir_file__client_id=request.user.client_id)
+    elif not request.user.is_staff:
+        queryset = queryset.none()
+    try:
+        claim = queryset.get(id=claim_id)
+    except (MIRClaim.DoesNotExist, ValueError):
+        return JsonResponse({"success": False, "error": "MIR claim was not found."}, status=404)
+    recon = latest_recon_file(claim.mir_file.client, request.GET.get("recon_file_id") or None)
+    row = reconciliation_rows(claim.mir_file.client, recon)
+    summary = next((item for item in row if item["mir_claim_id"] == claim.id), None)
+    recon_claim = recon.claims.filter(claim_control_number=claim.claim_control_number).first() if recon else None
+    mir_services = [{
+        "sequence": item.service_sequence, "procedure_code": item.procedure_code,
+        "service_date": item.service_date, "units": str(item.units),
+        "charge_amount": str(item.charge_amount), "paid_amount": str(item.paid_amount),
+        "patient_liability": str(item.patient_liability), "reason_code": item.reason_code,
+    } for item in claim.service_lines.all()]
+    recon_services = [{
+        "sequence": item.service_sequence, "procedure_code": item.procedure_code,
+        "revenue_code": item.revenue_code, "service_from_date": item.service_from_date,
+        "service_to_date": item.service_to_date, "units": str(item.units),
+        "charge_amount": str(item.charge_amount), "allowed_amount": str(item.allowed_amount),
+        "paid_amount": str(item.paid_amount), "patient_responsibility": str(item.patient_responsibility),
+        "adjustment_amount": str(item.adjustment_amount), "reason_code": item.reason_code,
+    } for item in recon_claim.service_lines.all()] if recon_claim else []
+    return JsonResponse({
+        "success": True, "summary": summary,
+        "mir": {"file": claim.mir_file.mir_filename, "date": claim.mir_file.converted_at.isoformat(),
+                "claim": claim.segment_data, "services": mir_services},
+        "recon": {"file": recon.original_filename if recon else "", "date": recon.processed_at.isoformat() if recon and recon.processed_at else None,
+                  "claim": recon_claim.segment_data if recon_claim else None, "services": recon_services},
+    })

@@ -201,3 +201,46 @@ class RECONResultAPITestCase(TestCase):
         response = self.client.get("/edi835/api/recon/files/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.json()["files"]], [file_id])
+
+    def test_reconciliation_aggregates_mir_chunks_and_uses_latest_recon(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        services = [ServiceLine(charge=Decimal("10.00"), paid=Decimal("8.00")) for _ in range(75)]
+        mir_text, _ = generate_mir_text([Claim(
+            claim_number="CLAIM-75", subscriber_id="MEMBER-75",
+            patient_first_name="Jane", patient_last_name="Doe", services=services,
+        )])
+        source = EDI835File.objects.create(
+            client=self.tenant, original_filename="source.835", stored_filename="source.835",
+        )
+        mir_file = store_mir_file(source_835=source, mir_filename="source.MIR", mir_text=mir_text)
+        mir_file.claims.get().service_lines.update(
+            charge_amount=Decimal("10.00"), paid_amount=Decimal("8.00")
+        )
+        content = (
+            "Claim ID,Member ID,Line Number,Charge Amount,Paid Amount\n"
+            "CLAIM-75,MEMBER-75,1,750.00,600.00\n"
+        )
+        uploaded = self.client.post("/edi835/api/recon/upload/", {
+            "recon_file": SimpleUploadedFile("latest.csv", content.encode(), content_type="text/csv")
+        }).json()
+        self.client.post(f"/edi835/api/recon/files/{uploaded['file']['id']}/process/")
+
+        response = self.client.get("/edi835/api/reconciliation/")
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["claims"][0]
+        self.assertEqual(row["claim_id"], "CLAIM-75")
+        self.assertEqual(row["mir_service_count"], 75)
+        self.assertEqual(Decimal(row["mir_charge_amount"]), Decimal("750.00"))
+        self.assertEqual(Decimal(row["amount_to_pay"]), Decimal("600.00"))
+        self.assertEqual(Decimal(row["recon_paid_amount"]), Decimal("600.00"))
+        self.assertEqual(row["status"], "CLEAR")
+
+    def test_reconciliation_statuses_not_in_recon_and_signature_mismatch(self):
+        from .reconciliation_service import reconciliation_status
+        self.assertEqual(reconciliation_status(Decimal("10"), Decimal("0"), False)[0], "NOT_IN_RECON")
+        self.assertEqual(reconciliation_status(Decimal("10"), Decimal("-10"), True)[0], "SIGNATURE_MISMATCH")
+        self.assertEqual(reconciliation_status(Decimal("10"), Decimal("4"), True)[0], "PARTIALLY_PAID")
+        self.assertEqual(reconciliation_status(Decimal("10"), Decimal("12"), True)[0], "OVERPAID")
