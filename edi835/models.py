@@ -230,7 +230,7 @@ class RECONFile(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_files")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, null=True, blank=True, related_name="recon_files")
     uploaded_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_recon_files")
     original_filename = models.CharField(max_length=255)
     stored_filename = models.CharField(max_length=255)
@@ -261,7 +261,7 @@ class RECONFile(models.Model):
 
 class RECONClaim(models.Model):
     recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="claims")
-    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_claims")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, null=True, blank=True, related_name="recon_claims")
     claim_sequence = models.PositiveIntegerField()
     claim_control_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
     member_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
@@ -323,7 +323,7 @@ class RECONProcessingRun(models.Model):
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="processing_runs")
-    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_processing_runs")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, null=True, blank=True, related_name="recon_processing_runs")
     started_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="recon_processing_runs")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PROCESSING")
     claims_created = models.PositiveIntegerField(default=0)

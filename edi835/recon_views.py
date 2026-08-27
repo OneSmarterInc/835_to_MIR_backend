@@ -44,9 +44,9 @@ def _visible_file(request, file_id):
 def _serialize_file(item):
     return {
         "id": str(item.id),
-        "client_id": str(item.client_id),
-        "client_name": item.client.name,
-        "client_code": item.client.client_code,
+        "client_id": str(item.client_id) if item.client_id else None,
+        "client_name": item.client.name if item.client else "Global System Default",
+        "client_code": item.client.client_code if item.client else "",
         "original_filename": item.original_filename,
         "stored_filename": item.stored_filename,
         "file_size": item.file_size,
@@ -77,6 +77,8 @@ def recon_files(request):
         client_id = request.GET.get("client_id", "").strip()
         if client_id:
             queryset = queryset.filter(client_id=client_id)
+        elif request.GET.get("scope") == "global":
+            queryset = queryset.filter(client__isnull=True)
     else:
         queryset = queryset.none()
     return JsonResponse({"success": True, "files": [_serialize_file(item) for item in queryset[:500]]})
@@ -94,7 +96,7 @@ def recon_upload(request):
     if upload.size > max_bytes:
         return JsonResponse({"success": False, "error": "RECON file exceeds the 50 MB limit."}, status=400)
     client = _request_client(request, request.POST.get("client_id"))
-    if not client:
+    if not client and not request.user.is_staff:
         message = "Select a client." if request.user.is_staff else "Your account is not associated with a client."
         return JsonResponse({"success": False, "error": message}, status=400)
     raw = upload.read()
@@ -108,7 +110,7 @@ def recon_upload(request):
             client=client,
             uploaded_by=request.user,
             original_filename=original,
-            stored_filename=f"{client.client_code}_{uuid.uuid4()}_{original}"[:255],
+            stored_filename=f"{client.client_code if client else 'GLOBAL'}_{uuid.uuid4()}_{original}"[:255],
             file_content=text,
             file_hash=file_hash,
             file_size=len(raw),
@@ -181,8 +183,9 @@ def recon_detail(request, file_id):
 def reconciliation_results(request):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
-    client = _request_client(request, request.GET.get("client_id"))
-    if not client:
+    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    client = None if is_global else _request_client(request, request.GET.get("client_id"))
+    if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
     recon = latest_recon_file(client, request.GET.get("recon_file_id") or None)
     files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]

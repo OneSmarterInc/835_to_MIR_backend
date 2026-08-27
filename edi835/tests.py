@@ -244,3 +244,22 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(reconciliation_status(Decimal("10"), Decimal("-10"), True)[0], "SIGNATURE_MISMATCH")
         self.assertEqual(reconciliation_status(Decimal("10"), Decimal("4"), True)[0], "PARTIALLY_PAID")
         self.assertEqual(reconciliation_status(Decimal("10"), Decimal("12"), True)[0], "OVERPAID")
+
+    def test_admin_global_scope_only_returns_global_results(self):
+        admin = User.objects.create_superuser(
+            email="admin@example.com", name="Admin", mobile="2222222222", password="test-password"
+        )
+        self.client.force_login(admin)
+        global_recon = RECONFile.objects.create(
+            client=None, uploaded_by=admin, original_filename="global.csv",
+            stored_filename="GLOBAL_global.csv", file_content="Claim ID,Paid Amount\nGLOBAL-1,10.00",
+            file_hash="a" * 64, file_size=40, status="PROCESSED",
+        )
+        RECONFile.objects.create(
+            client=self.tenant, original_filename="client.csv", stored_filename="client.csv",
+            file_content="client", file_hash="b" * 64, file_size=6, status="PROCESSED",
+        )
+        response = self.client.get("/edi835/api/recon/files/?scope=global")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([item["id"] for item in response.json()["files"]], [str(global_recon.id)])
+        self.assertEqual(response.json()["files"][0]["client_name"], "Global System Default")
