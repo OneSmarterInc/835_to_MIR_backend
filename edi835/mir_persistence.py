@@ -13,6 +13,10 @@ from admin_panel.mir_mapper_logic.mapping_store import get_mappings
 from .models import EDI835File, MIRClaim, MIRClaimChunk, MIRFile, MIRServiceLine
 
 
+# One-based MIR-MO specification position. Python slicing subtracts one.
+MIR_FIRST_SERVICE_PAID_POSITION = 429
+
+
 def _extract_fields(raw: str, fields: list[dict], scopes: set[str]) -> dict[str, str]:
     values = {}
     for field in fields:
@@ -150,6 +154,11 @@ def store_mir_file(
         for chunk_position in range(1, service_count + 1):
             start = config.MIR_HEADER_LENGTH + (chunk_position - 1) * config.MIR_SERVICE_BLOCK_LENGTH
             raw_service = row[start:start + config.MIR_SERVICE_BLOCK_LENGTH]
+            paid_start = (
+                MIR_FIRST_SERVICE_PAID_POSITION - 1
+                + (chunk_position - 1) * config.MIR_SERVICE_BLOCK_LENGTH
+            )
+            raw_paid = row[paid_start:paid_start + 11]
             segment_data = _extract_fields(raw_service, fields, {"Service"})
             global_service_number += 1
             service_models.append(MIRServiceLine(
@@ -162,7 +171,7 @@ def store_mir_file(
                 # service block. Saved mapping labels must not alter financial
                 # reconciliation values.
                 charge_amount=_signed_implied_decimal(raw_service[50:61]),
-                paid_amount=_signed_implied_decimal(raw_service[94:105]),
+                paid_amount=_signed_implied_decimal(raw_paid),
                 patient_liability=_signed_implied_decimal(raw_service[105:116]),
                 reason_code=segment_data.get("service_primary_reason", ""),
                 service_raw=raw_service,

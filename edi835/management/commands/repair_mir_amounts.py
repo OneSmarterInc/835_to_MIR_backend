@@ -37,6 +37,8 @@ class Command(BaseCommand):
             if len(raw) < 116:
                 continue
             service.charge_amount = signed_amount(raw[50:61])
+            # service_raw begins at MIR position 335, therefore the absolute
+            # position formula 429 + ((N-1) * 303) becomes 95-105 here.
             service.paid_amount = signed_amount(raw[94:105])
             service.patient_liability = signed_amount(raw[105:116])
             pending.append(service)

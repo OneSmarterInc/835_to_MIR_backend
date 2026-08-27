@@ -102,6 +102,30 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
 class MIRPersistenceTestCase(TestCase):
+    def test_result_amount_uses_position_429_for_every_service(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+
+        paid_values = [Decimal("124.89"), Decimal("19.61"), Decimal("19.61")] + [Decimal("0.00")] * 9
+        mir_text, _ = generate_mir_text([Claim(
+            claim_number="AMOUNT-POSITION-01",
+            services=[ServiceLine(charge=value, paid=value) for value in paid_values],
+        )])
+        line = mir_text.splitlines()[0]
+        self.assertEqual(int(line[332:334]), 12)
+        expected_raw = ["0000012489+", "0000001961+", "0000001961+"] + ["0000000000+"] * 9
+        for number, expected in enumerate(expected_raw, start=1):
+            start = 429 - 1 + ((number - 1) * 303)
+            self.assertEqual(line[start:start + 11], expected)
+
+        source = EDI835File.objects.create(original_filename="amount.835", stored_filename="amount.835")
+        mir_file = store_mir_file(source_835=source, mir_filename="amount.MIR", mir_text=mir_text)
+        stored_total = sum(
+            mir_file.claims.get().service_lines.values_list("paid_amount", flat=True),
+            Decimal("0"),
+        )
+        self.assertEqual(stored_total, Decimal("164.11"))
+
     def test_complete_23_character_reconciliation_id_is_persisted(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
