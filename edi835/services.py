@@ -12,6 +12,7 @@ from project835.field_crypto import (
 )
 
 from .models import EDI835File
+from .mir_persistence import set_mir_push_status, store_mir_file
 from .parser import parse_835_to_mir, EDI835Validator
 from .mir_exporter import export_mir_file
 
@@ -362,12 +363,21 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
         rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
+        # The database is the system of record. Persist the exact file and its
+        # claim/chunk/service structure before attempting any external push.
+        stored_mir = store_mir_file(
+            source_835=db_record,
+            mir_filename=delivery_mir_filename,
+            mir_text=mir_text,
+        )
+
         # Step 4b: Upload converted .mir file directly to configured SFTP outbound folder if active config exists
         sftp_uploaded = upload_mir_to_sftp(
             output_mir_path,
             delivery_mir_filename,
             client=client,
         )
+        set_mir_push_status(stored_mir, sftp_uploaded)
 
         # Step 5: Move original 835/x12 EDI file from processing/ to archive/
         archived_835_path = dirs["archive"] / stored_filename
@@ -484,13 +494,6 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
     rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
-    # Upload single combined MIR file directly to configured SFTP outbound folder
-    sftp_uploaded = upload_mir_to_sftp(
-        output_mir_path,
-        delivery_mir_filename,
-        client=client,
-    )
-
     # Combine all input file names into a single string for table 835 IN column
     combined_inputs_str = ", ".join(file_names)
 
@@ -498,7 +501,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     services_count = mir_res.get("services", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("services", 0)
     records_count = mir_res.get("mir_records", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("mir_records", 0)
 
-    # Create or update a SINGLE DB record for this batch run
+    # Create one source record, then store the complete normalized MIR before
+    # attempting the outbound SFTP push.
     db_rec = EDI835File.objects.create(
         id=file_uuid,
         client=client,
@@ -510,11 +514,26 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         records_count=records_count,
         output_path=rel_output_path,
         archive_path=first_archive_rel_path,
-        present_in_sftp=sftp_uploaded,
+        present_in_sftp=False,
         present_in_archive_folder=True,
         ingestion_source=ingestion_source,
         processing_completed_at=timezone.now()
     )
+
+    stored_mir = store_mir_file(
+        source_835=db_rec,
+        mir_filename=delivery_mir_filename,
+        mir_text=mir_text,
+    )
+    sftp_uploaded = upload_mir_to_sftp(
+        output_mir_path,
+        delivery_mir_filename,
+        client=client,
+    )
+    set_mir_push_status(stored_mir, sftp_uploaded)
+    if sftp_uploaded:
+        db_rec.present_in_sftp = True
+        db_rec.save(update_fields=["present_in_sftp"])
 
     return {
         "success": True,

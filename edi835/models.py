@@ -1,5 +1,6 @@
 import uuid
 from django.db import models
+from django.utils import timezone
 
 
 class EDI835File(models.Model):
@@ -172,3 +173,124 @@ class SFTPConfig(models.Model):
 
     def __str__(self):
         return f"{self.connection_type} - {self.host or 'Unconfigured'}"
+
+
+class MIRFile(models.Model):
+    """An exact database copy of one generated MIR output file."""
+
+    STATUS_CHOICES = [
+        ("GENERATED", "Generated"),
+        ("PUSHED", "Pushed"),
+        ("PUSH_FAILED", "Push failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    source_835 = models.OneToOneField(
+        EDI835File,
+        on_delete=models.CASCADE,
+        related_name="mir_file",
+    )
+    client = models.ForeignKey(
+        "accounts.Client",
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name="mir_files",
+    )
+    mir_filename = models.CharField(max_length=255)
+    original_835_filename = models.TextField(blank=True, default="")
+    file_content = models.TextField()
+    file_hash = models.CharField(max_length=64, db_index=True)
+    file_size = models.BigIntegerField(default=0)
+    claim_count = models.PositiveIntegerField(default=0)
+    physical_row_count = models.PositiveIntegerField(default=0)
+    service_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="GENERATED")
+    converted_at = models.DateTimeField(default=timezone.now)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mir_file"
+        ordering = ["-converted_at"]
+        indexes = [
+            models.Index(fields=["client", "-converted_at"]),
+            models.Index(fields=["mir_filename"]),
+        ]
+
+
+class MIRClaim(models.Model):
+    mir_file = models.ForeignKey(MIRFile, on_delete=models.CASCADE, related_name="claims")
+    claim_sequence = models.PositiveIntegerField()
+    claim_control_number = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    record_type = models.CharField(max_length=2, blank=True, default="")
+    member_id = models.CharField(max_length=64, blank=True, default="", db_index=True)
+    patient_first_name = models.CharField(max_length=100, blank=True, default="")
+    patient_last_name = models.CharField(max_length=100, blank=True, default="")
+    date_of_birth = models.CharField(max_length=8, blank=True, default="")
+    claim_status = models.CharField(max_length=10, blank=True, default="")
+    primary_reason = models.CharField(max_length=10, blank=True, default="")
+    service_count = models.PositiveIntegerField(default=0)
+    chunk_count = models.PositiveIntegerField(default=1)
+    header_raw = models.CharField(max_length=334)
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "mir_claim"
+        ordering = ["claim_sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["mir_file", "claim_sequence"], name="uniq_mir_claim_sequence"),
+        ]
+
+
+class MIRClaimChunk(models.Model):
+    mir_claim = models.ForeignKey(MIRClaim, on_delete=models.CASCADE, related_name="chunks")
+    chunk_number = models.PositiveSmallIntegerField()
+    service_start_number = models.PositiveIntegerField(default=0)
+    service_end_number = models.PositiveIntegerField(default=0)
+    services_in_chunk = models.PositiveSmallIntegerField(default=0)
+    physical_row_number = models.PositiveIntegerField()
+    raw_row = models.TextField()
+    row_length = models.PositiveIntegerField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "mir_claim_chunk"
+        ordering = ["physical_row_number"]
+        constraints = [
+            models.UniqueConstraint(fields=["mir_claim", "chunk_number"], name="uniq_mir_claim_chunk"),
+            models.CheckConstraint(
+                condition=models.Q(services_in_chunk__gte=0, services_in_chunk__lte=50),
+                name="mir_chunk_max_50_services",
+            ),
+        ]
+
+
+class MIRServiceLine(models.Model):
+    mir_claim = models.ForeignKey(MIRClaim, on_delete=models.CASCADE, related_name="service_lines")
+    mir_chunk = models.ForeignKey(MIRClaimChunk, on_delete=models.CASCADE, related_name="service_lines")
+    service_sequence = models.PositiveIntegerField()
+    chunk_service_sequence = models.PositiveSmallIntegerField()
+    procedure_code = models.CharField(max_length=64, blank=True, default="")
+    service_date = models.CharField(max_length=8, blank=True, default="")
+    units = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    patient_liability = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    reason_code = models.CharField(max_length=10, blank=True, default="")
+    service_raw = models.CharField(max_length=303)
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "mir_service_line"
+        ordering = ["service_sequence"]
+        constraints = [
+            models.UniqueConstraint(fields=["mir_claim", "service_sequence"], name="uniq_mir_service_sequence"),
+            models.UniqueConstraint(fields=["mir_chunk", "chunk_service_sequence"], name="uniq_mir_chunk_service_sequence"),
+            models.CheckConstraint(
+                condition=models.Q(chunk_service_sequence__gte=1, chunk_service_sequence__lte=50),
+                name="mir_service_position_1_50",
+            ),
+        ]

@@ -1,8 +1,10 @@
 import os
 import shutil
+from decimal import Decimal
 from pathlib import Path
 from django.test import TestCase, Client
-from .models import EDI835File
+from .models import EDI835File, MIRServiceLine
+from .mir_persistence import store_mir_file
 from .services import process_edi835_file_content, get_edi835_storage_dirs
 
 SAMPLE_835_VALID = "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260813*1200*U*00501*000000001*0*P*:~GS*HP*SENDER*RECEIVER*20260813*1200*1*X*005010X221A1~ST*835*0001~BPR*I*150.00*C*CHK************20260813~TRN*1*123456789*1999999999~N1*PR*PAYER NAME~N1*PE*PROVIDER NAME*XX*1234567890~LX*1~CLP*CLM_PAYP_20260807*1*200.00*150.00*50.00*MC*REF12345~NM1*QC*1*SMITH*JOHN*M~NM1*IL*1*SMITH*JOHN****MI*SUB123456~REF*1L*GRP999~DTM*036*19850101~DTM*050*20260801~SVC*HC:99213*200.00*150.00**1~DTM*472*20260805~CAS*CO*45*50.00~SE*16*0001~GE*1*1~IEA*1*000000001~"
@@ -97,3 +99,44 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertEqual(db_rec.status, "ARCHIVED")
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
+class MIRPersistenceTestCase(TestCase):
+    def test_claim_over_50_services_is_stored_as_continuation_chunks(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+
+        services = [
+            ServiceLine(charge=Decimal("10.00"), paid=Decimal("8.00"))
+            for _ in range(51)
+        ]
+        mir_text, summary = generate_mir_text([
+            Claim(claim_number="CONTINUATION00001", services=services)
+        ])
+        source = EDI835File.objects.create(
+            original_filename="split.835",
+            stored_filename="split.835",
+        )
+
+        mir_file = store_mir_file(
+            source_835=source,
+            mir_filename="split.MIR",
+            mir_text=mir_text,
+        )
+        claim = mir_file.claims.get()
+
+        self.assertEqual(summary["mir_records"], 2)
+        self.assertEqual(mir_file.file_content, mir_text)
+        self.assertEqual(mir_file.physical_row_count, 2)
+        self.assertEqual(claim.chunk_count, 2)
+        self.assertEqual(claim.service_count, 51)
+        self.assertEqual(
+            list(claim.chunks.values_list("services_in_chunk", flat=True)),
+            [50, 1],
+        )
+        self.assertEqual(
+            list(claim.chunks.values_list("service_start_number", "service_end_number")),
+            [(1, 50), (51, 51)],
+        )
+        self.assertEqual(
+            MIRServiceLine.objects.filter(mir_claim=claim).count(),
+            51,
+        )
