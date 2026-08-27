@@ -804,7 +804,18 @@ def api_admin_client_state(request, client_id):
         st = status_map.get(step.id, 'PENDING')
         
         is_done = st == 'COMPLETED'
-        
+
+        # Step 7 can be completed by selecting the admin-managed default SFTP
+        # configuration. Treat that persisted configuration as completion even
+        # if an older frontend did not call the generic step completion endpoint.
+        if step.step_number == 7 and not is_done:
+            from edi835.models import SFTPConfig
+            is_done = SFTPConfig.objects.filter(
+                client=client_obj,
+                connection_type='UNIFIED',
+                use_default=True,
+            ).exists()
+
         # Override Step 12 completion based on Go-Live steps
         if step.step_number == 12:
             is_done = (st == 'COMPLETED') or (completed_golive == total_golive)
