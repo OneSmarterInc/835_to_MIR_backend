@@ -5,10 +5,21 @@
     <link rel="icon" type="image/jpeg" href="/static/react/favicon.jpg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>MIR835</title>
-    <script type="module" crossorigin src="/static/react/assets/index-CxhSIytK.js"></script>
-    <link rel="stylesheet" crossorigin href="/static/react/assets/index-DOkXV9o1.css">
+    <style>
+      /* Admin conversion page: hide the validation success notice. */
+      .start-conversion-card .status-banner.valid {
+        display: none !important;
+      }
+
+      /* Admin conversion page: remove the Total Segments metric. */
+      .start-conversion-card .metrics .metric:first-child {
+        display: none !important;
+      }
+    </style>
+    <script type="module" crossorigin src="/static/react/assets/index-Ba4WtH_q.js"></script>
+    <link rel="stylesheet" crossorigin href="/static/react/assets/index-DiJt5MTl.css">
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root"></div>
   </body>
 </html>
