@@ -228,6 +228,9 @@ class RECONResultAPITestCase(TestCase):
 
         response = self.client.get("/edi835/api/reconciliation/")
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["total_claims"], 1)
+        self.assertEqual(response.json()["page"], 1)
+        self.assertEqual(response.json()["total_pages"], 1)
         row = response.json()["claims"][0]
         self.assertEqual(row["claim_id"], "CLAIM75")
         self.assertEqual(row["mir_service_count"], 75)

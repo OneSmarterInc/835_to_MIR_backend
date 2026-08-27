@@ -11,7 +11,7 @@ from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
-from project835.decorators import authenticated_api_required
+from project835.decorators import authenticated_api_required, json_api_errors
 
 from .models import MIRClaim, RECONFile
 from .recon_service import process_recon_file
@@ -69,6 +69,7 @@ def _serialize_file(item):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def recon_files(request):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
@@ -89,6 +90,7 @@ def recon_files(request):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def recon_upload(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
@@ -130,6 +132,7 @@ def recon_upload(request):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def recon_process(request, file_id):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
@@ -169,6 +172,7 @@ def recon_process(request, file_id):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def recon_detail(request, file_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
@@ -196,6 +200,7 @@ def recon_detail(request, file_id):
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def reconciliation_results(request):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
@@ -205,16 +210,27 @@ def reconciliation_results(request):
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
     recon = latest_recon_file(client, request.GET.get("recon_file_id") or None)
     files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
+    try:
+        page = max(1, int(request.GET.get("page", "1")))
+        page_size = min(250, max(25, int(request.GET.get("page_size", "100"))))
+    except ValueError:
+        return JsonResponse({"success": False, "error": "Invalid page parameters."}, status=400)
+    claims, total = reconciliation_rows(client, recon, page=page, page_size=page_size)
     return JsonResponse({
         "success": True,
         "selected_recon_file_id": str(recon.id) if recon else None,
         "recon_files": [_serialize_file(item) for item in files],
-        "claims": reconciliation_rows(client, recon),
+        "claims": claims,
+        "total_claims": total,
+        "page": page,
+        "page_size": page_size,
+        "total_pages": max(1, (total + page_size - 1) // page_size),
     })
 
 
 @csrf_exempt
 @authenticated_api_required
+@json_api_errors
 def reconciliation_claim_detail(request, claim_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
@@ -228,7 +244,7 @@ def reconciliation_claim_detail(request, claim_id):
     except (MIRClaim.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "MIR claim was not found."}, status=404)
     recon = latest_recon_file(claim.mir_file.client, request.GET.get("recon_file_id") or None)
-    row = reconciliation_rows(claim.mir_file.client, recon)
+    row = reconciliation_rows(claim.mir_file.client, recon, claim_id=claim.id)
     summary = next((item for item in row if item["mir_claim_id"] == claim.id), None)
     recon_claim = next((
         item for item in recon.claims.all()

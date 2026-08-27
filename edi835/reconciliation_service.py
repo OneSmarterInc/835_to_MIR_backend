@@ -50,12 +50,7 @@ def reconciliation_status(amount_to_pay, recon_paid, matched):
     return "AMOUNT_MISMATCH", remaining
 
 
-def reconciliation_rows(client, recon_file=None):
-    recon_by_claim = {}
-    if recon_file:
-        for claim in recon_file.claims.all().order_by("claim_sequence"):
-            recon_by_claim.setdefault(normalize_claim_id(claim.claim_control_number), claim)
-
+def reconciliation_rows(client, recon_file=None, page=None, page_size=200, claim_id=None):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
         .select_related("mir_file")
@@ -65,6 +60,27 @@ def reconciliation_rows(client, recon_file=None):
         )
         .order_by("-mir_file__converted_at", "claim_sequence")
     )
+    if claim_id is not None:
+        claims = claims.filter(id=claim_id)
+    total = claims.count()
+    if page is not None:
+        start = (page - 1) * page_size
+        claims = claims[start:start + page_size]
+    claims = list(claims)
+
+    # Only retain RECON rows needed by this page. A large RECON file must not
+    # be materialized in a Gunicorn worker just to render a bounded page.
+    wanted_claim_ids = {
+        normalize_claim_id(claim.claim_control_number) for claim in claims
+    }
+    recon_by_claim = {}
+    if recon_file and wanted_claim_ids:
+        for recon_claim in recon_file.claims.only(
+            "id", "claim_control_number", "paid_amount", "charge_amount", "service_count"
+        ).iterator(chunk_size=2000):
+            normalized_id = normalize_claim_id(recon_claim.claim_control_number)
+            if normalized_id in wanted_claim_ids:
+                recon_by_claim.setdefault(normalized_id, recon_claim)
     output = []
     for claim in claims:
         claim_number = normalize_claim_id(claim.claim_control_number)
@@ -91,4 +107,4 @@ def reconciliation_rows(client, recon_file=None):
             "difference_amount": str(remaining),
             "status": status,
         })
-    return output
+    return (output, total) if page is not None else output
