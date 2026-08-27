@@ -33,3 +33,5 @@ jobs:
           git add admin_panel/views.py
           git commit -m "Fix Step 7 default SFTP unlock"
           git push
+
+# Trigger a fresh run after deployment
