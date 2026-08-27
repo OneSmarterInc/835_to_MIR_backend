@@ -12,96 +12,24 @@ class EDI835File(models.Model):
         ("ERROR", "Error"),
     ]
 
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-        help_text="Unique ID for the file."
-    )
-    client = models.ForeignKey(
-        'accounts.Client',
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='edi835_files',
-        help_text="Client associated with this file."
-    )
-    original_filename = models.CharField(
-        max_length=255,
-        help_text="Original uploaded filename."
-    )
-    stored_filename = models.CharField(
-        max_length=255,
-        help_text="Unique physical filename."
-    )
-    status = models.CharField(
-        max_length=50,
-        choices=STATUS_CHOICES,
-        default="UPLOADED",
-        help_text="Current processing state."
-    )
-    claims_count = models.IntegerField(
-        default=0,
-        help_text="Number of claims in file."
-    )
-    services_count = models.IntegerField(
-        default=0,
-        help_text="Number of service lines in file."
-    )
-    records_count = models.IntegerField(
-        default=0,
-        help_text="Number of MIR records in file."
-    )
-    uploaded_at = models.DateTimeField(
-        auto_now_add=True,
-        help_text="Upload timestamp."
-    )
-    processing_started_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Processing start timestamp."
-    )
-    processing_completed_at = models.DateTimeField(
-        null=True,
-        blank=True,
-        help_text="Processing completion timestamp."
-    )
-    input_path = models.CharField(
-        max_length=500,
-        null=True,
-        blank=True,
-        help_text="Input file location."
-    )
-    output_path = models.CharField(
-        max_length=500,
-        null=True,
-        blank=True,
-        help_text="Generated MIR location."
-    )
-    archive_path = models.CharField(
-        max_length=500,
-        null=True,
-        blank=True,
-        help_text="Archived file location."
-    )
-    error_message = models.TextField(
-        null=True,
-        blank=True,
-        help_text="Error information if processing fails."
-    )
-    present_in_sftp = models.BooleanField(
-        default=False,
-        help_text="Boolean indicator if file is currently present in SFTP/input folder."
-    )
-    present_in_archive_folder = models.BooleanField(
-        default=False,
-        help_text="Boolean indicator if file is currently present in archive folder on disk."
-    )
-    ingestion_source = models.CharField(
-        max_length=50,
-        default="MANUAL",
-        help_text="File ingestion origin: SFTP or MANUAL."
-    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey('accounts.Client', on_delete=models.CASCADE, null=True, blank=True, related_name='edi835_files', help_text="Client associated with this file.")
+    original_filename = models.CharField(max_length=255, help_text="Original uploaded filename.")
+    stored_filename = models.CharField(max_length=255, help_text="Unique physical filename.")
+    status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="UPLOADED", help_text="Current processing state.")
+    claims_count = models.IntegerField(default=0, help_text="Number of claims in file.")
+    services_count = models.IntegerField(default=0, help_text="Number of service lines in file.")
+    records_count = models.IntegerField(default=0, help_text="Number of MIR records in file.")
+    uploaded_at = models.DateTimeField(auto_now_add=True, help_text="Upload timestamp.")
+    processing_started_at = models.DateTimeField(null=True, blank=True, help_text="Processing start timestamp.")
+    processing_completed_at = models.DateTimeField(null=True, blank=True, help_text="Processing completion timestamp.")
+    input_path = models.CharField(max_length=500, null=True, blank=True, help_text="Input file location.")
+    output_path = models.CharField(max_length=500, null=True, blank=True, help_text="Generated MIR location.")
+    archive_path = models.CharField(max_length=500, null=True, blank=True, help_text="Archived file location.")
+    error_message = models.TextField(null=True, blank=True, help_text="Error information if processing fails.")
+    present_in_sftp = models.BooleanField(default=False, help_text="Boolean indicator if file is currently present in SFTP/input folder.")
+    present_in_archive_folder = models.BooleanField(default=False, help_text="Boolean indicator if file is currently present in archive folder on disk.")
+    ingestion_source = models.CharField(max_length=50, default="MANUAL", help_text="File ingestion origin: SFTP or MANUAL.")
 
     class Meta:
         db_table = "835file"
@@ -125,19 +53,11 @@ class SFTPConfig(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey(
-        'accounts.Client',
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name='sftp_configs',
-        help_text="Client associated with this SFTP config."
-    )
+    client = models.ForeignKey('accounts.Client', on_delete=models.CASCADE, null=True, blank=True, related_name='sftp_configs', help_text="Client associated with this SFTP config.")
     name = models.CharField(max_length=255, default="SFTP Connection")
     connection_type = models.CharField(max_length=50, choices=CONNECTION_TYPES, default="UNIFIED")
     use_same_server = models.BooleanField(default=True)
 
-    # Inbound / Unified Host Details
     host = models.CharField(max_length=255, blank=True, null=True, default="sftp.example.com")
     port = models.IntegerField(default=22)
     username = models.CharField(max_length=255, blank=True, null=True)
@@ -148,7 +68,6 @@ class SFTPConfig(models.Model):
     inbound_837_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/in/837/")
     inbound_835_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/in/835/")
 
-    # Outbound Host Details (Used when use_same_server is False)
     outbound_host = models.CharField(max_length=255, blank=True, null=True)
     outbound_port = models.IntegerField(default=22)
     outbound_username = models.CharField(max_length=255, blank=True, null=True)
@@ -174,6 +93,30 @@ class SFTPConfig(models.Model):
     def __str__(self):
         return f"{self.connection_type} - {self.host or 'Unconfigured'}"
 
+    def save(self, *args, **kwargs):
+        """Persist SFTP configuration and synchronize onboarding Step 7.
+
+        Selecting the admin-managed default SFTP configuration is a valid
+        completion of Step 7. Keep the canonical ClientStepStatus in sync so
+        the onboarding state endpoint can unlock the next workflow step.
+        """
+        super().save(*args, **kwargs)
+
+        if self.client_id and self.connection_type == "UNIFIED" and self.use_default:
+            try:
+                from admin_panel.models import OnboardingStepDefinition, ClientStepStatus
+                step7 = OnboardingStepDefinition.objects.filter(step_number=7).first()
+                if step7:
+                    ClientStepStatus.objects.update_or_create(
+                        client=self.client,
+                        step=step7,
+                        defaults={"status": "COMPLETED"},
+                    )
+            except Exception:
+                # Do not make an otherwise successful SFTP save fail because
+                # onboarding-state synchronization is unavailable.
+                pass
+
 
 class MIRFile(models.Model):
     """An exact database copy of one generated MIR output file."""
@@ -185,18 +128,8 @@ class MIRFile(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    source_835 = models.OneToOneField(
-        EDI835File,
-        on_delete=models.CASCADE,
-        related_name="mir_file",
-    )
-    client = models.ForeignKey(
-        "accounts.Client",
-        on_delete=models.CASCADE,
-        null=True,
-        blank=True,
-        related_name="mir_files",
-    )
+    source_835 = models.OneToOneField(EDI835File, on_delete=models.CASCADE, related_name="mir_file")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, null=True, blank=True, related_name="mir_files")
     mir_filename = models.CharField(max_length=255)
     original_835_filename = models.TextField(blank=True, default="")
     file_content = models.TextField()
@@ -239,9 +172,7 @@ class MIRClaim(models.Model):
     class Meta:
         db_table = "mir_claim"
         ordering = ["claim_sequence"]
-        constraints = [
-            models.UniqueConstraint(fields=["mir_file", "claim_sequence"], name="uniq_mir_claim_sequence"),
-        ]
+        constraints = [models.UniqueConstraint(fields=["mir_file", "claim_sequence"], name="uniq_mir_claim_sequence")]
 
 
 class MIRClaimChunk(models.Model):
@@ -260,10 +191,7 @@ class MIRClaimChunk(models.Model):
         ordering = ["physical_row_number"]
         constraints = [
             models.UniqueConstraint(fields=["mir_claim", "chunk_number"], name="uniq_mir_claim_chunk"),
-            models.CheckConstraint(
-                condition=models.Q(services_in_chunk__gte=0, services_in_chunk__lte=50),
-                name="mir_chunk_max_50_services",
-            ),
+            models.CheckConstraint(condition=models.Q(services_in_chunk__gte=0, services_in_chunk__lte=50), name="mir_chunk_max_50_services"),
         ]
 
 
@@ -289,10 +217,7 @@ class MIRServiceLine(models.Model):
         constraints = [
             models.UniqueConstraint(fields=["mir_claim", "service_sequence"], name="uniq_mir_service_sequence"),
             models.UniqueConstraint(fields=["mir_chunk", "chunk_service_sequence"], name="uniq_mir_chunk_service_sequence"),
-            models.CheckConstraint(
-                condition=models.Q(chunk_service_sequence__gte=1, chunk_service_sequence__lte=50),
-                name="mir_service_position_1_50",
-            ),
+            models.CheckConstraint(condition=models.Q(chunk_service_sequence__gte=1, chunk_service_sequence__lte=50), name="mir_service_position_1_50"),
         ]
 
 
@@ -305,18 +230,8 @@ class RECONFile(models.Model):
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.ForeignKey(
-        "accounts.Client",
-        on_delete=models.CASCADE,
-        related_name="recon_files",
-    )
-    uploaded_by = models.ForeignKey(
-        "accounts.User",
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="uploaded_recon_files",
-    )
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_files")
+    uploaded_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_recon_files")
     original_filename = models.CharField(max_length=255)
     stored_filename = models.CharField(max_length=255)
     file_content = models.TextField()
@@ -337,9 +252,7 @@ class RECONFile(models.Model):
     class Meta:
         db_table = "recon_file"
         ordering = ["-uploaded_at"]
-        constraints = [
-            models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_recon_hash"),
-        ]
+        constraints = [models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_recon_hash")]
         indexes = [
             models.Index(fields=["client", "-uploaded_at"]),
             models.Index(fields=["client", "status"]),
@@ -370,12 +283,8 @@ class RECONClaim(models.Model):
     class Meta:
         db_table = "recon_claim"
         ordering = ["claim_sequence"]
-        constraints = [
-            models.UniqueConstraint(fields=["recon_file", "claim_sequence"], name="uniq_recon_claim_sequence"),
-        ]
-        indexes = [
-            models.Index(fields=["client", "claim_control_number"]),
-        ]
+        constraints = [models.UniqueConstraint(fields=["recon_file", "claim_sequence"], name="uniq_recon_claim_sequence")]
+        indexes = [models.Index(fields=["client", "claim_control_number"])]
 
 
 class RECONServiceLine(models.Model):
@@ -402,9 +311,7 @@ class RECONServiceLine(models.Model):
     class Meta:
         db_table = "recon_service_line"
         ordering = ["service_sequence"]
-        constraints = [
-            models.UniqueConstraint(fields=["recon_claim", "service_sequence"], name="uniq_recon_service_sequence"),
-        ]
+        constraints = [models.UniqueConstraint(fields=["recon_claim", "service_sequence"], name="uniq_recon_service_sequence")]
 
 
 class RECONProcessingRun(models.Model):
@@ -417,9 +324,7 @@ class RECONProcessingRun(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     recon_file = models.ForeignKey(RECONFile, on_delete=models.CASCADE, related_name="processing_runs")
     client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="recon_processing_runs")
-    started_by = models.ForeignKey(
-        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="recon_processing_runs"
-    )
+    started_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="recon_processing_runs")
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PROCESSING")
     claims_created = models.PositiveIntegerField(default=0)
     services_created = models.PositiveIntegerField(default=0)
