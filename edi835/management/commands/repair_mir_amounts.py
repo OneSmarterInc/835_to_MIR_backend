@@ -2,7 +2,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.core.management.base import BaseCommand
 
-from edi835.models import MIRServiceLine
+from edi835.models import MIRClaim, MIRServiceLine
 
 
 def signed_amount(value):
@@ -21,6 +21,15 @@ class Command(BaseCommand):
     help = "Repair persisted MIR service amounts created before target-key extraction was fixed."
 
     def handle(self, *args, **options):
+        claims = []
+        for claim in MIRClaim.objects.all().iterator(chunk_size=2000):
+            raw = claim.header_raw or ""
+            if len(raw) >= 25:
+                claim.claim_control_number = raw[2:25].strip()
+                claims.append(claim)
+        if claims:
+            MIRClaim.objects.bulk_update(claims, ["claim_control_number"], batch_size=2000)
+
         pending = []
         updated = 0
         for service in MIRServiceLine.objects.all().iterator(chunk_size=2000):
@@ -42,4 +51,6 @@ class Command(BaseCommand):
                 pending, ["charge_amount", "paid_amount", "patient_liability"], batch_size=2000
             )
             updated += len(pending)
-        self.stdout.write(self.style.SUCCESS(f"Repaired {updated} MIR service rows."))
+        self.stdout.write(self.style.SUCCESS(
+            f"Repaired {len(claims)} MIR claim identifiers and {updated} MIR service rows."
+        ))

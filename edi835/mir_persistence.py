@@ -103,7 +103,11 @@ def store_mir_file(
 
     for row_number, row, sequence, max_sequence, service_count in parsed_rows:
         header = row[:config.MIR_HEADER_LENGTH]
-        claim_number = header[2:19].strip()
+        # The reconciliation identifier is the complete 23-character MIR key:
+        # MIR100 (positions 3-19) followed by the six-character cross-reference
+        # (positions 20-25). Storing only MIR100 makes distinct claims appear to
+        # match and prevents exact matching with reference MIR/RECON files.
+        claim_number = header[2:25].strip()
         if sequence == 1:
             claim_count += 1
             global_service_number = 0
@@ -154,9 +158,12 @@ def store_mir_file(
                 service_sequence=global_service_number,
                 chunk_service_sequence=chunk_position,
                 units=_signed_implied_decimal(segment_data.get("service_units", ""), 0),
-                charge_amount=_signed_implied_decimal(segment_data.get("service_charge", "")),
-                paid_amount=_signed_implied_decimal(segment_data.get("paid_amount", "")),
-                patient_liability=_signed_implied_decimal(segment_data.get("patient_liability", "")),
+                # These are canonical MIR positions inside every 303-byte
+                # service block. Saved mapping labels must not alter financial
+                # reconciliation values.
+                charge_amount=_signed_implied_decimal(raw_service[50:61]),
+                paid_amount=_signed_implied_decimal(raw_service[94:105]),
+                patient_liability=_signed_implied_decimal(raw_service[105:116]),
                 reason_code=segment_data.get("service_primary_reason", ""),
                 service_raw=raw_service,
                 segment_data=segment_data,

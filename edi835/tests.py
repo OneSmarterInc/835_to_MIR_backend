@@ -101,6 +101,42 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
 class MIRPersistenceTestCase(TestCase):
+    def test_complete_23_character_reconciliation_id_is_persisted(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+
+        mir_text, _ = generate_mir_text([Claim(
+            claim_number="86520261762674200", claim_reference="QZL067",
+            services=[ServiceLine(charge=Decimal("75.00"), paid=Decimal("60.00"))],
+        )])
+        source = EDI835File.objects.create(original_filename="id.835", stored_filename="id.835")
+        mir_file = store_mir_file(source_835=source, mir_filename="id.MIR", mir_text=mir_text)
+        claim = mir_file.claims.get()
+        self.assertEqual(claim.claim_control_number, "86520261762674200QZL067")
+        self.assertEqual(claim.service_lines.get().charge_amount, Decimal("75.00"))
+        self.assertEqual(claim.service_lines.get().paid_amount, Decimal("60.00"))
+
+    def test_reference_mir_fixed_width_recon_uses_exact_positions(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+        from .recon_service import _money_decimal, parse_recon_rows
+
+        mir_text, _ = generate_mir_text([Claim(
+            claim_number="37620261920034300", claim_reference="QXW615",
+            services=[
+                ServiceLine(charge=Decimal("50.00"), paid=Decimal("40.00")),
+                ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00")),
+            ],
+        )])
+        rows = parse_recon_rows(mir_text)
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["data"]["claim_control_number"] == "37620261920034300QXW615" for row in rows))
+        self.assertEqual([row["data"]["paid_amount"] for row in rows], ["0000004000+", "0000002000+"])
+        self.assertEqual(
+            sum((_money_decimal(row["data"]["paid_amount"]) for row in rows), Decimal("0")),
+            Decimal("60.00"),
+        )
+
     def test_claim_over_50_services_is_stored_as_continuation_chunks(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine

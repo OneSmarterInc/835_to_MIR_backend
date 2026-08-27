@@ -64,6 +64,15 @@ def _decimal(value: str) -> Decimal:
         return Decimal("0")
 
 
+def _money_decimal(value: str) -> Decimal:
+    """Parse either ordinary decimal money or MIR implied cents + trailing sign."""
+    raw = str(value or "").strip()
+    if re.fullmatch(r"\d+[+-]", raw):
+        sign = Decimal("-1") if raw[-1] == "-" else Decimal("1")
+        return sign * Decimal(raw[:-1] or "0").scaleb(-2)
+    return _decimal(raw)
+
+
 def _detect_delimiter(text: str) -> str | None:
     sample = "\n".join(text.splitlines()[:10])
     for delimiter in (",", "\t", "|", ";"):
@@ -81,16 +90,68 @@ def _claim_key(value: str) -> str:
 
 
 def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict:
-    # The exact fixed-width RECON layout is client-specific. Preserve the row
-    # and use the first stable long identifier until a client layout is mapped.
+    # A reference MIR/RECON physical row uses the same 334-byte header and
+    # 303-byte service blocks as MIR. Its complete reconciliation key occupies
+    # positions 3-25 (MIR100 plus the cross-reference).
+    if len(raw) >= 334 and (len(raw) - 334) % 303 == 0:
+        service_count = _integer(raw[332:334])
+        actual_count = (len(raw) - 334) // 303
+        if service_count == actual_count:
+            return {
+                "claim_control_number": raw[2:25].strip(),
+                "record_type": raw[0:2].strip(),
+                "claim_status": raw[52:53].strip(),
+                "service_count": str(service_count),
+                "fixed_width_mir": "1",
+            }
+
+    # For a client-specific fixed-width row, recognize an explicit full MIR
+    # key. Never replace it with a partial known MIR identifier.
     compact_raw = _claim_key(raw)
-    known = sorted((value for value in (known_claim_ids or []) if value), key=len, reverse=True)
-    claim_id = next((value for value in known if _claim_key(value) in compact_raw), "")
+    candidates = re.findall(r"(?<![A-Za-z0-9])\d{17}[A-Za-z0-9]{6}(?![A-Za-z0-9])", raw)
+    claim_id = candidates[0] if candidates else ""
     if not claim_id:
-        candidates = re.findall(r"[A-Za-z0-9][A-Za-z0-9._-]{7,}", raw)
-        claim_id = candidates[0][:100] if candidates else f"ROW-{row_number}"
+        known = sorted((_claim_key(value) for value in (known_claim_ids or []) if value), key=len, reverse=True)
+        claim_id = next((value for value in known if len(value) >= 23 and value in compact_raw), "")
+    if not claim_id:
+        claim_id = f"ROW-{row_number}"
     amounts = re.findall(r"(?<![A-Za-z0-9])(?:\(?[-+]?\$?\d[\d,]*\.\d{2}\)?)(?!\d)", raw)
     return {"claim_control_number": claim_id, "paid_amount": amounts[-1] if amounts else ""}
+
+
+def _integer(value: str, default: int = 0) -> int:
+    try:
+        return int((value or "").strip())
+    except (TypeError, ValueError):
+        return default
+
+
+def _mir_fixed_width_rows(raw: str, row_number: int, data: dict) -> list[dict]:
+    """Expand one MIR-layout physical record into its exact service amounts."""
+    if data.get("fixed_width_mir") != "1":
+        return [{"row_number": row_number, "raw": raw, "data": data,
+                 "segment_data": {"raw_fixed_width": raw}}]
+    count = _integer(data.get("service_count"))
+    if not count:
+        return [{"row_number": row_number, "raw": raw, "data": data,
+                 "segment_data": {"raw_fixed_width": raw}}]
+    output = []
+    for index in range(count):
+        block = raw[334 + index * 303:334 + (index + 1) * 303]
+        service_data = dict(data)
+        service_data.update({
+            "service_line_number": str(index + 1),
+            "charge_amount": block[50:61],
+            "paid_amount": block[94:105],
+            "patient_responsibility": block[105:116],
+        })
+        output.append({
+            "row_number": row_number,
+            "raw": raw,
+            "data": service_data,
+            "segment_data": {"raw_fixed_width": raw, "service_block": block},
+        })
+    return output
 
 
 def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
@@ -100,15 +161,11 @@ def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
 
     delimiter = _detect_delimiter(text)
     if not delimiter:
-        return [
-            {
-                "row_number": number,
-                "raw": raw,
-                "data": _fixed_width_data(raw, number, known_claim_ids),
-                "segment_data": {"raw_fixed_width": raw},
-            }
-            for number, raw in enumerate(lines, start=1)
-        ]
+        output = []
+        for number, raw in enumerate(lines, start=1):
+            data = _fixed_width_data(raw, number, known_claim_ids)
+            output.extend(_mir_fixed_width_rows(raw, number, data))
+        return output
 
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     parsed = list(reader)
@@ -170,11 +227,11 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         service_total = 0
         for claim_sequence, (claim_number, claim_rows) in enumerate(grouped.items(), start=1):
             first = claim_rows[0]["data"]
-            charge = sum((_decimal(row["data"].get("charge_amount")) for row in claim_rows), Decimal("0"))
-            allowed = sum((_decimal(row["data"].get("allowed_amount")) for row in claim_rows), Decimal("0"))
-            paid = sum((_decimal(row["data"].get("paid_amount")) for row in claim_rows), Decimal("0"))
-            patient = sum((_decimal(row["data"].get("patient_responsibility")) for row in claim_rows), Decimal("0"))
-            adjustment = sum((_decimal(row["data"].get("adjustment_amount")) for row in claim_rows), Decimal("0"))
+            charge = sum((_money_decimal(row["data"].get("charge_amount")) for row in claim_rows), Decimal("0"))
+            allowed = sum((_money_decimal(row["data"].get("allowed_amount")) for row in claim_rows), Decimal("0"))
+            paid = sum((_money_decimal(row["data"].get("paid_amount")) for row in claim_rows), Decimal("0"))
+            patient = sum((_money_decimal(row["data"].get("patient_responsibility")) for row in claim_rows), Decimal("0"))
+            adjustment = sum((_money_decimal(row["data"].get("adjustment_amount")) for row in claim_rows), Decimal("0"))
             claim = RECONClaim.objects.create(
                 recon_file=recon_file,
                 client=recon_file.client,
@@ -209,11 +266,11 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
                     service_from_date=data.get("service_from_date", "")[:10],
                     service_to_date=data.get("service_to_date", "")[:10],
                     units=_decimal(data.get("units")),
-                    charge_amount=_decimal(data.get("charge_amount")),
-                    allowed_amount=_decimal(data.get("allowed_amount")),
-                    paid_amount=_decimal(data.get("paid_amount")),
-                    patient_responsibility=_decimal(data.get("patient_responsibility")),
-                    adjustment_amount=_decimal(data.get("adjustment_amount")),
+                    charge_amount=_money_decimal(data.get("charge_amount")),
+                    allowed_amount=_money_decimal(data.get("allowed_amount")),
+                    paid_amount=_money_decimal(data.get("paid_amount")),
+                    patient_responsibility=_money_decimal(data.get("patient_responsibility")),
+                    adjustment_amount=_money_decimal(data.get("adjustment_amount")),
                     reason_code=data.get("reason_code", "")[:30],
                     raw_service=row["raw"],
                     segment_data=row["segment_data"],
