@@ -8,8 +8,8 @@ the 50-service physical-row limit.
 from decimal import Decimal
 import re
 
-from django.db.models import Q, Sum
-from django.db.models.functions import Coalesce
+from django.db.models import CharField, Q, Sum, Value
+from django.db.models.functions import Coalesce, Replace, Upper
 
 from .models import MIRClaim, RECONClaim, RECONFile
 
@@ -64,13 +64,32 @@ def reconciliation_rows(client, recon_files=None, page=None, page_size=200, clai
         claims = claims.filter(id=claim_id)
     search = (search or "").strip()
     if search:
-        claims = claims.filter(
+        recon_claim_ids = {
+            normalize_claim_id(value) for value in RECONClaim.objects.filter(
+            recon_file__client=client,
+            recon_file__status="PROCESSED",
+        ).filter(
+            Q(claim_control_number__icontains=search)
+            | Q(member_id__icontains=search)
+            | Q(patient_control_number__icontains=search)
+            | Q(recon_file__original_filename__icontains=search)
+            ).values_list("claim_control_number", flat=True)
+        }
+        claims = claims.annotate(
+            normalized_claim_id=Upper(
+                Replace(Replace(Replace(Replace(
+                    "claim_control_number", Value("-"), Value("")),
+                    Value("_"), Value("")), Value("."), Value("")), Value(" "), Value("")),
+                output_field=CharField(),
+            )
+        ).filter(
             Q(claim_control_number__icontains=search)
             | Q(member_id__icontains=search)
             | Q(patient_first_name__icontains=search)
             | Q(patient_last_name__icontains=search)
             | Q(mir_file__mir_filename__icontains=search)
             | Q(mir_file__original_835_filename__icontains=search)
+            | Q(normalized_claim_id__in=recon_claim_ids)
         )
     total = claims.count()
     if page is not None:

@@ -281,6 +281,11 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(search_response.json()["total_claims"], 1)
         self.assertEqual(search_response.json()["claims"][0]["claim_id"], "CLAIM75")
 
+        recon_search = self.client.get("/edi835/api/reconciliation/?search=latest.csv")
+        self.assertEqual(recon_search.status_code, 200)
+        self.assertEqual(recon_search.json()["total_claims"], 1)
+        self.assertEqual(recon_search.json()["claims"][0]["recon_filename"], "latest.csv")
+
     def test_reconciliation_statuses_not_in_recon_and_signature_mismatch(self):
         from .reconciliation_service import reconciliation_status
         self.assertEqual(reconciliation_status(Decimal("10"), Decimal("0"), False)[0], "NOT_IN_RECON")
