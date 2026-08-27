@@ -8,7 +8,7 @@ the 50-service physical-row limit.
 from decimal import Decimal
 import re
 
-from django.db.models import Sum
+from django.db.models import Q, Sum
 from django.db.models.functions import Coalesce
 
 from .models import MIRClaim, RECONClaim, RECONFile
@@ -50,7 +50,7 @@ def reconciliation_status(amount_to_pay, recon_paid, matched):
     return "AMOUNT_MISMATCH", remaining
 
 
-def reconciliation_rows(client, recon_file=None, page=None, page_size=200, claim_id=None):
+def reconciliation_rows(client, recon_files=None, page=None, page_size=200, claim_id=None, search=""):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
         .select_related("mir_file")
@@ -62,6 +62,16 @@ def reconciliation_rows(client, recon_file=None, page=None, page_size=200, claim
     )
     if claim_id is not None:
         claims = claims.filter(id=claim_id)
+    search = (search or "").strip()
+    if search:
+        claims = claims.filter(
+            Q(claim_control_number__icontains=search)
+            | Q(member_id__icontains=search)
+            | Q(patient_first_name__icontains=search)
+            | Q(patient_last_name__icontains=search)
+            | Q(mir_file__mir_filename__icontains=search)
+            | Q(mir_file__original_835_filename__icontains=search)
+        )
     total = claims.count()
     if page is not None:
         start = (page - 1) * page_size
@@ -74,19 +84,27 @@ def reconciliation_rows(client, recon_file=None, page=None, page_size=200, claim
         normalize_claim_id(claim.claim_control_number) for claim in claims
     }
     recon_by_claim = {}
-    if recon_file and wanted_claim_ids:
-        for recon_claim in recon_file.claims.only(
-            "id", "claim_control_number", "paid_amount", "charge_amount", "service_count"
-        ).iterator(chunk_size=2000):
+    if wanted_claim_ids:
+        recon_claims = RECONClaim.objects.filter(
+            recon_file__in=(recon_files or []), recon_file__status="PROCESSED"
+        ).select_related("recon_file").only(
+            "id", "claim_control_number", "paid_amount", "charge_amount", "service_count",
+            "recon_file__id", "recon_file__original_filename", "recon_file__processed_at",
+        ).order_by("recon_file__processed_at", "recon_file__uploaded_at", "claim_sequence")
+        for recon_claim in recon_claims.iterator(chunk_size=2000):
             normalized_id = normalize_claim_id(recon_claim.claim_control_number)
             if normalized_id in wanted_claim_ids:
-                recon_by_claim.setdefault(normalized_id, recon_claim)
+                recon_by_claim.setdefault(normalized_id, []).append(recon_claim)
     output = []
     for claim in claims:
         claim_number = normalize_claim_id(claim.claim_control_number)
-        recon_claim = recon_by_claim.get(claim_number)
-        recon_paid = _money(recon_claim.paid_amount if recon_claim else ZERO)
-        status, remaining = reconciliation_status(claim.mir_payable, recon_paid, bool(recon_claim))
+        matches = recon_by_claim.get(claim_number, [])
+        recon_paid = sum((_money(item.paid_amount) for item in matches), ZERO)
+        recon_charge = sum((_money(item.charge_amount) for item in matches), ZERO)
+        recon_services = sum((item.service_count for item in matches), 0)
+        matched_files = list(dict.fromkeys(item.recon_file.original_filename for item in matches))
+        latest_match = matches[-1] if matches else None
+        status, remaining = reconciliation_status(claim.mir_payable, recon_paid, bool(matches))
         output.append({
             "mir_claim_id": claim.id,
             "claim_id": claim_number,
@@ -97,11 +115,11 @@ def reconciliation_rows(client, recon_file=None, page=None, page_size=200, claim
             "mir_service_count": claim.service_count,
             "mir_charge_amount": str(claim.mir_charge),
             "amount_to_pay": str(claim.mir_payable),
-            "recon_claim_id": recon_claim.id if recon_claim else None,
-            "recon_filename": recon_file.original_filename if recon_file else "",
-            "recon_date": recon_file.processed_at.isoformat() if recon_file and recon_file.processed_at else None,
-            "recon_service_count": recon_claim.service_count if recon_claim else 0,
-            "recon_charge_amount": str(recon_claim.charge_amount) if recon_claim else "0.00",
+            "recon_claim_id": latest_match.id if latest_match else None,
+            "recon_filename": ", ".join(matched_files),
+            "recon_date": latest_match.recon_file.processed_at.isoformat() if latest_match and latest_match.recon_file.processed_at else None,
+            "recon_service_count": recon_services,
+            "recon_charge_amount": str(recon_charge),
             "recon_paid_amount": str(recon_paid),
             "remaining_amount": str(remaining),
             "difference_amount": str(remaining),

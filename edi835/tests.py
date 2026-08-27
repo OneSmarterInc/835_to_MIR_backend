@@ -273,7 +273,13 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(Decimal(row["mir_charge_amount"]), Decimal("750.00"))
         self.assertEqual(Decimal(row["amount_to_pay"]), Decimal("600.00"))
         self.assertEqual(Decimal(row["recon_paid_amount"]), Decimal("600.00"))
+        self.assertEqual(row["recon_filename"], "latest.csv")
         self.assertEqual(row["status"], "CLEAR")
+
+        search_response = self.client.get("/edi835/api/reconciliation/?search=MEMBER-75")
+        self.assertEqual(search_response.status_code, 200)
+        self.assertEqual(search_response.json()["total_claims"], 1)
+        self.assertEqual(search_response.json()["claims"][0]["claim_id"], "CLAIM75")
 
     def test_reconciliation_statuses_not_in_recon_and_signature_mismatch(self):
         from .reconciliation_service import reconciliation_status
@@ -315,7 +321,7 @@ class RECONResultAPITestCase(TestCase):
 
         response = self.client.get("/edi835/api/reconciliation/")
         self.assertEqual(response.status_code, 200)
-        self.assertIsNone(response.json()["selected_recon_file_id"])
         self.assertEqual(len(response.json()["claims"]), 1)
         self.assertEqual(response.json()["claims"][0]["claim_id"], "MIRONLY1")
+        self.assertEqual(response.json()["claims"][0]["recon_filename"], "")
         self.assertEqual(response.json()["claims"][0]["status"], "NOT_IN_RECON")

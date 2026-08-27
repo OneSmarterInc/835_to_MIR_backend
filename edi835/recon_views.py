@@ -13,9 +13,9 @@ from django.views.decorators.csrf import csrf_exempt
 from accounts.models import Client
 from project835.decorators import authenticated_api_required, json_api_errors
 
-from .models import MIRClaim, RECONFile
+from .models import MIRClaim, RECONClaim, RECONFile
 from .recon_service import process_recon_file
-from .reconciliation_service import latest_recon_file, normalize_claim_id, reconciliation_rows
+from .reconciliation_service import reconciliation_rows
 
 
 def _request_client(request, supplied_client_id=None):
@@ -208,17 +208,17 @@ def reconciliation_results(request):
     client = None if is_global else _request_client(request, request.GET.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
-    recon = latest_recon_file(client, request.GET.get("recon_file_id") or None)
     files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
     try:
         page = max(1, int(request.GET.get("page", "1")))
         page_size = min(250, max(25, int(request.GET.get("page_size", "100"))))
     except ValueError:
         return JsonResponse({"success": False, "error": "Invalid page parameters."}, status=400)
-    claims, total = reconciliation_rows(client, recon, page=page, page_size=page_size)
+    claims, total = reconciliation_rows(
+        client, files, page=page, page_size=page_size, search=request.GET.get("search", "")
+    )
     return JsonResponse({
         "success": True,
-        "selected_recon_file_id": str(recon.id) if recon else None,
         "recon_files": [_serialize_file(item) for item in files],
         "claims": claims,
         "total_claims": total,
@@ -243,13 +243,12 @@ def reconciliation_claim_detail(request, claim_id):
         claim = queryset.get(id=claim_id)
     except (MIRClaim.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "MIR claim was not found."}, status=404)
-    recon = latest_recon_file(claim.mir_file.client, request.GET.get("recon_file_id") or None)
-    row = reconciliation_rows(claim.mir_file.client, recon, claim_id=claim.id)
+    recon_files = RECONFile.objects.filter(client=claim.mir_file.client, status="PROCESSED")
+    row = reconciliation_rows(claim.mir_file.client, recon_files, claim_id=claim.id)
     summary = next((item for item in row if item["mir_claim_id"] == claim.id), None)
-    recon_claim = next((
-        item for item in recon.claims.all()
-        if normalize_claim_id(item.claim_control_number) == normalize_claim_id(claim.claim_control_number)
-    ), None) if recon else None
+    recon_claims = list(RECONClaim.objects.filter(recon_file__in=recon_files).select_related("recon_file").filter(
+        claim_control_number__iexact=claim.claim_control_number
+    ))
     mir_services = [{
         "sequence": item.service_sequence, "procedure_code": item.procedure_code,
         "service_date": item.service_date, "units": str(item.units),
@@ -263,11 +262,14 @@ def reconciliation_claim_detail(request, claim_id):
         "charge_amount": str(item.charge_amount), "allowed_amount": str(item.allowed_amount),
         "paid_amount": str(item.paid_amount), "patient_responsibility": str(item.patient_responsibility),
         "adjustment_amount": str(item.adjustment_amount), "reason_code": item.reason_code,
-    } for item in recon_claim.service_lines.all()] if recon_claim else []
+    } for recon_claim in recon_claims for item in recon_claim.service_lines.all()]
+    recon_names = list(dict.fromkeys(item.recon_file.original_filename for item in recon_claims))
+    latest_recon_claim = recon_claims[-1] if recon_claims else None
     return JsonResponse({
         "success": True, "summary": summary,
         "mir": {"file": claim.mir_file.mir_filename, "date": claim.mir_file.converted_at.isoformat(),
                 "claim": claim.segment_data, "services": mir_services},
-        "recon": {"file": recon.original_filename if recon else "", "date": recon.processed_at.isoformat() if recon and recon.processed_at else None,
-                  "claim": recon_claim.segment_data if recon_claim else None, "services": recon_services},
+        "recon": {"file": ", ".join(recon_names),
+                  "date": latest_recon_claim.recon_file.processed_at.isoformat() if latest_recon_claim and latest_recon_claim.recon_file.processed_at else None,
+                  "claim": latest_recon_claim.segment_data if latest_recon_claim else None, "services": recon_services},
     })
