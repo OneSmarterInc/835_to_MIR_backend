@@ -333,6 +333,15 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(recon_search.json()["total_claims"], 1)
         self.assertEqual(recon_search.json()["claims"][0]["recon_filename"], "latest.csv")
 
+        status_sort = self.client.get(
+            "/edi835/api/reconciliation/?sort_by=status&sort_direction=desc&page_size=25"
+        )
+        self.assertEqual(status_sort.status_code, 200)
+        self.assertEqual(status_sort.json()["claims"][0]["status"], "CLEAR")
+
+        invalid_sort = self.client.get("/edi835/api/reconciliation/?sort_by=unknown")
+        self.assertEqual(invalid_sort.status_code, 400)
+
     def test_reconciliation_statuses_not_in_recon_and_signature_mismatch(self):
         from .reconciliation_service import reconciliation_status
         self.assertEqual(reconciliation_status(Decimal("10"), Decimal("0"), False)[0], "NOT_IN_RECON")

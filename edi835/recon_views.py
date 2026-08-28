@@ -214,8 +214,17 @@ def reconciliation_results(request):
         page_size = min(250, max(25, int(request.GET.get("page_size", "100"))))
     except ValueError:
         return JsonResponse({"success": False, "error": "Invalid page parameters."}, status=400)
+    sort_by = request.GET.get("sort_by", "")
+    sort_direction = request.GET.get("sort_direction", "asc")
+    allowed_sorts = {
+        "", "claim_id", "patient_name", "mir_filename", "recon_filename",
+        "amount_to_pay", "recon_paid_amount", "difference_amount", "status",
+    }
+    if sort_by not in allowed_sorts or sort_direction not in {"asc", "desc"}:
+        return JsonResponse({"success": False, "error": "Invalid sort parameters."}, status=400)
     claims, total = reconciliation_rows(
-        client, files, page=page, page_size=page_size, search=request.GET.get("search", "")
+        client, files, page=page, page_size=page_size, search=request.GET.get("search", ""),
+        sort_by=sort_by, sort_direction=sort_direction,
     )
     return JsonResponse({
         "success": True,

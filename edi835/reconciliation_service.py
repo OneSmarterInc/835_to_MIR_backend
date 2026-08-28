@@ -50,7 +50,22 @@ def reconciliation_status(amount_to_pay, recon_paid, matched):
     return "AMOUNT_MISMATCH", remaining
 
 
-def reconciliation_rows(client, recon_files=None, page=None, page_size=200, claim_id=None, search=""):
+SORT_FIELDS = {
+    "claim_id": lambda row: row["claim_id"].casefold(),
+    "patient_name": lambda row: row["patient_name"].casefold(),
+    "mir_filename": lambda row: row["mir_filename"].casefold(),
+    "recon_filename": lambda row: row["recon_filename"].casefold(),
+    "amount_to_pay": lambda row: Decimal(row["amount_to_pay"]),
+    "recon_paid_amount": lambda row: Decimal(row["recon_paid_amount"]),
+    "difference_amount": lambda row: Decimal(row["difference_amount"]),
+    "status": lambda row: row["status"].casefold(),
+}
+
+
+def reconciliation_rows(
+    client, recon_files=None, page=None, page_size=200, claim_id=None, search="",
+    sort_by="", sort_direction="asc",
+):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
         .select_related("mir_file")
@@ -92,7 +107,11 @@ def reconciliation_rows(client, recon_files=None, page=None, page_size=200, clai
             | Q(normalized_claim_id__in=recon_claim_ids)
         )
     total = claims.count()
-    if page is not None:
+    # Computed RECON totals and statuses cannot be sorted correctly in the MIR
+    # queryset. Build the complete filtered result before slicing whenever a
+    # sort was requested so pagination reflects the ordering of every claim.
+    sort_requested = sort_by in SORT_FIELDS
+    if page is not None and not sort_requested:
         start = (page - 1) * page_size
         claims = claims[start:start + page_size]
     claims = list(claims)
@@ -144,4 +163,10 @@ def reconciliation_rows(client, recon_files=None, page=None, page_size=200, clai
             "difference_amount": str(remaining),
             "status": status,
         })
+    if sort_requested:
+        key = SORT_FIELDS[sort_by]
+        output.sort(key=key, reverse=sort_direction == "desc")
+        if page is not None:
+            start = (page - 1) * page_size
+            output = output[start:start + page_size]
     return (output, total) if page is not None else output
