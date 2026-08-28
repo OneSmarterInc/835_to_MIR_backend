@@ -16,7 +16,7 @@ from .views import (
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
-    recon_detail, recon_files, recon_process, recon_upload,
+    recon_detail, recon_download, recon_files, recon_process, recon_upload,
     reconciliation_claim_detail, reconciliation_results,
 )
 
@@ -36,6 +36,7 @@ urlpatterns = [
     path("api/sftp/browse/", api_browse_sftp, name="api_browse_sftp"),
     path("api/start-batch-conversion/", api_start_batch_conversion, name="edi835_api_start_batch_conversion"),
     path("api/recon/files/", recon_files, name="recon_files"),
+    path("api/recon/files/<uuid:file_id>/download/", recon_download, name="recon_download"),
     path("api/recon/upload/", recon_upload, name="recon_upload"),
     path("api/recon/files/<uuid:file_id>/process/", recon_process, name="recon_process"),
     path("api/recon/files/<uuid:file_id>/", recon_detail, name="recon_detail"),

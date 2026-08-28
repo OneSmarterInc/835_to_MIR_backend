@@ -286,6 +286,17 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual([item["id"] for item in response.json()["files"]], [file_id])
 
+        download = self.client.get(f"/edi835/api/recon/files/{file_id}/download/")
+        self.assertEqual(download.status_code, 200)
+        self.assertEqual(download.content.decode("utf-8"), content)
+        self.assertIn('filename="recon.csv"', download["Content-Disposition"])
+
+        hidden = RECONFile.objects.get(client=self.other_tenant)
+        self.assertEqual(
+            self.client.get(f"/edi835/api/recon/files/{hidden.id}/download/").status_code,
+            404,
+        )
+
     def test_reconciliation_aggregates_mir_chunks_and_uses_latest_recon(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine

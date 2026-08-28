@@ -6,7 +6,7 @@ import uuid
 
 from django.conf import settings
 from django.db import IntegrityError
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -86,6 +86,22 @@ def recon_files(request):
     else:
         queryset = queryset.none()
     return JsonResponse({"success": True, "files": [_serialize_file(item) for item in queryset[:500]]})
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def recon_download(request, file_id):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    recon = _visible_file(request, file_id)
+    if not recon:
+        return JsonResponse({"success": False, "error": "RECON file was not found."}, status=404)
+    response = HttpResponse(recon.file_content.encode("utf-8"), content_type="application/octet-stream")
+    safe_name = os.path.basename(recon.original_filename).replace('"', "") or "recon-file"
+    response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    response["Content-Length"] = len(response.content)
+    return response
 
 
 @csrf_exempt
