@@ -332,6 +332,9 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(Decimal(row["amount_to_pay"]), Decimal("600.00"))
         self.assertEqual(Decimal(row["recon_paid_amount"]), Decimal("600.00"))
         self.assertEqual(row["recon_filename"], "latest.csv")
+        self.assertEqual(len(row["recon_matches"]), 1)
+        self.assertEqual(row["recon_matches"][0]["filename"], "latest.csv")
+        self.assertEqual(Decimal(row["recon_matches"][0]["paid_amount"]), Decimal("600.00"))
         self.assertEqual(row["status"], "CLEAR")
 
         search_response = self.client.get("/edi835/api/reconciliation/?search=MEMBER-75")

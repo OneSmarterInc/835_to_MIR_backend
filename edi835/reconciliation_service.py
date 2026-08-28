@@ -143,6 +143,14 @@ def reconciliation_rows(
         matched_files = list(dict.fromkeys(item.recon_file.original_filename for item in matches))
         latest_match = matches[-1] if matches else None
         status, remaining = reconciliation_status(claim.mir_payable, recon_paid, bool(matches))
+        recon_matches = [{
+            "recon_claim_id": item.id,
+            "filename": item.recon_file.original_filename,
+            "date": item.recon_file.processed_at.isoformat() if item.recon_file.processed_at else None,
+            "paid_amount": str(_money(item.paid_amount)),
+            "charge_amount": str(_money(item.charge_amount)),
+            "service_count": item.service_count,
+        } for item in matches]
         output.append({
             "mir_claim_id": claim.id,
             "claim_id": claim_number,
@@ -159,6 +167,7 @@ def reconciliation_rows(
             "recon_service_count": recon_services,
             "recon_charge_amount": str(recon_charge),
             "recon_paid_amount": str(recon_paid),
+            "recon_matches": recon_matches,
             "remaining_amount": str(remaining),
             "difference_amount": str(remaining),
             "status": status,
