@@ -8,8 +8,8 @@ the 50-service physical-row limit.
 from decimal import Decimal
 import re
 
-from django.db.models import CharField, Q, Sum, Value
-from django.db.models.functions import Coalesce, Replace, Upper
+from django.db.models import Sum
+from django.db.models.functions import Coalesce
 
 from .models import MIRClaim, RECONClaim, RECONFile
 
@@ -77,65 +77,26 @@ def reconciliation_rows(
     )
     if claim_id is not None:
         claims = claims.filter(id=claim_id)
-    search = (search or "").strip()
-    if search:
-        recon_claim_ids = {
-            normalize_claim_id(value) for value in RECONClaim.objects.filter(
-            recon_file__client=client,
-            recon_file__status="PROCESSED",
-        ).filter(
-            Q(claim_control_number__icontains=search)
-            | Q(member_id__icontains=search)
-            | Q(patient_control_number__icontains=search)
-            | Q(recon_file__original_filename__icontains=search)
-            ).values_list("claim_control_number", flat=True)
-        }
-        claims = claims.annotate(
-            normalized_claim_id=Upper(
-                Replace(Replace(Replace(Replace(
-                    "claim_control_number", Value("-"), Value("")),
-                    Value("_"), Value("")), Value("."), Value("")), Value(" "), Value("")),
-                output_field=CharField(),
-            )
-        ).filter(
-            Q(claim_control_number__icontains=search)
-            | Q(member_id__icontains=search)
-            | Q(patient_first_name__icontains=search)
-            | Q(patient_last_name__icontains=search)
-            | Q(mir_file__mir_filename__icontains=search)
-            | Q(mir_file__original_835_filename__icontains=search)
-            | Q(normalized_claim_id__in=recon_claim_ids)
-        )
-    total = claims.count()
-    # Computed RECON totals and statuses cannot be sorted correctly in the MIR
-    # queryset. Build the complete filtered result before slicing whenever a
-    # sort was requested so pagination reflects the ordering of every claim.
-    sort_requested = sort_by in SORT_FIELDS
-    if page is not None and not sort_requested:
-        start = (page - 1) * page_size
-        claims = claims[start:start + page_size]
     claims = list(claims)
 
-    # Only retain RECON rows needed by this page. A large RECON file must not
-    # be materialized in a Gunicorn worker just to render a bounded page.
-    wanted_claim_ids = {
-        normalize_claim_id(claim.claim_control_number) for claim in claims
-    }
     recon_by_claim = {}
-    if wanted_claim_ids:
-        recon_claims = RECONClaim.objects.filter(
-            recon_file__in=(recon_files or []), recon_file__status="PROCESSED"
-        ).select_related("recon_file").only(
-            "id", "claim_control_number", "paid_amount", "charge_amount", "service_count",
-            "recon_file__id", "recon_file__original_filename", "recon_file__processed_at",
-        ).order_by("recon_file__processed_at", "recon_file__uploaded_at", "claim_sequence")
-        for recon_claim in recon_claims.iterator(chunk_size=2000):
-            normalized_id = normalize_claim_id(recon_claim.claim_control_number)
-            if normalized_id in wanted_claim_ids:
-                recon_by_claim.setdefault(normalized_id, []).append(recon_claim)
+    recon_claims = RECONClaim.objects.filter(
+        recon_file__in=(recon_files or []), recon_file__status="PROCESSED"
+    ).select_related("recon_file").only(
+        "id", "claim_control_number", "member_id", "patient_control_number",
+        "paid_amount", "charge_amount", "service_count",
+        "recon_file__id", "recon_file__original_filename", "recon_file__processed_at",
+    ).order_by("recon_file__processed_at", "recon_file__uploaded_at", "claim_sequence")
+    for recon_claim in recon_claims.iterator(chunk_size=2000):
+        normalized_id = normalize_claim_id(recon_claim.claim_control_number)
+        if normalized_id:
+            recon_by_claim.setdefault(normalized_id, []).append(recon_claim)
+
     output = []
+    mir_claim_ids = set()
     for claim in claims:
         claim_number = normalize_claim_id(claim.claim_control_number)
+        mir_claim_ids.add(claim_number)
         matches = recon_by_claim.get(claim_number, [])
         recon_paid = sum((_money(item.paid_amount) for item in matches), ZERO)
         recon_charge = sum((_money(item.charge_amount) for item in matches), ZERO)
@@ -172,10 +133,64 @@ def reconciliation_rows(
             "difference_amount": str(remaining),
             "status": status,
         })
-    if sort_requested:
+
+    # RECON claims without a corresponding MIR record remain visible. Their
+    # RECON occurrences are aggregated exactly like matched claims, while MIR
+    # values remain empty and the status explains the missing side.
+    if claim_id is None:
+        for claim_number, matches in recon_by_claim.items():
+            if claim_number in mir_claim_ids:
+                continue
+            recon_paid = sum((_money(item.paid_amount) for item in matches), ZERO)
+            recon_charge = sum((_money(item.charge_amount) for item in matches), ZERO)
+            recon_services = sum((item.service_count for item in matches), 0)
+            latest_match = matches[-1]
+            matched_files = list(dict.fromkeys(item.recon_file.original_filename for item in matches))
+            recon_matches = [{
+                "recon_claim_id": item.id,
+                "filename": item.recon_file.original_filename,
+                "date": item.recon_file.processed_at.isoformat() if item.recon_file.processed_at else None,
+                "paid_amount": str(_money(item.paid_amount)),
+                "charge_amount": str(_money(item.charge_amount)),
+                "service_count": item.service_count,
+            } for item in matches]
+            output.append({
+                "mir_claim_id": None,
+                "claim_id": claim_number,
+                "patient_name": "",
+                "member_id": latest_match.member_id or latest_match.patient_control_number,
+                "mir_filename": "",
+                "mir_date": None,
+                "mir_service_count": 0,
+                "mir_charge_amount": str(ZERO),
+                "amount_to_pay": str(ZERO),
+                "recon_claim_id": latest_match.id,
+                "recon_filename": ", ".join(matched_files),
+                "recon_date": latest_match.recon_file.processed_at.isoformat() if latest_match.recon_file.processed_at else None,
+                "recon_service_count": recon_services,
+                "recon_charge_amount": str(recon_charge),
+                "recon_paid_amount": str(recon_paid),
+                "recon_matches": recon_matches,
+                "remaining_amount": str(-recon_paid),
+                "difference_amount": str(-recon_paid),
+                "status": "NOT_IN_MIR",
+            })
+
+    search_value = (search or "").strip().casefold()
+    if search_value:
+        searchable_fields = (
+            "claim_id", "patient_name", "member_id", "mir_filename",
+            "recon_filename", "status",
+        )
+        output = [row for row in output if any(
+            search_value in str(row.get(field) or "").casefold()
+            for field in searchable_fields
+        )]
+    total = len(output)
+    if sort_by in SORT_FIELDS:
         key = SORT_FIELDS[sort_by]
         output.sort(key=key, reverse=sort_direction == "desc")
-        if page is not None:
-            start = (page - 1) * page_size
-            output = output[start:start + page_size]
+    if page is not None:
+        start = (page - 1) * page_size
+        output = output[start:start + page_size]
     return (output, total) if page is not None else output

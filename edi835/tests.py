@@ -297,6 +297,15 @@ class RECONResultAPITestCase(TestCase):
             404,
         )
 
+        results = self.client.get("/edi835/api/reconciliation/")
+        self.assertEqual(results.status_code, 200)
+        self.assertEqual(results.json()["total_claims"], 2)
+        recon_only = {row["claim_id"]: row for row in results.json()["claims"]}
+        self.assertEqual(recon_only["CLAIM100"]["status"], "NOT_IN_MIR")
+        self.assertIsNone(recon_only["CLAIM100"]["mir_claim_id"])
+        self.assertEqual(Decimal(recon_only["CLAIM100"]["recon_paid_amount"]), Decimal("120.00"))
+        self.assertEqual(recon_only["CLAIM100"]["recon_matches"][0]["filename"], "recon.csv")
+
     def test_reconciliation_aggregates_mir_chunks_and_uses_latest_recon(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
