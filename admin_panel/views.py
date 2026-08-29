@@ -1204,6 +1204,57 @@ def api_admin_step_notes(request, client_id, step_key):
     })
 
 
+def _comment_step_number(step_key):
+    parts = step_key.split('_')
+    if step_key.startswith('golive_step_'):
+        return 100 + int(parts[2])
+    if step_key.startswith('offboard_step_'):
+        return 200 + int(parts[2])
+    if step_key.startswith('step_'):
+        return int(parts[1])
+    raise ValueError("Invalid step key")
+
+
+@csrf_exempt
+def api_admin_delete_step_note(request, client_id, step_key, note_id):
+    from accounts.models import ClientStepComment
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    try:
+        step_number = _comment_step_number(step_key)
+    except (ValueError, IndexError):
+        return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+    deleted, _ = ClientStepComment.objects.filter(
+        id=note_id, client_id=client_id, step_number=step_number,
+    ).delete()
+    if not deleted:
+        return JsonResponse({"success": False, "error": "Note not found."}, status=404)
+    return JsonResponse({"success": True, "message": "Note deleted successfully."})
+
+
+@csrf_exempt
+def api_admin_delete_client_contact(request, client_id, contact_id):
+    from accounts.models import ClientContact
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    deleted, _ = ClientContact.objects.filter(id=contact_id, client_id=client_id).delete()
+    if not deleted:
+        return JsonResponse({"success": False, "error": "Contact not found."}, status=404)
+    return JsonResponse({"success": True, "message": "Contact deleted successfully."})
+
+
+@csrf_exempt
+def api_admin_delete_client_user(request, client_id, user_id):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    user_obj = User.objects.filter(id=user_id, client_id=client_id, is_staff=False).first()
+    if not user_obj:
+        return JsonResponse({"success": False, "error": "Client user not found."}, status=404)
+    email = user_obj.email
+    user_obj.delete()
+    return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
+
+
 @csrf_exempt
 def api_admin_step_redo(request, client_id, step_key):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/redo/ """
@@ -1457,20 +1508,45 @@ def api_admin_step_action(request, client_id, step_key, action):
         if len(parts) >= 2:
             step_num = int(parts[1])
             client_obj = Client.objects.get(id=client_id)
+            response_data = {}
             
             if action == "save" and step_num == 4:
                 from accounts.models import ClientContact
                 try:
                     data = json.loads(request.body.decode('utf-8'))
-                    ClientContact.objects.create(
-                        client=client_obj,
-                        role_name=data.get('role_name', ''),
-                        name=data.get('employee_name', ''),
-                        email=data.get('email', ''),
-                        phone=data.get('phone', '')
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return JsonResponse({'success': False, 'error': 'Invalid JSON body.'}, status=400)
+                name = (data.get('employee_name') or '').strip()
+                email = (data.get('email') or '').strip().lower()
+                phone = (data.get('phone') or '').strip()
+                role_name = (data.get('role_name') or '').strip() or 'Technical Contact'
+                if not name:
+                    return JsonResponse({'success': False, 'error': 'Contact name is required.'}, status=400)
+                if email:
+                    ok_email, err_email = validate_email_address(email)
+                    if not ok_email:
+                        return JsonResponse({'success': False, 'error': err_email}, status=400)
+                if phone:
+                    ok_phone, err_phone = validate_phone_number(phone)
+                    if not ok_phone:
+                        return JsonResponse({'success': False, 'error': err_phone}, status=400)
+                with transaction.atomic():
+                    Client.objects.select_for_update().get(id=client_id)
+                    duplicate_filter = Q(name__iexact=name)
+                    if email:
+                        duplicate_filter |= Q(email__iexact=email)
+                    if phone:
+                        duplicate_filter |= Q(phone=phone)
+                    if ClientContact.objects.filter(client=client_obj).filter(duplicate_filter).exists():
+                        return JsonResponse({'success': False, 'error': 'This contact already exists for the client.'}, status=409)
+                    contact = ClientContact.objects.create(
+                        client=client_obj, role_name=role_name, name=name,
+                        email=email or None, phone=phone or None,
                     )
-                except Exception as e:
-                    pass
+                response_data['contact'] = {
+                    'id': str(contact.id), 'role_name': contact.role_name, 'name': contact.name,
+                    'email': contact.email or '', 'phone': contact.phone or '',
+                }
 
             if action == "save" and step_num == 10:
                 try:
@@ -1533,33 +1609,20 @@ def api_admin_step_action(request, client_id, step_key, action):
                             author = request.user.name
                         elif request.user and hasattr(request.user, "email") and request.user.email:
                             author = request.user.email
-                        ClientStepComment.objects.create(
-                            client=client_obj,
-                            step_number=step_num,
-                            comment=verification_text,
-                            author=author
-                        )
-                except Exception as e:
-                    pass
-
-            # Validate Step 4 Contact fields (from other branch)
-            if action == "save" and step_num == 4:
-                try:
-                    body = json.loads(request.body.decode('utf-8'))
-                    email = body.get("email", "")
-                    phone = body.get("phone", "")
-
-                    if email:
-                        ok_email, err_email = validate_email_address(email)
-                        if not ok_email:
-                            return JsonResponse({"success": False, "error": err_email}, status=400)
-
-                    if phone:
-                        ok_phone, err_phone = validate_phone_number(phone)
-                        if not ok_phone:
-                            return JsonResponse({"success": False, "error": err_phone}, status=400)
-                except Exception:
-                    pass
+                        latest = ClientStepComment.objects.filter(client=client_obj, step_number=step_num).first()
+                        if latest and latest.comment == verification_text and latest.author == author:
+                            note = latest
+                        else:
+                            note = ClientStepComment.objects.create(
+                                client=client_obj, step_number=step_num,
+                                comment=verification_text, author=author,
+                            )
+                        response_data['note'] = {
+                            'id': str(note.id), 'note_text': note.comment, 'author': note.author,
+                            'created_at': note.created_at.isoformat(),
+                        }
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return JsonResponse({'success': False, 'error': 'Invalid JSON body.'}, status=400)
 
             if action == "save" and step_num == 13:
                 try:
@@ -1575,12 +1638,12 @@ def api_admin_step_action(request, client_id, step_key, action):
                             author = request.user.name
                         elif request.user and hasattr(request.user, "email") and request.user.email:
                             author = request.user.email
-                        ClientStepComment.objects.create(
-                            client=client_obj,
-                            step_number=step_num,
-                            comment=notes,
-                            author=author
-                        )
+                        latest = ClientStepComment.objects.filter(client=client_obj, step_number=step_num).first()
+                        if not latest or latest.comment != notes or latest.author != author:
+                            ClientStepComment.objects.create(
+                                client=client_obj, step_number=step_num,
+                                comment=notes, author=author,
+                            )
 
                     if scheduled_date:
                         from datetime import datetime
@@ -1623,7 +1686,7 @@ def api_admin_step_action(request, client_id, step_key, action):
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
         
-    return JsonResponse({"success": True, "message": f"Action {action} on {step_key} completed successfully."})
+    return JsonResponse({"success": True, "message": f"Action {action} on {step_key} completed successfully.", **response_data})
 
 
 
@@ -2508,12 +2571,11 @@ def api_admin_golive_step4_schedule(request, client_id):
                 author = request.user.name
             elif request.user and hasattr(request.user, "email") and request.user.email:
                 author = request.user.email
-            ClientStepComment.objects.create(
-                client=client_obj,
-                step_number=104,
-                comment=notes,
-                author=author
-            )
+            latest = ClientStepComment.objects.filter(client=client_obj, step_number=104).first()
+            if not latest or latest.comment != notes or latest.author != author:
+                ClientStepComment.objects.create(
+                    client=client_obj, step_number=104, comment=notes, author=author
+                )
 
         if production_date:
             from datetime import datetime
@@ -2562,12 +2624,11 @@ def api_admin_golive_step5_comment(request, client_id):
                 author = request.user.name
             elif request.user and hasattr(request.user, "email") and request.user.email:
                 author = request.user.email
-            ClientStepComment.objects.create(
-                client=client_obj,
-                step_number=105,
-                comment=comment_text,
-                author=author
-            )
+            latest = ClientStepComment.objects.filter(client=client_obj, step_number=105).first()
+            if not latest or latest.comment != comment_text or latest.author != author:
+                ClientStepComment.objects.create(
+                    client=client_obj, step_number=105, comment=comment_text, author=author
+                )
             
         step_def, _ = GoLiveStepDefinition.objects.get_or_create(step_number=5, defaults={"title": "Special Comment"})
         status_obj, _ = ClientGoLiveStatus.objects.get_or_create(client=client_obj, step=step_def)

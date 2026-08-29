@@ -1,7 +1,7 @@
 from django.test import TestCase
 import json
 
-from accounts.models import Client, User
+from accounts.models import Client, ClientContact, User
 
 
 class OnboardingSequenceTestCase(TestCase):
@@ -80,3 +80,47 @@ class OnboardingSequenceTestCase(TestCase):
         ).json()["notes"]
         self.assertEqual([note["note_text"] for note in golive], ["Go-live note"])
         self.assertEqual([note["note_text"] for note in offboard], ["Offboarding note"])
+
+    def test_contact_save_rejects_duplicates_and_contact_can_be_deleted(self):
+        self.client.get(f"/admin-panel/api/clients/{self.client_record.id}/state/")
+        url = f"/admin-panel/api/clients/{self.client_record.id}/steps/step_4_contacts/save/"
+        payload = {
+            "role_name": "Technical Contact", "employee_name": "Jane Doe",
+            "email": "jane@example.com", "phone": "+15550102020",
+        }
+        first = self.client.post(url, data=json.dumps(payload), content_type="application/json")
+        duplicate = self.client.post(url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(duplicate.status_code, 409)
+        self.assertEqual(ClientContact.objects.filter(client=self.client_record).count(), 1)
+
+        contact_id = first.json()["contact"]["id"]
+        deleted = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/contacts/{contact_id}/delete/"
+        )
+        self.assertEqual(deleted.status_code, 200)
+        self.assertFalse(ClientContact.objects.filter(id=contact_id).exists())
+
+    def test_note_and_client_user_deletes_are_scoped(self):
+        note = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_5_claim_system_verification/notes/",
+            data=json.dumps({"note_text": "Delete me"}), content_type="application/json",
+        ).json()["note"]
+        wrong_step = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_4_contacts/notes/{note['id']}/delete/"
+        )
+        self.assertEqual(wrong_step.status_code, 404)
+        deleted = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_5_claim_system_verification/notes/{note['id']}/delete/"
+        )
+        self.assertEqual(deleted.status_code, 200)
+
+        user = User.objects.create_user(
+            email="client-user@example.com", name="Client User", mobile="5550102000",
+            password="test-password", client=self.client_record,
+        )
+        deleted_user = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/users/{user.id}/delete/"
+        )
+        self.assertEqual(deleted_user.status_code, 200)
+        self.assertFalse(User.objects.filter(id=user.id).exists())
