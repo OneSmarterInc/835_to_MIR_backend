@@ -16,6 +16,7 @@ class EDI835File(models.Model):
     client = models.ForeignKey('accounts.Client', on_delete=models.CASCADE, null=True, blank=True, related_name='edi835_files', help_text="Client associated with this file.")
     original_filename = models.CharField(max_length=255, help_text="Original uploaded filename.")
     stored_filename = models.CharField(max_length=255, help_text="Unique physical filename.")
+    input_file_content = models.TextField(blank=True, default="", help_text="Database copy of the original 835/X12 input content.")
     status = models.CharField(max_length=50, choices=STATUS_CHOICES, default="UPLOADED", help_text="Current processing state.")
     claims_count = models.IntegerField(default=0, help_text="Number of claims in file.")
     services_count = models.IntegerField(default=0, help_text="Number of service lines in file.")

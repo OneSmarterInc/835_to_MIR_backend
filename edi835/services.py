@@ -331,6 +331,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
             client=client,
             original_filename=original_filename,
             stored_filename=stored_filename,
+            input_file_content=edi_text,
             status="UPLOADED",
             input_path=relative_input_path,
             ingestion_source=ingestion_source
@@ -340,6 +341,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
             db_record.client = client
         db_record.original_filename = original_filename
         db_record.stored_filename = stored_filename
+        db_record.input_file_content = edi_text
         db_record.input_path = relative_input_path
         if ingestion_source and ingestion_source != "MANUAL":
             db_record.ingestion_source = ingestion_source
@@ -439,6 +441,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     dirs = get_edi835_storage_dirs()
 
     all_claims = []
+    input_contents = []
     file_names = []
     errors = []
 
@@ -456,6 +459,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
         if not content:
             continue
+        input_contents.append(content)
 
         # Prefix with UUID to avoid overwrites in batch mode
         stored_fname = f"{file_uuid}_{idx}_{fname}"
@@ -508,6 +512,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         client=client,
         original_filename=combined_inputs_str,
         stored_filename=file_names[0] if file_names else "batch.835",
+        input_file_content="\n\n".join(input_contents),
         status="ARCHIVED",
         claims_count=claims_count,
         services_count=services_count,

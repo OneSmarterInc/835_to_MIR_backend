@@ -378,6 +378,7 @@ def api_validate(request):
             db_rec = EDI835File.objects.create(
                 original_filename=original_filename,
                 stored_filename=original_filename,
+                input_file_content=edi_text,
                 status="PROCESSING",
                 claims_count=claims_found,
                 archive_path=rel_archive_path,
@@ -389,6 +390,7 @@ def api_validate(request):
             db_rec = EDI835File.objects.create(
                 original_filename=original_filename,
                 stored_filename=original_filename,
+                input_file_content=edi_text,
                 status="ERROR",
                 claims_count=claims_found,
                 error_message=err_msg,
@@ -419,6 +421,7 @@ def api_validate(request):
         db_rec = EDI835File.objects.create(
             original_filename=original_filename,
             stored_filename=original_filename,
+            input_file_content=edi_text,
             status="ERROR",
             error_message=str(err),
         )
@@ -567,100 +570,27 @@ def api_download_archive_zip(request):
 
 def api_get_file_content(request, file_id):
     """
-    API Endpoint: Fetch 835 EDI content and generated MIR text for a given file_id.
+    Fetch preview content exclusively from the persisted 835 and MIR tables.
+
+    Preview requests deliberately never read or parse physical files.
     """
     try:
-        db_rec = EDI835File.objects.get(id=file_id)
+        db_rec = EDI835File.objects.select_related("mir_file").get(id=file_id)
     except (EDI835File.DoesNotExist, ValueError):
         return JsonResponse({"error": "File record not found."}, status=404)
 
     if getattr(request.user, "client", None) != db_rec.client and not request.user.is_staff:
         return JsonResponse({"error": "Unauthorized access to file."}, status=403)
 
-    from pathlib import Path
-    from django.conf import settings
-    from edi835.services import get_edi835_storage_dirs
-    dirs = get_edi835_storage_dirs()
-
-    # 1. Fetch 835 content
-    edi_text = ""
-    paths_to_check = []
-    if db_rec.archive_path:
-        paths_to_check.append(Path(settings.BASE_DIR) / db_rec.archive_path)
-    if db_rec.input_path:
-        paths_to_check.append(Path(settings.BASE_DIR) / db_rec.input_path)
-
-    # Check if multiple file names exist in original_filename (e.g. "f1.835, f2.835")
-    raw_names = [os.path.basename(n.strip()) for n in (db_rec.original_filename or "").split(",") if n.strip()]
-    for fn in raw_names:
-        paths_to_check.append(dirs["archive"] / fn)
-        paths_to_check.append(dirs["input"] / fn)
-
-    if db_rec.stored_filename:
-        paths_to_check.extend([
-            dirs["archive"] / db_rec.stored_filename,
-            dirs["processing"] / db_rec.stored_filename,
-            dirs["input"] / db_rec.stored_filename,
-            dirs["error"] / db_rec.stored_filename,
-        ])
-
-    edi_texts = []
-    seen_paths = set()
-    for p in paths_to_check:
-        if p and p not in seen_paths and os.path.exists(p) and os.path.isfile(p):
-            seen_paths.add(p)
-            try:
-                with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                    txt = f.read().strip()
-                if txt:
-                    edi_texts.append(txt)
-            except Exception:
-                pass
-
-    edi_text = "\n\n".join(edi_texts) if edi_texts else ""
-
-    # 2. Fetch MIR content
-    mir_text = ""
-    mir_paths = []
-    if db_rec.output_path:
-        mir_paths.append(Path(settings.BASE_DIR) / db_rec.output_path)
-        mir_paths.append(dirs["output"] / os.path.basename(db_rec.output_path))
-
-    for fn in raw_names:
-        bname = os.path.splitext(fn)[0]
-        mir_paths.append(dirs["output"] / f"{bname}.mir")
-        mir_paths.append(dirs["output"] / f"MIR_{bname}.mir")
-        mir_paths.append(dirs["output"] / f"MIR_COMBINED_{bname}.mir")
-
-    if db_rec.stored_filename:
-        bname = os.path.splitext(db_rec.stored_filename)[0]
-        mir_paths.append(dirs["output"] / f"{bname}.mir")
-        mir_paths.append(dirs["output"] / f"MIR_{bname}.mir")
-        mir_paths.append(dirs["output"] / f"MIR_COMBINED_{bname}.mir")
-
-    for mp in mir_paths:
-        if mp and os.path.exists(mp) and os.path.isfile(mp):
-            try:
-                with open(mp, "r", encoding="utf-8", errors="ignore") as f:
-                    mir_text = f.read()
-                if mir_text:
-                    break
-            except Exception:
-                pass
-
-    # If MIR text doesn't exist on disk but we have 835 text, try parsing on the fly
-    if not mir_text and edi_text:
-        try:
-            res = parse_835_to_mir(edi_text, client=db_rec.client)
-            mir_text = res.get("text", "")
-        except Exception:
-            pass
+    edi_text = db_rec.input_file_content or ""
+    mir_record = getattr(db_rec, "mir_file", None)
+    mir_text = mir_record.file_content if mir_record else ""
 
     return JsonResponse({
         "success": True,
         "file_id": str(db_rec.id),
         "filename": db_rec.original_filename,
+        "mir_filename": mir_record.mir_filename if mir_record else "",
         "edi_text": edi_text,
         "mir_text": mir_text,
     })
-

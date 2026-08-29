@@ -64,3 +64,36 @@ class ViewsTestCase(TestCase):
         data = response.json()
         self.assertEqual(data['status'], 'healthy')
         self.assertEqual(data['database'], 'connected')
+
+    def test_file_viewer_uses_only_database_content_and_has_empty_fallbacks(self):
+        from edi835.models import EDI835File, MIRFile
+
+        source = EDI835File.objects.create(
+            original_filename="database-source.835",
+            stored_filename="missing-on-disk.835",
+            input_file_content="DATABASE 835 CONTENT",
+            status="ARCHIVED",
+            archive_path="media/edi835/archive/does-not-exist.835",
+            output_path="media/edi835/output/does-not-exist.MIR",
+        )
+        MIRFile.objects.create(
+            source_835=source,
+            mir_filename="database-output.MIR",
+            original_835_filename=source.original_filename,
+            file_content="DATABASE MIR CONTENT",
+            file_hash="a" * 64,
+        )
+
+        response = self.client.get(f"/api/file-content/{source.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["edi_text"], "DATABASE 835 CONTENT")
+        self.assertEqual(response.json()["mir_text"], "DATABASE MIR CONTENT")
+
+        empty = EDI835File.objects.create(
+            original_filename="empty.835", stored_filename="empty.835"
+        )
+        empty_response = self.client.get(f"/api/file-content/{empty.id}/")
+        self.assertEqual(empty_response.status_code, 200)
+        self.assertEqual(empty_response.json()["edi_text"], "")
+        self.assertEqual(empty_response.json()["mir_text"], "")
