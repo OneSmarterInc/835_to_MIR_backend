@@ -12,7 +12,12 @@ class EDI835File(models.Model):
         ("ERROR", "Error"),
     ]
 
-    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    id = models.UUIDField(
+        primary_key=True,
+        default=uuid.uuid4,
+        editable=False,
+        help_text="Unique ID for the file.",
+    )
     client = models.ForeignKey('accounts.Client', on_delete=models.CASCADE, null=True, blank=True, related_name='edi835_files', help_text="Client associated with this file.")
     original_filename = models.CharField(max_length=255, help_text="Original uploaded filename.")
     stored_filename = models.CharField(max_length=255, help_text="Unique physical filename.")
