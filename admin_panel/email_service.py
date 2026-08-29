@@ -1,10 +1,11 @@
 import logging
+from django.utils import timezone
 from django.core.mail import EmailMultiAlternatives
 from django.core.mail.backends.smtp import EmailBackend
 from admin_panel.models import ClientSmtpConfig
 from project835.field_crypto import decrypt_smtp_password
 from accounts.models import User
-from django.utils.html import strip_tags
+from django.utils.html import escape, strip_tags
 
 logger = logging.getLogger(__name__)
 
@@ -99,3 +100,46 @@ def send_client_email(client, subject, html_content, to_emails=None):
     except Exception as e:
         logger.error(f"Failed to send email: {e}")
         return False
+
+
+def send_client_offboarding_notice(client, recipient_emails):
+    """Send the final access-revocation notice privately to each client user."""
+    recipients = sorted({email.strip() for email in recipient_emails if email and email.strip()})
+    effective_at = timezone.localtime().strftime("%B %d, %Y at %I:%M %p %Z")
+    client_name = escape(client.name)
+    subject = "Important: Your OneSmarter access has been discontinued"
+    html_content = f"""
+        <div style="font-family:Arial,sans-serif;color:#172033;line-height:1.6;max-width:640px">
+          <h2 style="color:#172033;margin-bottom:16px">OneSmarter Access Notice</h2>
+          <p>Hello,</p>
+          <p>
+            This message confirms that <strong>{client_name}</strong>'s access to the
+            OneSmarter MIR Relay platform was discontinued effective
+            <strong>{effective_at}</strong>.
+          </p>
+          <p>
+            Your OneSmarter user account has been deactivated and all active sessions
+            have been revoked. You will no longer be able to sign in or access client data.
+          </p>
+          <p>No action is required from you.</p>
+          <p>
+            If you believe you received this notice in error or require assistance,
+            please contact your organization administrator or OneSmarter Support.
+          </p>
+          <p style="margin-top:24px">Sincerely,<br/><strong>OneSmarter Inc, USA</strong></p>
+          <hr style="border:0;border-top:1px solid #d7dee8;margin:24px 0"/>
+          <p style="font-size:12px;color:#64748b">
+            This is an administrative security notification concerning your account.
+          </p>
+        </div>
+    """
+
+    sent = 0
+    failed = []
+    for recipient in recipients:
+        # Send one message per user to avoid exposing client user addresses.
+        if send_client_email(client, subject, html_content, to_emails=[recipient]):
+            sent += 1
+        else:
+            failed.append(recipient)
+    return {"attempted": len(recipients), "sent": sent, "failed": failed}

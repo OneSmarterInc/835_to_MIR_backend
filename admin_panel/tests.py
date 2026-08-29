@@ -1,5 +1,6 @@
 from django.test import TestCase
 import json
+from unittest.mock import patch
 
 from accounts.models import Client, ClientContact, User
 
@@ -139,9 +140,16 @@ class OnboardingSequenceTestCase(TestCase):
             )
             self.assertEqual(response.status_code, 200)
 
-        response = self.client.post(step3_url)
+        with patch(
+            "admin_panel.email_service.send_client_offboarding_notice",
+            return_value={"attempted": 1, "sent": 1, "failed": []},
+        ) as send_notice:
+            response = self.client.post(step3_url)
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["revoked_users"], 1)
+        self.assertEqual(response.json()["email_notifications"]["sent"], 1)
+        send_notice.assert_called_once()
+        self.assertEqual(send_notice.call_args.args[1], [user.email])
         self.client_record.refresh_from_db()
         user.refresh_from_db()
         self.assertEqual(self.client_record.status, "INACTIVE")

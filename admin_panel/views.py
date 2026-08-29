@@ -2985,6 +2985,9 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
         revoked_user_count = 0
         revoked_session_count = 0
         client_user_ids = set()
+        client_user_emails = []
+        email_result = {"attempted": 0, "sent": 0, "failed": []}
+        first_offboarding_completion = False
 
         with transaction.atomic():
             # Serialize repeated/double-click requests for the same client.
@@ -3007,6 +3010,9 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                 defaults={"title": step_titles.get(step_num, f"Offboarding Step {step_num}")}
             )
             status_obj, _ = ClientOffboardingStatus.objects.get_or_create(client=client_obj, step=step_def)
+            first_offboarding_completion = (
+                step_num == 3 and status_obj.status != 'COMPLETED'
+            )
 
             # If it's step 1 and it's a POST with a file
             if step_num == 1 and request.method == "POST" and request.body:
@@ -3038,6 +3044,9 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                 from accounts.models import User as AccountUser
                 client_users = AccountUser.objects.filter(client=client_obj, is_staff=False, is_superuser=False)
                 client_user_ids = {str(uid) for uid in client_users.values_list('id', flat=True)}
+                client_user_emails = list(
+                    client_users.exclude(email="").values_list("email", flat=True)
+                )
                 revoked_user_count = client_users.filter(is_active=True).update(is_active=False)
 
         # An inactive user is rejected immediately by Django's authentication
@@ -3080,6 +3089,17 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                     "Client was offboarded but audit logging failed"
                 )
 
+            try:
+                from admin_panel.email_service import send_client_offboarding_notice
+                if first_offboarding_completion:
+                    email_result = send_client_offboarding_notice(
+                        client_obj, client_user_emails
+                    )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Client was offboarded but notification delivery failed"
+                )
+
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
@@ -3089,6 +3109,7 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
         "state": state,
         "revoked_users": revoked_user_count,
         "revoked_sessions": revoked_session_count,
+        "email_notifications": email_result,
     })
 
 @csrf_exempt
