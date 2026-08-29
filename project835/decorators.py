@@ -80,6 +80,9 @@ def authenticated_api_required(view_function):
                 },
                 status=401,
             )
+        from project835.middleware import OFFBOARDED_PAYLOAD, client_access_revoked
+        if client_access_revoked(user):
+            return JsonResponse(OFFBOARDED_PAYLOAD, status=403)
         return view_function(request, *args, **kwargs)
 
     return wrapped_view

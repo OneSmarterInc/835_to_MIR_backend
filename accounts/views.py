@@ -16,6 +16,38 @@ from django.shortcuts import render, redirect
 from .forms import SignupForm, LoginForm
 
 
+OFFBOARDED_ERROR = "Access denied. Contact your administrator."
+
+
+def _is_client_access_revoked(user):
+    """Return True only for portal users belonging to an offboarded client."""
+    if not user or user.is_staff or user.is_superuser:
+        return False
+    client = getattr(user, "client", None)
+    return bool(
+        client
+        and (
+            getattr(client, "stage", "") == "offboarded"
+            or getattr(client, "status", "") == "INACTIVE"
+        )
+    )
+
+
+def _offboarded_response(user):
+    client = getattr(user, "client", None)
+    return JsonResponse(
+        {
+            "success": False,
+            "error": OFFBOARDED_ERROR,
+            "message": OFFBOARDED_ERROR,
+            "code": "CLIENT_OFFBOARDED",
+            "offboarded": True,
+            "client": getattr(client, "name", "Client"),
+        },
+        status=403,
+    )
+
+
 def signup_view(request):
     if request.user.is_authenticated:
         return redirect("home")
@@ -47,7 +79,7 @@ def login_view(request):
             user = form.user
             
             # Block offboarded client users
-            if not user.is_staff and not user.is_superuser and user.client and getattr(user.client, 'stage', '') == 'offboarded':
+            if _is_client_access_revoked(user):
                 messages.error(request, f"ACCESS DENIED: {user.client.name} has been offboarded. Contact the administrator for assistance.")
                 return render(request, "accounts/login.html", {"form": form})
             
@@ -190,9 +222,8 @@ def api_user_info(request):
 
     # Check if client is offboarded
     is_offboarded = False
-    if request.user.client and not request.user.is_staff and not request.user.is_superuser:
-        if getattr(request.user.client, 'stage', '') == 'offboarded':
-            is_offboarded = True
+    if _is_client_access_revoked(request.user):
+        is_offboarded = True
 
     return JsonResponse({
         "authenticated": True,
@@ -221,6 +252,18 @@ def api_login(request):
     except Exception:
         data = request.POST
 
+    # Disabled users cannot pass Django's authentication backend. Verify the
+    # supplied password before returning the explicit offboarding state so the
+    # response cannot be used to enumerate client accounts.
+    email = str(data.get("email", "")).strip().lower()
+    password = str(data.get("password", ""))
+    if email and password:
+        from .models import User
+        candidate = User.objects.select_related("client").filter(email__iexact=email).first()
+        if candidate and candidate.check_password(password) and _is_client_access_revoked(candidate):
+            logger.warning("Blocked login for offboarded client user '%s'.", candidate.email)
+            return _offboarded_response(candidate)
+
     form = LoginForm(data)
     if form.is_valid():
         user = form.user
@@ -244,13 +287,9 @@ def api_login(request):
             }, status=400)
 
         # Block login for users whose client has been offboarded
-        if not is_user_staff and user.client and getattr(user.client, 'stage', '') == 'offboarded':
+        if _is_client_access_revoked(user):
             logger.warning(f"Auth failure: User '{user.email}' blocked because client '{user.client.name}' is offboarded.")
-            return JsonResponse({
-                "success": False,
-                "error": f"ACCESS DENIED: {user.client.name} has been offboarded. Contact the administrator for assistance.",
-                "offboarded": True
-            }, status=403)
+            return _offboarded_response(user)
 
         login(request, user)
         logger.info(f"Auth success: User '{user.email}' successfully logged in (2FA pending).")

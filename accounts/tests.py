@@ -60,3 +60,64 @@ class AdminClientApiTestCase(TestCase):
         res = self.client_api.post(f"/accounts/api/admin/clients/{self.c1.id}/delete/")
         self.assertEqual(res.status_code, 200)
         self.assertFalse(Client.objects.filter(id=self.c1.id).exists())
+
+
+class OffboardedClientAccessTestCase(TestCase):
+    def setUp(self):
+        self.http = DjangoTestClient()
+        self.client_record = Client.objects.create(
+            name="Revoked Health",
+            client_code="CLT-REVOKED",
+            email="revoked@example.com",
+            status="INACTIVE",
+            stage="offboarded",
+        )
+        self.user = User.objects.create_user(
+            email="revoked-user@example.com",
+            name="Revoked User",
+            mobile="+15550199",
+            password="correct-password",
+            client=self.client_record,
+            is_active=False,
+        )
+
+    def test_correct_credentials_return_offboarded_lock_state(self):
+        response = self.http.post(
+            "/accounts/api/login/",
+            data=json.dumps({
+                "email": self.user.email,
+                "password": "correct-password",
+                "isAdminRoute": False,
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(response.json()["offboarded"])
+        self.assertEqual(response.json()["code"], "CLIENT_OFFBOARDED")
+        self.assertNotIn("sessionid", response.cookies)
+
+    def test_wrong_password_does_not_disclose_offboarding(self):
+        response = self.http.post(
+            "/accounts/api/login/",
+            data=json.dumps({
+                "email": self.user.email,
+                "password": "wrong-password",
+                "isAdminRoute": False,
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertFalse(response.json().get("offboarded", False))
+
+    def test_authenticated_offboarded_user_is_blocked_from_client_apis(self):
+        self.user.is_active = True
+        self.user.save(update_fields=["is_active"])
+        self.http.force_login(self.user)
+
+        state = self.http.get("/accounts/api/user/")
+        self.assertEqual(state.status_code, 200)
+        self.assertTrue(state.json()["offboarded"])
+
+        blocked = self.http.get("/accounts/api/contacts/")
+        self.assertEqual(blocked.status_code, 403)
+        self.assertEqual(blocked.json()["code"], "CLIENT_OFFBOARDED")
