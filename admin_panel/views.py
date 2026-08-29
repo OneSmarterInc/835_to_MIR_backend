@@ -46,6 +46,26 @@ def onboarding_process_position(step_number):
 
 
 @csrf_exempt
+
+def _canonical_mir_filename(record):
+    """Return the persisted admin-configured MIR filename for an EDI record."""
+    if not record:
+        return ""
+    mir_record = getattr(record, "mir_file", None)
+    if mir_record and mir_record.mir_filename:
+        return Path(mir_record.mir_filename).name
+    return ""
+
+
+def _safe_mir_filename(value, fallback="output.mir"):
+    """Normalize a client-facing MIR filename."""
+    filename = Path(str(value or "").strip()).name
+    if not filename:
+        filename = fallback
+    if not filename.lower().endswith(".mir"):
+        filename += ".mir"
+    return filename
+
 def api_admin_stats(request):
     """
     GET /admin-panel/api/stats/
@@ -1290,7 +1310,7 @@ def api_admin_step_validate_835(request, client_id):
             email_recipients = get_client_users(client_obj)
             outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
             outbound_folder = getattr(outbound_cfg, "outbound_mir_folder", None) or "/"
-            mir_filename = Path(db_record.output_path).name if db_record.output_path else "Generated MIR file"
+            mir_filename = _canonical_mir_filename(db_record) or (Path(db_record.output_path).name if db_record.output_path else "Generated MIR file")
             delivered_at = timezone.localtime().strftime("%B %d, %Y at %I:%M %p %Z")
 
             email_subj = f"MIR Delivery Confirmation – {filename}"
@@ -2022,12 +2042,16 @@ def api_admin_client_edi_files(request, client_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
     
-    files = EDI835File.objects.filter(client_id=client_id).order_by('-uploaded_at')
+    files = EDI835File.objects.filter(client_id=client_id).select_related("mir_file").order_by('-uploaded_at')
     file_list = []
     for f in files:
         file_list.append({
             "id": str(f.id),
             "original_filename": f.original_filename,
+            "stored_filename": f.stored_filename,
+            "mir_filename": _canonical_mir_filename(f),
+            "output_filename": _canonical_mir_filename(f),
+            "combined_filename": _canonical_mir_filename(f),
             "status": f.status,
             "claims_count": f.claims_count,
             "services_count": f.services_count,
@@ -2092,7 +2116,9 @@ def api_admin_edi_file(request, client_id, file_id, file_type):
                 status=404
             )
 
-        filename = os.path.basename(relative_path)
+        filename = _safe_mir_filename(
+            _canonical_mir_filename(file_record) or os.path.basename(relative_path)
+        )
 
     else:
         # Prefer archived 835 because processed files are moved
