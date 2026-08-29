@@ -268,7 +268,9 @@ def reconciliation_results(request):
 def reconciliation_claim_detail(request, claim_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
-    queryset = MIRClaim.objects.select_related("mir_file", "mir_file__client")
+    queryset = MIRClaim.objects.select_related("mir_file", "mir_file__client").defer(
+        "mir_file__file_content"
+    )
     if getattr(request.user, "client_id", None):
         queryset = queryset.filter(mir_file__client_id=request.user.client_id)
     elif not request.user.is_staff:

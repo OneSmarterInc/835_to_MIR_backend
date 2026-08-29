@@ -155,12 +155,19 @@ def tracked_files_list(request):
 
     client = getattr(request.user, "client", None)
     if request.user.is_staff:
-        records = EDI835File.objects.select_related("client", "mir_file")
+        records = EDI835File.objects.select_related("client", "mir_file").defer(
+            "input_file_content", "mir_file__file_content"
+        )
         if request.GET.get("scope") == "global":
             records = records.filter(client__isnull=True)
         records = records.order_by('-uploaded_at')[:200]
     else:
-        records = EDI835File.objects.filter(client=client).select_related("mir_file").order_by('-uploaded_at')[:200]
+        records = (
+            EDI835File.objects.filter(client=client)
+            .select_related("mir_file")
+            .defer("input_file_content", "mir_file__file_content")
+            .order_by('-uploaded_at')[:200]
+        )
     data = []
     records_to_update = []
     for r in records:
@@ -297,6 +304,7 @@ def api_archive_files_list(request):
     archive_records = (
         EDI835File.objects
         .select_related("mir_file")
+        .defer("input_file_content", "mir_file__file_content")
         .all()
     )
     mir_by_archive_name = {}

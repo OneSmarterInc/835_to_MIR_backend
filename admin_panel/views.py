@@ -2167,7 +2167,12 @@ def api_admin_client_edi_files(request, client_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
     
-    files = EDI835File.objects.filter(client_id=client_id).select_related("mir_file").order_by('-uploaded_at')
+    files = (
+        EDI835File.objects.filter(client_id=client_id)
+        .select_related("mir_file")
+        .defer("input_file_content", "mir_file__file_content")
+        .order_by('-uploaded_at')
+    )
     file_list = []
     for f in files:
         file_list.append({
