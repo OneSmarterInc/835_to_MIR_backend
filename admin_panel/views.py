@@ -32,9 +32,9 @@ from validation import (
 )
 
 
-# Workflow order is intentionally independent from the permanent/displayed
-# step numbers. Step 10 must be completed before Steps 8 and 9.
-ONBOARDING_PROCESS_ORDER = (1, 2, 3, 4, 5, 6, 7, 10, 8, 9, 11, 12, 13, 14, 15)
+# Workflow order is intentionally independent from the permanent database IDs.
+# Step 16 is the user-creation action split from the former combined Step 10.
+ONBOARDING_PROCESS_ORDER = (1, 2, 3, 4, 5, 6, 7, 10, 16, 9, 8, 11, 12, 13, 14, 15)
 ONBOARDING_PROCESS_POSITION = {
     step_number: position
     for position, step_number in enumerate(ONBOARDING_PROCESS_ORDER)
@@ -740,10 +740,11 @@ def api_admin_client_state(request, client_id):
         for u in User.objects.filter(client=client_obj).values("id", "name", "email", "mobile", "is_staff")
     ]
 
-    # Force refresh steps definitions to match the latest 15 steps definition if count differs or title changed
+    # Keep installations that predate the split filename/user step aligned with
+    # the canonical 16-step workflow.
     step6_def = OnboardingStepDefinition.objects.filter(step_number=6).first()
-    if step_defs.count() != 15 or not step6_def or step6_def.title != "SMTP / Email Configuration":
-        OnboardingStepDefinition.objects.all().delete()
+    step16_def = OnboardingStepDefinition.objects.filter(step_number=16).first()
+    if step_defs.count() != 16 or not step6_def or step6_def.title != "SMTP / Email Configuration" or not step16_def:
         default_steps = [
             (1, "Mutual NDA signed", "Upload signed NDA template to establish confidentiality agreement."),
             (2, "Business associate agreement executed", "Execute HIPAA compliant Business Associate Agreement."),
@@ -754,15 +755,22 @@ def api_admin_client_state(request, client_id):
             (7, "Delivery method agreed", "Configure secure transfer mechanism (SFTP, API drop)."),
             (8, "Validate 835 and Push MIR to SFTP", "Validate the 835, convert it to MIR, and upload the MIR to the configured outbound SFTP folder."),
             (9, "Mapping rules written & configured", "Open Mapping Application to configure 835 conversion."),
-            (10, "MIR Output Filename Format & Create User", "Define output MIR file naming convention and create SFTP user logins."),
+            (10, "MIR Output Filename Format", "Define the naming convention used for generated MIR output files."),
             (11, "Side-by-Side 835 Conversion Review", "Verify side-by-side conversion of sample 835 files."),
             (12, "Go-Live Safeguards Verification", "Confirm production cutover safeguards and monitoring."),
             (13, "Production Schedule", "Define scheduled date and time to go live."),
             (14, "Go-Live / Final Verification", "Attach email conversation confirmation."),
             (15, "Production Delivery Sign-Off / Conclude Onboarding", "Monitor first live 835 delivery and conclude onboarding."),
+            (16, "Create Client User", "Create and associate the client's application user account."),
         ]
         for num, title, desc in default_steps:
-            OnboardingStepDefinition.objects.create(step_number=num, title=title, description=desc)
+            OnboardingStepDefinition.objects.update_or_create(
+                step_number=num,
+                defaults={"title": title, "description": desc},
+            )
+        OnboardingStepDefinition.objects.exclude(
+            step_number__in=[num for num, _, _ in default_steps]
+        ).delete()
         step_defs = OnboardingStepDefinition.objects.all().order_by('step_number')
 
     step_defs = sorted(
@@ -783,6 +791,7 @@ def api_admin_client_state(request, client_id):
         8: "x12_835_validate",
         9: "mapping_redirect",
         10: "naming_config",
+        16: "user_creation",
         11: "side_by_side_done",
         12: "golive_redirect",
         13: "production_schedule",
@@ -791,14 +800,17 @@ def api_admin_client_state(request, client_id):
     }
 
     def get_phase(step_number):
-        if step_number <= 4:
-            return "PHASE ONE - PAPER RECORD DATA"
-        elif step_number <= 9 or step_number == 10:
-            return "PHASE TWO - UNDERSTAND THEIR SYSTEM"
-        elif step_number <= 13:
-            return "PHASE THREE - MOVE IT ON TEST"
-        else:
-            return "PHASE FOUR - LIVE"
+        if step_number in {1, 2, 3}:
+            return "DOCUMENTS & COMPLIANCE"
+        if step_number in {4, 5}:
+            return "CLIENT DISCOVERY"
+        if step_number in {6, 7, 10, 16}:
+            return "SECURE DELIVERY & ACCESS"
+        if step_number in {9, 8, 11}:
+            return "CONVERSION CONFIGURATION & VALIDATION"
+        if step_number in {12, 13}:
+            return "PRODUCTION READINESS"
+        return "GO-LIVE & SIGN-OFF"
 
     for step in step_defs:
         st = status_map.get(step.id, 'PENDING')
@@ -829,6 +841,7 @@ def api_admin_client_state(request, client_id):
             extra_data["contacts"] = contacts_list
         elif step.step_number == 10:
             extra_data["mir_filename_format"] = client_obj.mir_filename_format
+        elif step.step_number == 16:
             extra_data["users"] = users_list
         elif step.step_number == 13:
             if client_obj.live_since:
