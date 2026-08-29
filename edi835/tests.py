@@ -306,6 +306,16 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(Decimal(recon_only["CLAIM100"]["recon_paid_amount"]), Decimal("120.00"))
         self.assertEqual(recon_only["CLAIM100"]["recon_matches"][0]["filename"], "recon.csv")
 
+        comma_search = self.client.get(
+            "/edi835/api/reconciliation/?search=CLAIM-100%2C%20CLAIM-200"
+        )
+        self.assertEqual(comma_search.status_code, 200)
+        self.assertEqual(comma_search.json()["total_claims"], 2)
+        self.assertEqual(
+            {row["claim_id"] for row in comma_search.json()["claims"]},
+            {"CLAIM100", "CLAIM200"},
+        )
+
     def test_reconciliation_aggregates_mir_chunks_and_uses_latest_recon(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine

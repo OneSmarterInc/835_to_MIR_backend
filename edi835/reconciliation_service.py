@@ -183,25 +183,34 @@ def reconciliation_rows(
                 "status": "NOT_IN_MIR",
             })
 
-    search_value = (search or "").strip().casefold()
-    if search_value:
+    search_terms = [value.strip().casefold() for value in str(search or "").split(",") if value.strip()]
+    if search_terms:
+        recon_filter = Q()
+        for term in search_terms:
+            recon_filter |= (
+                Q(claim_control_number__icontains=term)
+                | Q(member_id__icontains=term)
+                | Q(patient_control_number__icontains=term)
+                | Q(recon_file__original_filename__icontains=term)
+            )
         recon_search_ids = {
             normalize_claim_id(value)
-            for value in recon_base.filter(
-                Q(claim_control_number__icontains=search_value)
-                | Q(member_id__icontains=search_value)
-                | Q(patient_control_number__icontains=search_value)
-                | Q(recon_file__original_filename__icontains=search_value)
-            ).values_list("claim_control_number", flat=True)
+            for value in recon_base.filter(recon_filter).values_list("claim_control_number", flat=True)
         }
+        normalized_terms = {normalize_claim_id(term) for term in search_terms}
         searchable_fields = (
             "claim_id", "patient_name", "member_id", "mir_filename",
             "recon_filename", "status",
         )
-        output = [row for row in output if any(
-            search_value in str(row.get(field) or "").casefold()
-            for field in searchable_fields
-        ) or row["claim_id"] in recon_search_ids]
+        output = [row for row in output if (
+            any(
+                term in str(row.get(field) or "").casefold()
+                for term in search_terms
+                for field in searchable_fields
+            )
+            or any(term and term in row["claim_id"] for term in normalized_terms)
+            or row["claim_id"] in recon_search_ids
+        )]
     total = len(output)
     if sort_by in SORT_FIELDS:
         key = SORT_FIELDS[sort_by]
