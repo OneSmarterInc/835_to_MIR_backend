@@ -141,8 +141,15 @@ class OnboardingSequenceTestCase(TestCase):
 
         response = self.client.post(step3_url)
         self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["revoked_users"], 1)
         self.client_record.refresh_from_db()
         user.refresh_from_db()
         self.assertEqual(self.client_record.status, "INACTIVE")
         self.assertEqual(self.client_record.stage, "offboarded")
         self.assertFalse(user.is_active)
+
+        # Retrying the request is safe and retains the completed/revoked state.
+        repeated = self.client.post(step3_url)
+        self.assertEqual(repeated.status_code, 200)
+        self.assertEqual(repeated.json()["revoked_users"], 0)
+        self.assertEqual(repeated.json()["state"]["completed_steps"], 3)

@@ -2964,13 +2964,13 @@ def api_admin_offboarding_state(request, client_id):
     return JsonResponse({"success": True, "state": state})
 
 @csrf_exempt
+@admin_api_required
 def api_admin_offboarding_step_complete(request, client_id, step_num):
     from django.http import JsonResponse
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
     try:
         from accounts.models import Client
-        client_obj = Client.objects.get(id=client_id)
         step_num = int(step_num)
         
         step_titles = {
@@ -2982,19 +2982,26 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
         if step_num not in step_titles:
             return JsonResponse({"success": False, "error": "Invalid offboarding step."}, status=400)
 
-        if step_num > 1:
-            previous_complete = ClientOffboardingStatus.objects.filter(
-                client=client_obj,
-                step__step_number=step_num - 1,
-                status='COMPLETED',
-            ).exists()
-            if not previous_complete:
-                return JsonResponse({
-                    "success": False,
-                    "error": f"Complete offboarding Step {step_num - 1} before Step {step_num}.",
-                }, status=409)
-        
+        revoked_user_count = 0
+        revoked_session_count = 0
+        client_user_ids = set()
+
         with transaction.atomic():
+            # Serialize repeated/double-click requests for the same client.
+            client_obj = Client.objects.select_for_update().get(id=client_id)
+
+            if step_num > 1:
+                previous_complete = ClientOffboardingStatus.objects.filter(
+                    client=client_obj,
+                    step__step_number=step_num - 1,
+                    status='COMPLETED',
+                ).exists()
+                if not previous_complete:
+                    return JsonResponse({
+                        "success": False,
+                        "error": f"Complete offboarding Step {step_num - 1} before Step {step_num}.",
+                    }, status=409)
+
             step_def, _ = OffboardingStepDefinition.objects.get_or_create(
                 step_number=step_num,
                 defaults={"title": step_titles.get(step_num, f"Offboarding Step {step_num}")}
@@ -3025,38 +3032,64 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
             if step_num == 3:
                 client_obj.status = 'INACTIVE'
                 client_obj.stage = 'offboarded'
-                client_obj.save()
+                client_obj.save(update_fields=['status', 'stage'])
 
                 # Deactivate all users belonging to this client
                 from accounts.models import User as AccountUser
                 client_users = AccountUser.objects.filter(client=client_obj, is_staff=False, is_superuser=False)
                 client_user_ids = {str(uid) for uid in client_users.values_list('id', flat=True)}
-                client_users.update(is_active=False)
+                revoked_user_count = client_users.filter(is_active=True).update(is_active=False)
 
-                # Flush all sessions for these users so they get kicked immediately
+        # An inactive user is rejected immediately by Django's authentication
+        # backend. Physical session deletion is defense-in-depth and must not
+        # roll back the permanent client/user revocation if one session is bad.
+        if step_num == 3 and client_user_ids:
+            try:
                 from django.contrib.sessions.models import Session
-                from django.utils import timezone
                 session_pks_to_delete = []
                 for session in Session.objects.filter(expire_date__gte=timezone.now()).iterator():
-                    uid = session.get_decoded().get('_auth_user_id')
-                    if uid and uid in client_user_ids:
+                    try:
+                        uid = session.get_decoded().get('_auth_user_id')
+                    except Exception:
+                        continue
+                    if uid and str(uid) in client_user_ids:
                         session_pks_to_delete.append(session.pk)
                 if session_pks_to_delete:
-                    Session.objects.filter(pk__in=session_pks_to_delete).delete()
+                    revoked_session_count, _ = Session.objects.filter(
+                        pk__in=session_pks_to_delete
+                    ).delete()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Client was offboarded but stale-session cleanup failed"
+                )
 
+            try:
                 AuditLog.objects.create(
                     module="OFFBOARDING",
                     action="CLIENT_OFFBOARDED",
-                    details=f"Client '{client_obj.name}' was offboarded and {len(client_user_ids)} user account(s) were deactivated.",
+                    details=(
+                        f"Client '{client_obj.name}' was offboarded; "
+                        f"{revoked_user_count} active user account(s) and "
+                        f"{revoked_session_count} session(s) were revoked."
+                    ),
                     performed_by=getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator',
                     client=client_obj,
+                )
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Client was offboarded but audit logging failed"
                 )
 
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
     state = helper_get_offboarding_state(client_obj)
-    return JsonResponse({"success": True, "state": state})
+    return JsonResponse({
+        "success": True,
+        "state": state,
+        "revoked_users": revoked_user_count,
+        "revoked_sessions": revoked_session_count,
+    })
 
 @csrf_exempt
 def api_admin_offboarding_step_redo(request, client_id, step_num):
