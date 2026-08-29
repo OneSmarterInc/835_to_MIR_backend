@@ -18,9 +18,11 @@ from django.conf.urls.static import static
 
 from home.views import home_view
 from project835.views import health_check
+from project835.drf_compat import DRFStatusView
 
 urlpatterns = [
     path("health/", health_check, name="health_check"),
+    path("api/drf/status/", DRFStatusView.as_view(), name="drf_status"),
     path("admin/", admin.site.urls),
     path("administrator/", home_view, name="administrator_route"),
     path("administrator", home_view),
@@ -39,4 +41,3 @@ urlpatterns = [
 
 if settings.DEBUG:
     urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
-

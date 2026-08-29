@@ -24,6 +24,29 @@ from .views import (
     api_client_contacts,
     api_change_password,
 )
+from project835.drf_compat import admin_api, authenticated_api, public_api
+
+# Keep the established URL and payload contract while dispatching API traffic
+# through DRF.  Browser-rendered Django views above remain unchanged.
+api_user_info = public_api(api_user_info)
+api_login = public_api(api_login)
+api_signup = public_api(api_signup)
+api_totp_setup = authenticated_api(api_totp_setup)
+api_totp_verify = authenticated_api(api_totp_verify)
+api_logout = public_api(api_logout)
+api_client_contacts = authenticated_api(api_client_contacts)
+api_change_password = authenticated_api(api_change_password)
+
+api_admin_clients = admin_api(api_admin_clients)
+api_admin_create_client = admin_api(api_admin_create_client)
+api_admin_update_client = admin_api(api_admin_update_client)
+api_admin_delete_client = admin_api(api_admin_delete_client)
+api_admin_stats = admin_api(api_admin_stats)
+api_admin_users = admin_api(api_admin_users)
+api_admin_create_user = admin_api(api_admin_create_user)
+api_admin_update_user = admin_api(api_admin_update_user)
+api_admin_delete_user = admin_api(api_admin_delete_user)
+api_admin_reset_password = admin_api(api_admin_reset_password)
 
 urlpatterns = [
     path("signup/", signup_view, name="signup"),
@@ -51,4 +74,3 @@ urlpatterns = [
     path("api/admin/users/<int:user_id>/delete/", api_admin_delete_user, name="api_admin_delete_user"),
     path("api/admin/users/<int:user_id>/reset-password/", api_admin_reset_password, name="api_admin_reset_password"),
 ]
-

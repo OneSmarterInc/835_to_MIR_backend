@@ -48,6 +48,36 @@ from .views import (
     api_admin_offboarding_step_complete,
     api_admin_offboarding_step_redo,
 )
+from project835.drf_compat import admin_api
+
+# Every endpoint in this URL module is an administrator API.  Wrapping the
+# established functions keeps their exact request/response contract and
+# business logic while DRF owns dispatch, authentication and rendering.
+_ADMIN_API_NAMES = (
+    "api_admin_clients", "api_admin_create_client", "api_admin_update_client",
+    "api_admin_delete_client", "api_admin_users", "api_admin_create_user",
+    "api_admin_update_user", "api_admin_delete_user", "api_admin_access_info",
+    "api_admin_stats", "api_admin_client_state", "api_admin_step_upload",
+    "api_admin_step_file", "api_admin_step_notes", "api_admin_delete_step_note",
+    "api_admin_delete_client_contact", "api_admin_delete_client_user",
+    "api_admin_step_redo", "api_admin_step_validate_835", "api_admin_step_action",
+    "api_admin_client_documents", "api_admin_client_documents_upload",
+    "api_admin_document_download", "api_admin_document_delete",
+    "api_admin_client_edi_files", "api_admin_edi_file",
+    "api_admin_client_test_environment", "api_admin_golive_state",
+    "api_admin_golive_step_upload", "api_admin_golive_step_download",
+    "api_admin_golive_step3_sftp", "api_admin_golive_step4_schedule",
+    "api_admin_golive_step5_comment", "api_admin_golive_step6_complete",
+    "api_admin_golive_step_redo", "api_admin_test_environment_run",
+    "api_admin_employee_roles", "api_mappings_view", "api_mappings_check",
+    "api_mappings_reset", "api_admin_client_smtp", "api_admin_default_smtp",
+    "api_admin_template_download", "api_admin_audit_logs",
+    "api_admin_offboarding_state", "api_admin_offboarding_step_complete",
+    "api_admin_offboarding_step_redo",
+)
+for _api_name in _ADMIN_API_NAMES:
+    globals()[_api_name] = admin_api(globals()[_api_name])
+del _api_name
 
 urlpatterns = [
     path("api/clients/", api_admin_clients, name="admin_api_clients"),

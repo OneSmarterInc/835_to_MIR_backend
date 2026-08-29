@@ -19,6 +19,28 @@ from .recon_views import (
     recon_detail, recon_download, recon_files, recon_process, recon_upload,
     reconciliation_claim_detail, reconciliation_results,
 )
+from project835.drf_compat import authenticated_api
+
+api_process_tracked_file = authenticated_api(api_process_tracked_file)
+tracked_files_list = authenticated_api(tracked_files_list)
+api_get_metrics = authenticated_api(api_get_metrics)
+api_archive_files_list = authenticated_api(api_archive_files_list)
+api_get_sftp_config = authenticated_api(api_get_sftp_config)
+api_save_sftp_config = authenticated_api(api_save_sftp_config)
+api_delete_sftp_config = authenticated_api(api_delete_sftp_config)
+api_sftp_connect = authenticated_api(api_sftp_connect)
+api_verify_sftp_paths = authenticated_api(api_verify_sftp_paths)
+api_push_to_sftp = authenticated_api(api_push_to_sftp)
+api_browse_sftp = authenticated_api(api_browse_sftp)
+api_start_batch_conversion = authenticated_api(api_start_batch_conversion)
+api_download_archive_zip = authenticated_api(api_download_archive_zip)
+recon_files = authenticated_api(recon_files)
+recon_download = authenticated_api(recon_download)
+recon_upload = authenticated_api(recon_upload)
+recon_process = authenticated_api(recon_process)
+recon_detail = authenticated_api(recon_detail)
+reconciliation_results = authenticated_api(reconciliation_results)
+reconciliation_claim_detail = authenticated_api(reconciliation_claim_detail)
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),

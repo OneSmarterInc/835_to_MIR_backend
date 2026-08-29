@@ -49,6 +49,7 @@ INSTALLED_APPS = [
     "django.contrib.messages",
     "django.contrib.staticfiles",
     "corsheaders",
+    "rest_framework",
 
     "accounts",
     "home",
@@ -56,6 +57,20 @@ INSTALLED_APPS = [
     "edi835",
     "admin_panel",
 ]
+
+REST_FRAMEWORK = {
+    "DEFAULT_AUTHENTICATION_CLASSES": [
+        "project835.drf_auth.ExistingSessionAuthentication",
+    ],
+    "DEFAULT_PERMISSION_CLASSES": [
+        "rest_framework.permissions.IsAuthenticated",
+    ],
+    "DEFAULT_RENDERER_CLASSES": [
+        "rest_framework.renderers.JSONRenderer",
+    ],
+    "EXCEPTION_HANDLER": "project835.drf_compat.compatible_exception_handler",
+    "UNAUTHENTICATED_USER": "django.contrib.auth.models.AnonymousUser",
+}
 
 
 # ============================================================
