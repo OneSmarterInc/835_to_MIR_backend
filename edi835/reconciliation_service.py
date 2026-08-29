@@ -64,7 +64,7 @@ SORT_FIELDS = {
 
 def reconciliation_rows(
     client, recon_files=None, page=None, page_size=200, claim_id=None, search="",
-    sort_by="", sort_direction="asc",
+    sort_by="", sort_direction="asc", status_filter="",
 ):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
@@ -147,7 +147,7 @@ def reconciliation_rows(
             "recon_matches": [],
             "_recon_raw_ids": recon["raw_ids"] if recon else [],
             "remaining_amount": str(remaining),
-            "difference_amount": str(remaining),
+            "difference_amount": str(recon_paid - claim["mir_payable"]),
             "status": status,
         })
 
@@ -179,7 +179,7 @@ def reconciliation_rows(
                 "recon_matches": [],
                 "_recon_raw_ids": recon["raw_ids"],
                 "remaining_amount": str(-recon_paid),
-                "difference_amount": str(-recon_paid),
+                "difference_amount": str(recon_paid),
                 "status": "NOT_IN_MIR",
             })
 
@@ -211,6 +211,8 @@ def reconciliation_rows(
             or any(term and term in row["claim_id"] for term in normalized_terms)
             or row["claim_id"] in recon_search_ids
         )]
+    if status_filter:
+        output = [row for row in output if row["status"] == status_filter]
     total = len(output)
     if sort_by in SORT_FIELDS:
         key = SORT_FIELDS[sort_by]

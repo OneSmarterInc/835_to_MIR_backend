@@ -304,7 +304,13 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(recon_only["CLAIM100"]["status"], "NOT_IN_MIR")
         self.assertIsNone(recon_only["CLAIM100"]["mir_claim_id"])
         self.assertEqual(Decimal(recon_only["CLAIM100"]["recon_paid_amount"]), Decimal("120.00"))
+        self.assertEqual(Decimal(recon_only["CLAIM100"]["difference_amount"]), Decimal("120.00"))
         self.assertEqual(recon_only["CLAIM100"]["recon_matches"][0]["filename"], "recon.csv")
+
+        status_filter = self.client.get("/edi835/api/reconciliation/?status=NOT_IN_MIR")
+        self.assertEqual(status_filter.status_code, 200)
+        self.assertEqual(status_filter.json()["total_claims"], 2)
+        self.assertTrue(all(row["status"] == "NOT_IN_MIR" for row in status_filter.json()["claims"]))
 
         comma_search = self.client.get(
             "/edi835/api/reconciliation/?search=CLAIM-100%2C%20CLAIM-200"
