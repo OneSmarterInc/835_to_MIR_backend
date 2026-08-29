@@ -1,10 +1,17 @@
 from django.test import TestCase
 
-from accounts.models import Client
+from accounts.models import Client, User
 
 
 class OnboardingSequenceTestCase(TestCase):
     def setUp(self):
+        self.admin = User.objects.create_superuser(
+            email="onboarding-admin@example.com",
+            name="Onboarding Admin",
+            mobile="5550101000",
+            password="test-password",
+        )
+        self.client.force_login(self.admin)
         self.client_record = Client.objects.create(
             name="Sequence Test Client",
             client_code="SEQTEST",
@@ -34,4 +41,3 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertEqual(by_id[9]["phase"], "CONVERSION CONFIGURATION & VALIDATION")
         self.assertEqual(by_id[12]["phase"], "PRODUCTION READINESS")
         self.assertEqual(by_id[14]["phase"], "GO-LIVE & SIGN-OFF")
-
