@@ -1137,9 +1137,71 @@ def api_admin_step_file(request, client_id, step_key):
 @csrf_exempt
 def api_admin_step_notes(request, client_id, step_key):
     """ GET/POST /admin-panel/api/clients/<client_id>/steps/<step_key>/notes/ """
+    from accounts.models import ClientStepComment
+
+    try:
+        client_obj = Client.objects.get(id=client_id)
+    except (Client.DoesNotExist, ValueError):
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+
+    try:
+        parts = step_key.split('_')
+        if step_key.startswith('golive_step_'):
+            step_number = 100 + int(parts[2])
+        elif step_key.startswith('offboard_step_'):
+            step_number = 200 + int(parts[2])
+        elif step_key.startswith('step_'):
+            step_number = int(parts[1])
+        else:
+            raise ValueError
+    except (ValueError, IndexError):
+        return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+
     if request.method == "POST":
-        return JsonResponse({"success": True, "message": "Note added successfully."})
-    return JsonResponse({"success": True, "notes": []})
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JsonResponse({"success": False, "error": "Invalid JSON body."}, status=400)
+        note_text = (body.get('note_text') or '').strip()
+        if not note_text:
+            return JsonResponse({"success": False, "error": "Note text is required."}, status=400)
+        author = getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator'
+        note = ClientStepComment.objects.create(
+            client=client_obj,
+            step_number=step_number,
+            comment=note_text,
+            author=author,
+        )
+        return JsonResponse({
+            "success": True,
+            "message": "Note added successfully.",
+            "note": {
+                "id": str(note.id),
+                "note_text": note.comment,
+                "author": note.author,
+                "created_at": note.created_at.isoformat(),
+            },
+        })
+
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET and POST are allowed."}, status=405)
+
+    notes = ClientStepComment.objects.filter(
+        client=client_obj,
+        step_number=step_number,
+    ).order_by('-created_at')
+    return JsonResponse({
+        "success": True,
+        "notes": [
+            {
+                "id": str(note.id),
+                "note_text": note.comment,
+                "author": note.author,
+                "created_at": note.created_at.isoformat(),
+            }
+            for note in notes
+        ],
+    })
 
 
 @csrf_exempt
@@ -2284,17 +2346,26 @@ def helper_get_golive_state(client_obj):
             if note:
                 extra_data["schedule"] = extra_data.get("schedule", {})
                 extra_data["schedule"]["notes"] = note.comment
+                latest_note = {
+                    "id": str(note.id),
+                    "note_text": note.comment,
+                    "author": note.author,
+                    "created_at": note.created_at.isoformat(),
+                }
 
         if step.step_number == 5:
             note = golive_comments.get(105)
             if note:
                 latest_note = {
+                    "id": str(note.id),
                     "note_text": note.comment,
-                    "author": note.author
+                    "author": note.author,
+                    "created_at": note.created_at.isoformat(),
                 }
 
         steps_data.append({
             "id": step.id,
+            "key": f"golive_step_{step.step_number}",
             "step_number": step.step_number,
             "title": step.title,
             "description": step.description,

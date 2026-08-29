@@ -1,4 +1,5 @@
 from django.test import TestCase
+import json
 
 from accounts.models import Client, User
 
@@ -41,3 +42,41 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertEqual(by_id[9]["phase"], "CONVERSION CONFIGURATION & VALIDATION")
         self.assertEqual(by_id[12]["phase"], "PRODUCTION READINESS")
         self.assertEqual(by_id[14]["phase"], "GO-LIVE & SIGN-OFF")
+
+    def test_step_notes_are_persisted_scoped_and_returned(self):
+        create_response = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_5_claim_system_verification/notes/",
+            data=json.dumps({"note_text": "Persistent onboarding note"}),
+            content_type="application/json",
+        )
+        self.assertEqual(create_response.status_code, 200)
+
+        response = self.client.get(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_5_claim_system_verification/notes/"
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            [note["note_text"] for note in response.json()["notes"]],
+            ["Persistent onboarding note"],
+        )
+
+    def test_note_namespaces_do_not_mix_workflows(self):
+        for step_key, note_text in (
+            ("golive_step_5", "Go-live note"),
+            ("offboard_step_1", "Offboarding note"),
+        ):
+            response = self.client.post(
+                f"/admin-panel/api/clients/{self.client_record.id}/steps/{step_key}/notes/",
+                data=json.dumps({"note_text": note_text}),
+                content_type="application/json",
+            )
+            self.assertEqual(response.status_code, 200)
+
+        golive = self.client.get(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/golive_step_5/notes/"
+        ).json()["notes"]
+        offboard = self.client.get(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/offboard_step_1/notes/"
+        ).json()["notes"]
+        self.assertEqual([note["note_text"] for note in golive], ["Go-live note"])
+        self.assertEqual([note["note_text"] for note in offboard], ["Offboarding note"])
