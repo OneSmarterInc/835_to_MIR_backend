@@ -2961,6 +2961,8 @@ def api_admin_offboarding_state(request, client_id):
 @csrf_exempt
 def api_admin_offboarding_step_complete(request, client_id, step_num):
     from django.http import JsonResponse
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
     try:
         from accounts.models import Client
         client_obj = Client.objects.get(id=client_id)
@@ -2971,6 +2973,21 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
             2: "Archive Returned to Client",
             3: "Tenant Key Destruction"
         }
+
+        if step_num not in step_titles:
+            return JsonResponse({"success": False, "error": "Invalid offboarding step."}, status=400)
+
+        if step_num > 1:
+            previous_complete = ClientOffboardingStatus.objects.filter(
+                client=client_obj,
+                step__step_number=step_num - 1,
+                status='COMPLETED',
+            ).exists()
+            if not previous_complete:
+                return JsonResponse({
+                    "success": False,
+                    "error": f"Complete offboarding Step {step_num - 1} before Step {step_num}.",
+                }, status=409)
         
         with transaction.atomic():
             step_def, _ = OffboardingStepDefinition.objects.get_or_create(
@@ -3021,6 +3038,14 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                         session_pks_to_delete.append(session.pk)
                 if session_pks_to_delete:
                     Session.objects.filter(pk__in=session_pks_to_delete).delete()
+
+                AuditLog.objects.create(
+                    module="OFFBOARDING",
+                    action="CLIENT_OFFBOARDED",
+                    details=f"Client '{client_obj.name}' was offboarded and {len(client_user_ids)} user account(s) were deactivated.",
+                    performed_by=getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator',
+                    client=client_obj,
+                )
 
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)

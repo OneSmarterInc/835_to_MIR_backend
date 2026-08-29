@@ -124,3 +124,25 @@ class OnboardingSequenceTestCase(TestCase):
         )
         self.assertEqual(deleted_user.status_code, 200)
         self.assertFalse(User.objects.filter(id=user.id).exists())
+
+    def test_offboarding_requires_sequence_and_revokes_client_users(self):
+        user = User.objects.create_user(
+            email="offboard-user@example.com", name="Offboard User", mobile="5550103000",
+            password="test-password", client=self.client_record,
+        )
+        step3_url = f"/admin-panel/api/clients/{self.client_record.id}/offboarding/steps/3/complete/"
+        self.assertEqual(self.client.post(step3_url).status_code, 409)
+
+        for step_number in (1, 2):
+            response = self.client.post(
+                f"/admin-panel/api/clients/{self.client_record.id}/offboarding/steps/{step_number}/complete/"
+            )
+            self.assertEqual(response.status_code, 200)
+
+        response = self.client.post(step3_url)
+        self.assertEqual(response.status_code, 200)
+        self.client_record.refresh_from_db()
+        user.refresh_from_db()
+        self.assertEqual(self.client_record.status, "INACTIVE")
+        self.assertEqual(self.client_record.stage, "offboarded")
+        self.assertFalse(user.is_active)
