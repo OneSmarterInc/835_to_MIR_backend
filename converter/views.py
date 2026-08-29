@@ -13,6 +13,26 @@ from edi835.models import EDI835File
 from edi835.services import process_edi835_file_content, process_multiple_edi835_files
 
 
+def _canonical_mir_filename(record):
+    """Return the persisted admin-configured MIR filename for a conversion record."""
+    if not record:
+        return ""
+    mir_record = getattr(record, "mir_file", None)
+    if mir_record and mir_record.mir_filename:
+        return os.path.basename(mir_record.mir_filename)
+    return ""
+
+
+def _safe_mir_filename(value, fallback="output.mir"):
+    """Normalize a client-facing MIR download filename without trusting paths."""
+    filename = os.path.basename(str(value or "").strip())
+    if not filename:
+        filename = fallback
+    if not filename.lower().endswith(".mir"):
+        filename += ".mir"
+    return filename
+
+
 @csrf_exempt
 def api_convert(request):
     """
@@ -80,7 +100,6 @@ def api_convert(request):
     if not client and request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
-    # If multiple files provided, execute multi-file batch conversion into a SINGLE MIR file
     if files_list and len(files_list) > 0:
         batch_res = process_multiple_edi835_files(files_list, client=client)
         if not batch_res.get("success"):
@@ -98,12 +117,12 @@ def api_convert(request):
                     to_emails = [request.user.email] if request.user and request.user.email else None
                     send_client_email(client, subject, html, to_emails=to_emails)
                 except Exception as email_err:
-                    import logging
                     logging.getLogger(__name__).error(f"Failed to send batch failure email: {email_err}")
             return JsonResponse({'error': batch_res.get("error", "Multi-file conversion failed.")}, status=400)
 
         primary_rec = batch_res.get("db_record")
-        
+        canonical_mir_filename = _canonical_mir_filename(primary_rec)
+
         if client:
             try:
                 from admin_panel.email_service import send_client_email
@@ -112,10 +131,8 @@ def api_convert(request):
                 to_emails = [request.user.email] if request.user and request.user.email else None
                 send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
-        # Audit Logging
         user_name = "System"
         if request.user and request.user.is_authenticated:
             user_name = request.user.name or request.user.email
@@ -136,7 +153,8 @@ def api_convert(request):
             'services_count': batch_res['services_count'],
             'records_count': batch_res['records_count'],
             'file_id': str(primary_rec.id) if primary_rec else None,
-            'combined_filename': batch_res.get('combined_filename'),
+            'combined_filename': canonical_mir_filename or batch_res.get('combined_filename'),
+            'mir_filename': canonical_mir_filename or batch_res.get('combined_filename'),
             'sftp_uploaded': batch_res.get('sftp_uploaded', False),
             'errors': batch_res.get('errors', []),
         })
@@ -191,7 +209,6 @@ def api_convert(request):
                 to_emails = [request.user.email] if request.user and request.user.email else None
                 send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as email_err:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send conversion failure email: {email_err}")
         return JsonResponse({
             'error': f'Failed to convert EDI file: {res.get("error")}',
@@ -206,10 +223,8 @@ def api_convert(request):
             to_emails = [request.user.email] if request.user and request.user.email else None
             send_client_email(client, subject, html, to_emails=to_emails)
         except Exception as e:
-            import logging
             logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
-    # Audit Logging
     user_name = "System"
     if request.user and request.user.is_authenticated:
         user_name = request.user.name or request.user.email
@@ -222,6 +237,8 @@ def api_convert(request):
         client=client
     )
 
+    mir_filename = _canonical_mir_filename(res.get("db_record"))
+
     return JsonResponse({
         'success': True,
         'text': res['mir_text'],
@@ -231,6 +248,8 @@ def api_convert(request):
         'file_id': str(res['db_record'].id),
         'output_path': res['db_record'].output_path,
         'archive_path': res['db_record'].archive_path,
+        'mir_filename': mir_filename,
+        'filename': mir_filename,
     })
 
 
@@ -297,7 +316,6 @@ def api_validate(request):
             edi_text = request.POST.get('edi_text', '')
             original_filename = request.POST.get('original_filename', 'pasted_file.x12')
 
-    # Multi-file validation branch
     if files_list and len(files_list) > 0:
         total_claims = 0
         total_errors = []
@@ -340,7 +358,6 @@ def api_validate(request):
                 to_emails = [request.user.email] if request.user and request.user.email else None
                 send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
         return JsonResponse({
@@ -384,6 +401,7 @@ def api_validate(request):
                 archive_path=rel_archive_path,
                 input_path=rel_archive_path,
                 present_in_archive_folder=True,
+                client=client,
             )
         else:
             err_msg = json.dumps(report.get("errors", ["Validation errors found"]))
@@ -397,6 +415,7 @@ def api_validate(request):
                 archive_path=rel_archive_path,
                 input_path=rel_archive_path,
                 present_in_archive_folder=True,
+                client=client,
             )
 
         if client:
@@ -408,7 +427,6 @@ def api_validate(request):
                 to_emails = [request.user.email] if request.user and request.user.email else None
                 send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as e:
-                import logging
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
         return JsonResponse({
@@ -424,6 +442,7 @@ def api_validate(request):
             input_file_content=edi_text,
             status="ERROR",
             error_message=str(err),
+            client=client,
         )
         return JsonResponse({
             'error': f'Local validation error: {str(err)}',
@@ -433,56 +452,60 @@ def api_validate(request):
 
 @csrf_exempt
 def download_mir(request):
-    """
-    Endpoint to trigger `.mir` file download.
-    Reads file content from disk/DB if mir_content payload is empty.
-    """
+    """Download an MIR using the canonical filename persisted for the conversion record."""
     if request.method == 'POST':
         mir_content = request.POST.get('mir_content', '')
-        file_name = request.POST.get('file_name', 'output.mir')
+        requested_name = request.POST.get('file_name', '')
         file_id = request.POST.get('file_id')
     else:
         mir_content = request.GET.get('mir_content', '')
-        file_name = request.GET.get('file_name', 'output.mir')
+        requested_name = request.GET.get('file_name', '')
         file_id = request.GET.get('file_id')
 
-    if not file_name.endswith('.mir'):
-        file_name += '.mir'
+    rec = None
+    if file_id:
+        try:
+            rec = EDI835File.objects.select_related("mir_file").filter(id=file_id).first()
+        except (ValueError, TypeError):
+            rec = None
+
+    canonical_name = _canonical_mir_filename(rec)
+    file_name = _safe_mir_filename(canonical_name or requested_name or "output.mir")
 
     if not mir_content:
         try:
-            from edi835.models import EDI835File
             from edi835.services import get_edi835_storage_dirs
             from pathlib import Path
             from django.conf import settings
 
             dirs = get_edi835_storage_dirs()
-            rec = None
-            if file_id:
-                rec = EDI835File.objects.filter(id=file_id).first()
-            if not rec and file_name:
-                base_search = file_name.replace("MIR_", "").replace(".mir", "")
-                rec = EDI835File.objects.filter(original_filename__icontains=base_search).first()
 
-            if rec and rec.output_path:
+            if rec and getattr(rec, "mir_file", None):
+                mir_content = rec.mir_file.file_content or ""
+
+            if not mir_content and rec and rec.output_path:
                 abs_p = Path(settings.BASE_DIR) / rec.output_path
                 if os.path.exists(abs_p):
                     with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
                         mir_content = f.read()
+
+            # Backward-compatible physical lookup: the disk name can be tenant-prefixed,
+            # while the response/download name is always the persisted canonical name.
+            if not mir_content and rec:
+                physical_name = os.path.basename(rec.output_path or "")
+                if physical_name:
+                    out_p = dirs["output"] / physical_name
+                    if os.path.exists(out_p):
+                        with open(out_p, "r", encoding="utf-8", errors="ignore") as f:
+                            mir_content = f.read()
 
             if not mir_content and file_name:
                 out_p = dirs["output"] / file_name
                 if os.path.exists(out_p):
                     with open(out_p, "r", encoding="utf-8", errors="ignore") as f:
                         mir_content = f.read()
-
-            if not mir_content and file_name:
-                base_p = dirs["output"] / file_name.replace("MIR_", "")
-                if os.path.exists(base_p):
-                    with open(base_p, "r", encoding="utf-8", errors="ignore") as f:
-                        mir_content = f.read()
         except Exception as e:
-            pass
+            logger.warning("MIR download lookup failed: %s", e)
 
     if mir_content:
         lines = [l.strip() for l in mir_content.splitlines() if l and l.strip()]
@@ -490,6 +513,7 @@ def download_mir(request):
 
     response = HttpResponse(mir_content, content_type='text/plain')
     response['Content-Disposition'] = f'attachment; filename="{file_name}"'
+    response['X-OneSmarter-Filename'] = file_name
     return response
 
 
@@ -508,55 +532,73 @@ def api_download_archive_zip(request):
     client_id = request.GET.get("client")
     dirs = get_edi835_storage_dirs()
     archive_dir = dirs["archive"]
-    output_dir = dirs["output"]
 
     mem_zip = io.BytesIO()
     added_files = set()
 
     with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         if client_id:
-            records = EDI835File.objects.filter(client_id=client_id)
+            records = EDI835File.objects.filter(client_id=client_id).select_related("mir_file")
         else:
-            records = EDI835File.objects.all()
-            
+            records = EDI835File.objects.all().select_related("mir_file")
+
         for rec in records:
             orig_name = rec.original_filename or rec.stored_filename
             if not orig_name:
                 continue
-            base_name = os.path.splitext(orig_name)[0]
 
             # 1. Include 835 EDI file if requested
             if download_type in ["835", "both"]:
-                arch_path = archive_dir / orig_name
-                if os.path.exists(arch_path) and orig_name not in added_files:
-                    zf.write(arch_path, arcname=f"835_files/{orig_name}")
-                    added_files.add(orig_name)
+                arch_candidates = [
+                    os.path.basename(rec.archive_path or ""),
+                    rec.stored_filename,
+                    orig_name,
+                ]
+                for arch_name in arch_candidates:
+                    if not arch_name:
+                        continue
+                    arch_path = archive_dir / arch_name
+                    if os.path.exists(arch_path) and arch_name not in added_files:
+                        zf.write(arch_path, arcname=f"835_files/{arch_name}")
+                        added_files.add(arch_name)
+                        break
 
-            # 2. Include MIR file if requested
+            # 2. Include MIR file if requested. The archive name is the
+            # admin-configured canonical name stored in MIRFile.mir_filename,
+            # while physical disk storage may intentionally be tenant-prefixed.
             if download_type in ["mir", "both"]:
-                mir_filename = f"MIR_{base_name}.mir"
-                mir_path = output_dir / f"{base_name}.mir"
-                if not os.path.exists(mir_path):
-                    mir_path = output_dir / mir_filename
+                mir_record = getattr(rec, "mir_file", None)
+                canonical_name = _safe_mir_filename(
+                    mir_record.mir_filename if mir_record and mir_record.mir_filename else ""
+                )
+                physical_name = os.path.basename(rec.output_path or "")
+                mir_path = None
 
-                if os.path.exists(mir_path) and mir_filename not in added_files:
-                    zf.write(mir_path, arcname=f"mir_files/{mir_filename}")
-                    added_files.add(mir_filename)
+                if physical_name and (dirs["output"] / physical_name).exists():
+                    mir_path = dirs["output"] / physical_name
+                elif canonical_name and (dirs["output"] / canonical_name).exists():
+                    mir_path = dirs["output"] / canonical_name
+                elif mir_record and mir_record.file_content:
+                    # The structured MIR DB copy is authoritative even if the
+                    # physical output file was cleaned up.
+                    temp_path = None
+                    if canonical_name not in added_files:
+                        zf.writestr(f"mir_files/{canonical_name}", mir_record.file_content)
+                        added_files.add(canonical_name)
+                    continue
 
-        # Sweep output and archive directories for any physical files ONLY if no client_id is specified
+                if mir_path and canonical_name not in added_files:
+                    zf.write(mir_path, arcname=f"mir_files/{canonical_name}")
+                    added_files.add(canonical_name)
+
+        # Sweep physical directories only when exporting the entire system.
+        # These fallback files have no client record, so retain their physical names.
         if not client_id:
             if download_type in ["835", "both"] and os.path.exists(archive_dir):
                 for fname in os.listdir(archive_dir):
                     fpath = archive_dir / fname
                     if os.path.isfile(fpath) and fname not in added_files:
                         zf.write(fpath, arcname=f"835_files/{fname}")
-                        added_files.add(fname)
-    
-            if download_type in ["mir", "both"] and os.path.exists(output_dir):
-                for fname in os.listdir(output_dir):
-                    fpath = output_dir / fname
-                    if os.path.isfile(fpath) and fname.endswith(".mir") and fname not in added_files:
-                        zf.write(fpath, arcname=f"mir_files/{fname}")
                         added_files.add(fname)
 
     mem_zip.seek(0)
