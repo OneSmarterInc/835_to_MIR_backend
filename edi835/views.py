@@ -20,7 +20,7 @@ from django.contrib.auth.decorators import login_required
 from django.utils import timezone
 from django.db.models import Sum
 
-from .models import SFTPConfig, EDI835File
+from .models import SFTPConfig, EDI835File, MIRFile
 from .batch_jobs import active_job_for, read_job, write_job
 from .services import process_edi835_file_content, get_edi835_storage_dirs, sync_folder_observer, process_multiple_edi835_files
 
@@ -104,11 +104,23 @@ def api_process_tracked_file(request):
             import logging
             logging.getLogger(__name__).error(f"Failed to send email on process: {e}")
 
+    # MIRFile.mir_filename is the canonical client-facing filename resolved
+    # from the admin onboarding filename format. The local output filename may
+    # intentionally contain a client namespace for collision safety, so never
+    # expose that physical filename as the user-facing MIR name.
+    mir_record = getattr(db_rec, "mir_file", None)
+    mir_filename = (
+        mir_record.mir_filename
+        if mir_record and mir_record.mir_filename
+        else ""
+    )
+
     return JsonResponse({
         "success": True,
         "file_id": str(db_rec.id),
         "original_filename": db_rec.original_filename,
         "stored_filename": db_rec.stored_filename,
+        "mir_filename": mir_filename,
         "status": db_rec.status,
         "input_path": db_rec.input_path,
         "output_path": db_rec.output_path,
@@ -143,12 +155,12 @@ def tracked_files_list(request):
 
     client = getattr(request.user, "client", None)
     if request.user.is_staff:
-        records = EDI835File.objects.select_related("client")
+        records = EDI835File.objects.select_related("client", "mir_file")
         if request.GET.get("scope") == "global":
             records = records.filter(client__isnull=True)
         records = records.order_by('-uploaded_at')[:200]
     else:
-        records = EDI835File.objects.filter(client=client).order_by('-uploaded_at')[:200]
+        records = EDI835File.objects.filter(client=client).select_related("mir_file").order_by('-uploaded_at')[:200]
     data = []
     records_to_update = []
     for r in records:
@@ -170,12 +182,24 @@ def tracked_files_list(request):
             r.present_in_archive_folder = in_archive
             records_to_update.append(r)
 
+        mir_record = getattr(r, "mir_file", None)
+        mir_filename = (
+            mir_record.mir_filename
+            if mir_record and mir_record.mir_filename
+            else ""
+        )
+
         data.append({
             "id": str(r.id),
             "client_id": str(r.client_id) if r.client_id else None,
             "client_name": r.client.name if r.client else "Global System Default",
             "original_filename": r.original_filename,
             "stored_filename": r.stored_filename,
+
+            # Canonical admin-configured MIR filename. Do not derive this
+            # from output_path because output_path may be tenant-prefixed.
+            "mir_filename": mir_filename,
+
             "status": r.status,
             "claims_count": r.claims_count,
             "services_count": r.services_count,
@@ -266,14 +290,52 @@ def api_archive_files_list(request):
     archive_dir = dirs["archive"]
 
     files_info = []
+
+    # Build a lookup from the physical archived 835 filename to the canonical
+    # MIR filename persisted in MIRFile. The archive directory itself contains
+    # the original 835 inputs, not the generated MIR output.
+    archive_records = (
+        EDI835File.objects
+        .select_related("mir_file")
+        .all()
+    )
+    mir_by_archive_name = {}
+
+    for record in archive_records:
+        mir_record = getattr(record, "mir_file", None)
+        if not mir_record or not mir_record.mir_filename:
+            continue
+
+        if record.stored_filename:
+            mir_by_archive_name[record.stored_filename] = mir_record.mir_filename
+
+        if record.original_filename:
+            mir_by_archive_name[record.original_filename] = mir_record.mir_filename
+
+        if record.archive_path:
+            mir_by_archive_name[
+                os.path.basename(record.archive_path)
+            ] = mir_record.mir_filename
+
     if os.path.exists(archive_dir):
         for filename in sorted(os.listdir(archive_dir)):
             file_path = os.path.join(archive_dir, filename)
+
             if os.path.isfile(file_path):
                 stat = os.stat(file_path)
-                mtime = timezone.datetime.fromtimestamp(stat.st_mtime, tz=timezone.get_current_timezone())
+                mtime = timezone.datetime.fromtimestamp(
+                    stat.st_mtime,
+                    tz=timezone.get_current_timezone()
+                )
+
                 files_info.append({
+                    # Physical archive filename remains available for internal
+                    # file identification.
                     "filename": filename,
+
+                    # Canonical user-facing MIR filename.
+                    "mir_filename": mir_by_archive_name.get(filename, ""),
+
                     "size_bytes": stat.st_size,
                     "modified_at": mtime.strftime("%Y-%m-%d %H:%M:%S"),
                     "path": f"media/edi835/archive/{filename}",
@@ -1480,9 +1542,18 @@ def api_push_to_sftp(request):
     from .services import push_file_record_to_sftp
     success, message = push_file_record_to_sftp(file_id)
 
+    mir_filename = ""
+    try:
+        mir_record = getattr(file_record, "mir_file", None)
+        if mir_record:
+            mir_filename = mir_record.mir_filename or ""
+    except Exception:
+        mir_filename = ""
+
     return JsonResponse({
         "success": success,
         "message": message,
+        "mir_filename": mir_filename,
         "error": message if not success else None,
     }, status=200 if success else 400)
 
@@ -1745,7 +1816,7 @@ def _execute_batch_conversion(request):
     import logging
     from pathlib import Path
     from django.conf import settings
-    from .models import SFTPConfig, EDI835File
+    from .models import SFTPConfig, EDI835File, MIRFile
     from .services import (
         get_edi835_storage_dirs,
         process_edi835_file_content,
@@ -2038,10 +2109,23 @@ def _execute_batch_conversion(request):
     msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
     batch_failed = bool(combined_items and not processed_files)
+    # process_multiple_edi835_files persists the exact admin-configured
+    # delivery filename in MIRFile. Return that value to the frontend instead
+    # of exposing the locally namespaced output filename.
+    batch_mir_filename = ""
+    batch_db_record = batch_res.get("db_record") if combined_items and 'batch_res' in locals() else None
+    if batch_db_record:
+        batch_mir_record = getattr(batch_db_record, "mir_file", None)
+        if batch_mir_record:
+            batch_mir_filename = batch_mir_record.mir_filename or ""
+    if not batch_mir_filename and combined_items and 'batch_res' in locals():
+        batch_mir_filename = batch_res.get("combined_filename") or ""
+
     return JsonResponse({
         "success": not batch_failed,
         "processed_count": len(processed_files),
         "files": processed_files,
+        "mir_filename": batch_mir_filename,
         "errors": errors,
         "message": errors[-1] if batch_failed and errors else msg,
         "error": errors[-1] if batch_failed and errors else None,
