@@ -161,3 +161,11 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertEqual(repeated.status_code, 200)
         self.assertEqual(repeated.json()["revoked_users"], 0)
         self.assertEqual(repeated.json()["state"]["completed_steps"], 3)
+
+        clients_response = self.client.get("/admin-panel/api/clients/")
+        self.assertEqual(clients_response.status_code, 200)
+        listed_client = next(
+            item for item in clients_response.json()["clients"]
+            if item["id"] == str(self.client_record.id)
+        )
+        self.assertEqual(listed_client["stage"], "offboarded")

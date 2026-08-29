@@ -154,7 +154,11 @@ def api_admin_clients(request):
         go_live_completed = (completed_golive == total_golive_steps)
 
         dynamic_stage = c.stage
-        if onboarding_incomplete:
+        # Offboarding is terminal and must never be overwritten by calculated
+        # onboarding/go-live progress in the All Clients registry.
+        if c.stage == "offboarded":
+            dynamic_stage = "offboarded"
+        elif onboarding_incomplete:
             completed_steps = {ss.step.step_number for ss in c.completed_onboarding_steps}
             in_progress_step = 1
             for num in ONBOARDING_PROCESS_ORDER:
