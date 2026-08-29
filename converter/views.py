@@ -520,89 +520,58 @@ def download_mir(request):
 @csrf_exempt
 def api_download_archive_zip(request):
     """
-    API Endpoint: Creates and streams a ZIP file of archived files.
-    type parameter: 'mir' | '835' | 'both'
+    Create a ZIP from database-backed content.
+    type parameter: 'mir' | '835' | 'recon' | 'both' | 'all'
     """
     import io
     import zipfile
-    from edi835.models import EDI835File
-    from edi835.services import get_edi835_storage_dirs
+    from pathlib import PurePath
+    from edi835.models import EDI835File, MIRFile, RECONFile
 
     download_type = (request.GET.get("type") or "both").lower()
     client_id = request.GET.get("client")
-    dirs = get_edi835_storage_dirs()
-    archive_dir = dirs["archive"]
+    if download_type not in {"mir", "835", "recon", "both", "all"}:
+        return JsonResponse({"error": "Invalid archive type."}, status=400)
 
     mem_zip = io.BytesIO()
-    added_files = set()
+    added_paths = set()
+
+    def add_text(zf, folder, filename, content, record_id):
+        if content is None or content == "":
+            return
+        filename = PurePath(filename or "").name or str(record_id)
+        archive_path = f"{folder}/{filename}"
+        if archive_path in added_paths:
+            stem, extension = os.path.splitext(filename)
+            archive_path = f"{folder}/{stem}_{str(record_id)[:8]}{extension}"
+        zf.writestr(archive_path, content)
+        added_paths.add(archive_path)
 
     with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        if client_id:
-            records = EDI835File.objects.filter(client_id=client_id).select_related("mir_file")
-        else:
-            records = EDI835File.objects.all().select_related("mir_file")
+        client_filter = {"client_id": client_id} if client_id else {}
 
-        for rec in records:
-            orig_name = rec.original_filename or rec.stored_filename
-            if not orig_name:
-                continue
+        if download_type in {"835", "both", "all"}:
+            for record in EDI835File.objects.filter(**client_filter).only(
+                "id", "original_filename", "stored_filename", "input_file_content"
+            ).iterator():
+                add_text(zf, "835", record.original_filename or record.stored_filename,
+                         record.input_file_content, record.id)
 
-            # 1. Include 835 EDI file if requested
-            if download_type in ["835", "both"]:
-                arch_candidates = [
-                    os.path.basename(rec.archive_path or ""),
-                    rec.stored_filename,
-                    orig_name,
-                ]
-                for arch_name in arch_candidates:
-                    if not arch_name:
-                        continue
-                    arch_path = archive_dir / arch_name
-                    if os.path.exists(arch_path) and arch_name not in added_files:
-                        zf.write(arch_path, arcname=f"835_files/{arch_name}")
-                        added_files.add(arch_name)
-                        break
+        if download_type in {"mir", "both", "all"}:
+            for record in MIRFile.objects.filter(**client_filter).only(
+                "id", "mir_filename", "file_content"
+            ).iterator():
+                add_text(zf, "MIR", record.mir_filename, record.file_content, record.id)
 
-            # 2. Include MIR file if requested. The archive name is the
-            # admin-configured canonical name stored in MIRFile.mir_filename,
-            # while physical disk storage may intentionally be tenant-prefixed.
-            if download_type in ["mir", "both"]:
-                mir_record = getattr(rec, "mir_file", None)
-                canonical_name = _safe_mir_filename(
-                    mir_record.mir_filename if mir_record and mir_record.mir_filename else ""
-                )
-                physical_name = os.path.basename(rec.output_path or "")
-                mir_path = None
-
-                if physical_name and (dirs["output"] / physical_name).exists():
-                    mir_path = dirs["output"] / physical_name
-                elif canonical_name and (dirs["output"] / canonical_name).exists():
-                    mir_path = dirs["output"] / canonical_name
-                elif mir_record and mir_record.file_content:
-                    # The structured MIR DB copy is authoritative even if the
-                    # physical output file was cleaned up.
-                    temp_path = None
-                    if canonical_name not in added_files:
-                        zf.writestr(f"mir_files/{canonical_name}", mir_record.file_content)
-                        added_files.add(canonical_name)
-                    continue
-
-                if mir_path and canonical_name not in added_files:
-                    zf.write(mir_path, arcname=f"mir_files/{canonical_name}")
-                    added_files.add(canonical_name)
-
-        # Sweep physical directories only when exporting the entire system.
-        # These fallback files have no client record, so retain their physical names.
-        if not client_id:
-            if download_type in ["835", "both"] and os.path.exists(archive_dir):
-                for fname in os.listdir(archive_dir):
-                    fpath = archive_dir / fname
-                    if os.path.isfile(fpath) and fname not in added_files:
-                        zf.write(fpath, arcname=f"835_files/{fname}")
-                        added_files.add(fname)
+        if download_type in {"recon", "all"}:
+            for record in RECONFile.objects.filter(**client_filter).only(
+                "id", "original_filename", "stored_filename", "file_content"
+            ).iterator():
+                add_text(zf, "RECON", record.original_filename or record.stored_filename,
+                         record.file_content, record.id)
 
     mem_zip.seek(0)
-    if not added_files:
+    if not added_paths:
         return JsonResponse({"error": f"No {download_type} files found to archive."}, status=404)
 
     response = HttpResponse(mem_zip.getvalue(), content_type="application/zip")

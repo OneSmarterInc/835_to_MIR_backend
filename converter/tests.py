@@ -1,4 +1,6 @@
+import io
 import os
+import zipfile
 from django.test import TestCase, Client
 from converter.services.parser import parse_835_to_mir
 from converter.services.validator import PyX12Validator
@@ -97,3 +99,58 @@ class ViewsTestCase(TestCase):
         self.assertEqual(empty_response.status_code, 200)
         self.assertEqual(empty_response.json()["edi_text"], "")
         self.assertEqual(empty_response.json()["mir_text"], "")
+
+    def test_client_archive_zip_contains_database_835_mir_and_recon_folders(self):
+        from accounts.models import Client as AccountClient
+        from edi835.models import EDI835File, MIRFile, RECONFile
+
+        selected = AccountClient.objects.create(
+            name="Selected Client",
+            client_code="SELECTED",
+            email="selected@example.com",
+        )
+        other = AccountClient.objects.create(
+            name="Other Client",
+            client_code="OTHER",
+            email="other@example.com",
+        )
+        source = EDI835File.objects.create(
+            client=selected,
+            original_filename="selected.835",
+            stored_filename="selected.835",
+            input_file_content="SELECTED 835",
+        )
+        MIRFile.objects.create(
+            source_835=source,
+            client=selected,
+            mir_filename="selected.MIR",
+            file_content="SELECTED MIR",
+            file_hash="b" * 64,
+        )
+        RECONFile.objects.create(
+            client=selected,
+            original_filename="selected.P7A",
+            stored_filename="selected.P7A",
+            file_content="SELECTED RECON",
+            file_hash="c" * 64,
+        )
+        EDI835File.objects.create(
+            client=other,
+            original_filename="other.835",
+            stored_filename="other.835",
+            input_file_content="OTHER 835",
+        )
+
+        response = self.client.get(
+            f"/api/download-zip/?type=all&client={selected.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(response.content)) as archive:
+            self.assertEqual(
+                set(archive.namelist()),
+                {"835/selected.835", "MIR/selected.MIR", "RECON/selected.P7A"},
+            )
+            self.assertEqual(archive.read("835/selected.835"), b"SELECTED 835")
+            self.assertEqual(archive.read("MIR/selected.MIR"), b"SELECTED MIR")
+            self.assertEqual(archive.read("RECON/selected.P7A"), b"SELECTED RECON")
