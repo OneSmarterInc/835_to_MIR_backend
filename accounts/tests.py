@@ -145,6 +145,22 @@ class OffboardedClientAccessTestCase(TestCase):
         self.assertEqual(blocked.status_code, 403)
         self.assertEqual(blocked.json()["code"], "CLIENT_OFFBOARDED")
 
+    def test_inactive_non_offboarded_client_retains_portal_access(self):
+        self.client_record.stage = "onboarding"
+        self.client_record.save(update_fields=["stage"])
+        self.user.is_active = True
+        self.user.save(update_fields=["is_active"])
+        self.http.force_login(self.user)
+
+        state = self.http.get("/accounts/api/user/")
+        self.assertEqual(state.status_code, 200)
+        self.assertTrue(state.json()["authenticated"])
+        self.assertFalse(state.json()["offboarded"])
+
+        contacts = self.http.get("/accounts/api/contacts/")
+        self.assertEqual(contacts.status_code, 200)
+        self.assertTrue(contacts.json()["success"])
+
 
 class AdministratorLoginRouteTestCase(TestCase):
     def setUp(self):
