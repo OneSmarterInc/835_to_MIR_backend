@@ -14,6 +14,7 @@ from django.contrib.auth.decorators import login_required
 from django.shortcuts import render, redirect
 
 from .forms import SignupForm, LoginForm
+from .client_deletion import ClientDeletionError, permanently_delete_client
 
 
 OFFBOARDED_ERROR = "Access denied. Contact your administrator."
@@ -725,12 +726,20 @@ def api_admin_delete_client(request, client_id):
         return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
 
     try:
-        client_obj = Client.objects.get(id=client_id)
-        name = client_obj.name
-        client_obj.delete()
-        return JsonResponse({"success": True, "message": f"Client '{name}' deleted successfully."})
-    except (Client.DoesNotExist, ValueError):
-        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+        data = json.loads(request.body or b"{}")
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "Invalid JSON payload."}, status=400)
+
+    try:
+        name = permanently_delete_client(
+            actor=request.user,
+            client_id=client_id,
+            confirmation_name=data.get("confirmation_name", ""),
+            password=data.get("password", ""),
+        )
+    except ClientDeletionError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=exc.status)
+    return JsonResponse({"success": True, "message": f"Client '{name}' deleted successfully."})
 
 
 @csrf_exempt

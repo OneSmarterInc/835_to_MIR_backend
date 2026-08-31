@@ -4,6 +4,79 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from accounts.models import Client, ClientContact, User
+from admin_panel.models import AuditLog
+from edi835.models import EDI835File
+
+
+class PermanentClientDeletionTestCase(TestCase):
+    def setUp(self):
+        self.superadmin = User.objects.create_superuser(
+            email="delete-superadmin@example.com",
+            name="Delete Superadmin",
+            mobile="5550199000",
+            password="correct-password",
+        )
+        self.staff = User.objects.create_user(
+            email="delete-staff@example.com",
+            name="Delete Staff",
+            mobile="5550199001",
+            password="staff-password",
+            is_staff=True,
+        )
+        self.client_record = Client.objects.create(
+            name="Delete Me Health",
+            client_code="DELETE-ME",
+            email="delete-me@example.com",
+            owner="System Admin",
+        )
+        self.client_user = User.objects.create_user(
+            email="tenant-user@example.com",
+            name="Tenant User",
+            mobile="5550199002",
+            password="tenant-password",
+            client=self.client_record,
+        )
+        EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="delete-me.835",
+            stored_filename="delete-me.835",
+        )
+        AuditLog.objects.create(
+            module="CLIENTS", action="CREATED", details="Tenant data",
+            performed_by="Tester", client=self.client_record,
+        )
+        self.url = f"/admin-panel/api/clients/{self.client_record.id}/delete/"
+
+    def post_delete(self, user, name=None, password="correct-password"):
+        self.client.force_login(user)
+        return self.client.post(
+            self.url,
+            data=json.dumps({
+                "confirmation_name": name if name is not None else self.client_record.name,
+                "password": password,
+            }),
+            content_type="application/json",
+        )
+
+    def test_staff_admin_cannot_delete_client(self):
+        response = self.post_delete(self.staff, password="staff-password")
+        self.assertEqual(response.status_code, 403)
+        self.assertTrue(Client.objects.filter(id=self.client_record.id).exists())
+
+    def test_wrong_name_or_password_does_not_delete_anything(self):
+        self.assertEqual(self.post_delete(self.superadmin, name="delete me health").status_code, 400)
+        self.assertEqual(self.post_delete(self.superadmin, password="wrong-password").status_code, 403)
+        self.assertTrue(Client.objects.filter(id=self.client_record.id).exists())
+        self.assertTrue(User.objects.filter(id=self.client_user.id).exists())
+
+    def test_verified_superadmin_deletes_all_tenant_records(self):
+        response = self.post_delete(self.superadmin)
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(Client.objects.filter(id=self.client_record.id).exists())
+        self.assertFalse(User.objects.filter(id=self.client_user.id).exists())
+        self.assertFalse(EDI835File.objects.filter(client_id=self.client_record.id).exists())
+        self.assertFalse(AuditLog.objects.filter(client_id=self.client_record.id).exists())
+        self.assertTrue(User.objects.filter(id=self.superadmin.id).exists())
 
 
 class OnboardingSequenceTestCase(TestCase):

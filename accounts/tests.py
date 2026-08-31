@@ -57,9 +57,32 @@ class AdminClientApiTestCase(TestCase):
         self.assertEqual(self.c1.name, "Alpha Health Updated")
 
     def test_delete_client(self):
-        res = self.client_api.post(f"/accounts/api/admin/clients/{self.c1.id}/delete/")
+        res = self.client_api.post(
+            f"/accounts/api/admin/clients/{self.c1.id}/delete/",
+            data=json.dumps({
+                "confirmation_name": self.c1.name,
+                "password": "adminpassword",
+            }),
+            content_type="application/json",
+        )
         self.assertEqual(res.status_code, 200)
         self.assertFalse(Client.objects.filter(id=self.c1.id).exists())
+
+    def test_delete_client_requires_exact_name_and_password(self):
+        url = f"/accounts/api/admin/clients/{self.c1.id}/delete/"
+        wrong_name = self.client_api.post(
+            url,
+            data=json.dumps({"confirmation_name": "Wrong", "password": "adminpassword"}),
+            content_type="application/json",
+        )
+        self.assertEqual(wrong_name.status_code, 400)
+        wrong_password = self.client_api.post(
+            url,
+            data=json.dumps({"confirmation_name": self.c1.name, "password": "wrong"}),
+            content_type="application/json",
+        )
+        self.assertEqual(wrong_password.status_code, 403)
+        self.assertTrue(Client.objects.filter(id=self.c1.id).exists())
 
 
 class OffboardedClientAccessTestCase(TestCase):
