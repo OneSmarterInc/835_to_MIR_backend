@@ -8,6 +8,10 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from edi835.batch_jobs import queued_jobs, recover_interrupted_jobs, write_job
+from edi835.sftp_automation import (
+    enqueue_due_automations, finish_automation_run, mark_automation_running,
+    recover_interrupted_automation_runs,
+)
 
 
 class Command(BaseCommand):
@@ -21,6 +25,9 @@ class Command(BaseCommand):
         recovered = recover_interrupted_jobs()
         if recovered:
             self.stderr.write(f"Marked {recovered} interrupted batch job(s) as failed.")
+        recovered_automations = recover_interrupted_automation_runs()
+        if recovered_automations:
+            self.stderr.write(f"Marked {recovered_automations} interrupted automation run(s) as failed.")
         stopping = False
 
         def stop(*_args):
@@ -30,6 +37,12 @@ class Command(BaseCommand):
         signal.signal(signal.SIGTERM, stop)
         signal.signal(signal.SIGINT, stop)
         while not stopping:
+            try:
+                enqueue_due_automations()
+            except Exception as exc:
+                self.stderr.write(f"Could not enqueue due SFTP automations: {exc}")
+                time.sleep(max(0.25, options["poll_seconds"]))
+                continue
             pending = queued_jobs()
             if pending:
                 self._process(pending[0])
@@ -44,6 +57,7 @@ class Command(BaseCommand):
         job["state"] = "RUNNING"
         job["worker_started_at"] = timezone.now().isoformat()
         write_job(job)
+        mark_automation_running(job)
         try:
             user = get_user_model().objects.get(id=job["owner_user_id"])
             body = json.dumps({"client_id": job.get("client_id") or ""}).encode("utf-8")
@@ -61,3 +75,4 @@ class Command(BaseCommand):
             job["result"] = {"success": False, "error": f"Batch worker failed: {exc}"}
         job["finished_at"] = timezone.now().isoformat()
         write_job(job)
+        finish_automation_run(job)

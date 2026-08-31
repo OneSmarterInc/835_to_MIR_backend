@@ -20,6 +20,7 @@ from .recon_views import (
     reconciliation_claim_detail, reconciliation_results, sftp_837_files, sftp_837_ingest,
 )
 from project835.drf_compat import authenticated_api
+from .sftp_automation_views import sftp_automation
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list)
@@ -43,6 +44,7 @@ reconciliation_results = authenticated_api(reconciliation_results)
 reconciliation_claim_detail = authenticated_api(reconciliation_claim_detail)
 sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
+sftp_automation = authenticated_api(sftp_automation)
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
@@ -59,6 +61,7 @@ urlpatterns = [
     path("api/sftp/delete/", api_delete_sftp_config, name="api_delete_sftp_config"),
     path("api/sftp/browse/", api_browse_sftp, name="api_browse_sftp"),
     path("api/start-batch-conversion/", api_start_batch_conversion, name="edi835_api_start_batch_conversion"),
+    path("api/admin/sftp-automation/", sftp_automation, name="sftp_automation"),
     path("api/recon/files/", recon_files, name="recon_files"),
     path("api/recon/files/<uuid:file_id>/download/", recon_download, name="recon_download"),
     path("api/recon/upload/", recon_upload, name="recon_upload"),

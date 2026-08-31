@@ -1838,7 +1838,7 @@ def _execute_batch_conversion(request):
 
     # System administrators may run the batch for the client selected in the
     # admin conversion screen. Client users remain locked to their own tenant.
-    if request.method == "POST" and request.user.is_staff and not client:
+    if request.method == "POST" and request.user.is_staff:
         try:
             request_body = json.loads(request.body.decode("utf-8")) if request.body else {}
         except (TypeError, ValueError, UnicodeDecodeError):
@@ -2347,11 +2347,11 @@ def api_start_batch_conversion(request):
         request_body = json.loads(request.body.decode("utf-8")) if request.body else {}
     except (TypeError, ValueError, UnicodeDecodeError):
         request_body = {}
+    requested_client_id = request_body.get("client_id") or request_body.get("client")
     client_id = str(
-        getattr(request.user, "client_id", None)
-        or request_body.get("client_id")
-        or request_body.get("client")
-        or ""
+        (requested_client_id or getattr(request.user, "client_id", None))
+        if request.user.is_staff
+        else (getattr(request.user, "client_id", None) or "")
     )
     scope_key = client_id or "GLOBAL"
     existing = active_job_for(scope_key)

@@ -124,6 +124,74 @@ class SFTPConfig(models.Model):
                 pass
 
 
+class SFTPAutomationSchedule(models.Model):
+    """One daily invocation of the client-side SFTP Test pipeline per client."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.OneToOneField(
+        "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_schedule"
+    )
+    run_time = models.TimeField()
+    timezone = models.CharField(max_length=64, default="America/New_York")
+    enabled = models.BooleanField(default=True)
+    next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    created_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_sftp_automation_schedules",
+    )
+    updated_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="updated_sftp_automation_schedules",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "sftp_automation_schedule"
+        ordering = ["client__name"]
+
+
+class SFTPAutomationRun(models.Model):
+    STATUS_CHOICES = [
+        ("QUEUED", "Queued"),
+        ("RUNNING", "Running"),
+        ("SUCCESS", "Success"),
+        ("FAILED", "Failed"),
+        ("SKIPPED", "Skipped"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    schedule = models.ForeignKey(
+        SFTPAutomationSchedule, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="runs",
+    )
+    client = models.ForeignKey(
+        "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_runs"
+    )
+    scheduled_for = models.DateTimeField(db_index=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="QUEUED", db_index=True)
+    job_id = models.UUIDField(null=True, blank=True, unique=True)
+    input_835_files = models.JSONField(default=list, blank=True)
+    input_recon_files = models.JSONField(default=list, blank=True)
+    mir_output_files = models.JSONField(default=list, blank=True)
+    processed_835_count = models.PositiveIntegerField(default=0)
+    recon_file_count = models.PositiveIntegerField(default=0)
+    error_message = models.TextField(blank=True, default="")
+    result = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "sftp_automation_run"
+        ordering = ["-scheduled_for"]
+        indexes = [
+            models.Index(fields=["client", "-scheduled_for"], name="sftp_auto_client_sched_idx"),
+            models.Index(fields=["status", "-scheduled_for"], name="sftp_auto_status_sched_idx"),
+        ]
+
+
 class MIRFile(models.Model):
     """An exact database copy of one generated MIR output file."""
 
