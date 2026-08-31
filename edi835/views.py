@@ -2002,15 +2002,22 @@ def _execute_batch_conversion(request):
                 try: ssh.close()
                 except Exception: pass
 
-    # 2. Process 837 / RECON reference files from the configured SFTP 837 folder.
-    # These follow the same ingestion pipeline as an 837 reference selected in the UI,
-    # but are tagged with import_mode=SFTP so they appear correctly in Results.
-    if config.inbound_837_folder:
+    # 2. Process RECON/837 reference files from every configured reference folder.
+    # Use the configured inbound_837_folder and also tolerate comma/newline-separated
+    # folder paths so the SFTP settings can point to dedicated RECON and 837 folders.
+    reference_folders = []
+    raw_reference_folders = str(config.inbound_837_folder or "").replace("\n", ",")
+    for folder in raw_reference_folders.split(","):
+        folder = folder.strip()
+        if folder and folder not in reference_folders:
+            reference_folders.append(folder)
+
+    if reference_folders:
         ssh_837 = sftp_837 = None
         try:
-            from .recon_service import ingest_837_reference
+            from .recon_service import ingest_837_reference, process_recon_file
             from .models import RECONFile
-            from .recon_service import process_recon_file
+            import hashlib
 
             ssh_837 = paramiko.SSHClient()
             if inbound_credentials["trust_unknown_key"]:
@@ -2019,15 +2026,22 @@ def _execute_batch_conversion(request):
                 ssh_837.load_system_host_keys()
 
             pkey_837 = None
-            if inbound_credentials[\"auth_method\"] in [\"SSH Key\", \"SSH Key + Password\"]:
-                pkey_837, _ = parse_ssh_private_key(
-                    inbound_credentials[\"ssh_key\"], password=inbound_credentials[\"password\"]
+            if inbound_credentials["auth_method"] in ["SSH Key", "SSH Key + Password"]:
+                pkey_837, key_error = parse_ssh_private_key(
+                    inbound_credentials["ssh_key"], password=inbound_credentials["password"]
                 )
-            pass_837 = inbound_credentials[\"password\"] if inbound_credentials[\"auth_method\"] in [\"Password\", \"SSH Key + Password\"] else None
+                if not pkey_837:
+                    raise ValueError(key_error or "Unable to load SSH private key.")
+
+            pass_837 = (
+                inbound_credentials["password"]
+                if inbound_credentials["auth_method"] in ["Password", "SSH Key + Password"]
+                else None
+            )
             ssh_837.connect(
-                hostname=inbound_credentials[\"host\"],
-                port=inbound_credentials[\"port\"],
-                username=inbound_credentials[\"username\"],
+                hostname=inbound_credentials["host"],
+                port=inbound_credentials["port"],
+                username=inbound_credentials["username"],
                 password=pass_837,
                 pkey=pkey_837,
                 timeout=10,
@@ -2037,71 +2051,133 @@ def _execute_batch_conversion(request):
                 allow_agent=False,
             )
             sftp_837 = ssh_837.open_sftp()
-            try:
-                remote_837_dir = sftp_837.normalize(config.inbound_837_folder)
-            except Exception:
-                remote_837_dir = config.inbound_837_folder
 
-            allowed_837_extensions = [\".837\", \".x12\", \".edi\", \".txt\", \".dat\", \".p7a\"]
-            for attr in sftp_837.listdir_attr(remote_837_dir):
-                if stat.S_ISDIR(attr.st_mode) or attr.filename.startswith(\".\"):
-                    continue
-                fname_837 = attr.filename
-                if os.path.splitext(fname_837)[1].lower() not in allowed_837_extensions:
-                    continue
-                remote_837_path = posixpath.join(remote_837_dir, fname_837)
+            # Accept the same practical file types used by manual RECON uploads
+            # plus common X12/837 extensions.
+            allowed_reference_extensions = {
+                ".837", ".x12", ".edi", ".txt", ".dat", ".p7a",
+                ".csv", ".tsv", ".json", ".xml",
+            }
+
+            for configured_folder in reference_folders:
                 try:
-                    with sftp_837.open(remote_837_path, \"rb\") as remote_file:
-                        raw_837 = remote_file.read()
-                    if not raw_837:
-                        raise ValueError(\"The file is empty.\")
-                    text_837 = raw_837.decode(\"utf-8-sig\", errors=\"replace\")
+                    remote_reference_dir = sftp_837.normalize(configured_folder)
+                except Exception:
+                    remote_reference_dir = configured_folder
 
-                    # True X12 837 files use the existing 837 parser. Other RECON-style
-                    # reference files use the normal manual RECON processing pipeline.
-                    if \"CLM\" in text_837.upper():
-                        result_837 = ingest_837_reference(
-                            client=client,
-                            actor=request.user,
-                            filename=fname_837,
-                            remote_path=remote_837_path,
-                            raw=raw_837,
-                            text=text_837,
+                try:
+                    folder_entries = sftp_837.listdir_attr(remote_reference_dir)
+                except Exception as folder_error:
+                    errors.append(
+                        f"SFTP RECON/837 folder {configured_folder}: {str(folder_error)}"
+                    )
+                    continue
+
+                for attr in folder_entries:
+                    if stat.S_ISDIR(attr.st_mode) or attr.filename.startswith("."):
+                        continue
+
+                    filename = attr.filename
+                    extension = os.path.splitext(filename)[1].lower()
+                    if extension and extension not in allowed_reference_extensions:
+                        continue
+
+                    remote_path = posixpath.join(remote_reference_dir, filename)
+                    try:
+                        with sftp_837.open(remote_path, "rb") as remote_file:
+                            raw_reference = remote_file.read()
+
+                        if not raw_reference:
+                            raise ValueError("The file is empty.")
+
+                        text_reference = raw_reference.decode(
+                            "utf-8-sig", errors="replace"
                         )
-                    else:
-                        import hashlib
-                        from django.db import IntegrityError
-                        file_hash_837 = hashlib.sha256(raw_837).hexdigest()
-                        existing_837 = RECONFile.objects.filter(client=client, file_hash=file_hash_837).first()
-                        if existing_837:
-                            result_837 = {\"already_exists\": True, \"file\": {\"id\": str(existing_837.id), \"original_filename\": existing_837.original_filename, \"status\": existing_837.status, \"source\": \"SFTP\", \"remote_path\": remote_837_path}}
-                        else:
-                            recon_837 = RECONFile.objects.create(
-                                client=client,
-                                uploaded_by=request.user if getattr(request.user, \"is_authenticated\", False) else None,
-                                original_filename=fname_837[:255],
-                                stored_filename=f\"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{fname_837}\"[:255],
-                                file_content=text_837,
-                                file_hash=file_hash_837,
-                                file_size=len(raw_837),
-                                import_mode=\"SFTP\",
-                            )
-                            process_recon_file(recon_837, request.user)
-                            recon_837.refresh_from_db()
-                            result_837 = {\"already_exists\": False, \"file\": {\"id\": str(recon_837.id), \"original_filename\": recon_837.original_filename, \"status\": recon_837.status, \"source\": \"SFTP\", \"remote_path\": remote_837_path, \"claim_count\": recon_837.claim_count}}
 
-                    sftp_837_results.append({\"filename\": fname_837, **result_837})
-                except Exception as recon_err:
-                    errors.append(f\"{fname_837} (837/RECON): {str(recon_err)}\")
-        except Exception as sftp_837_err:
-            errors.append(f\"SFTP 837/RECON Access Error: {str(sftp_837_err)}\")
+                        # X12 837 files go through the existing 837 ingestion path.
+                        # Everything else uses the exact same RECON processing service
+                        # as a manually uploaded RECON file.
+                        if "CLM" in text_reference.upper():
+                            result_reference = ingest_837_reference(
+                                client=client,
+                                actor=request.user,
+                                filename=filename,
+                                remote_path=remote_path,
+                                raw=raw_reference,
+                                text=text_reference,
+                            )
+                        else:
+                            file_hash = hashlib.sha256(raw_reference).hexdigest()
+                            existing = RECONFile.objects.filter(
+                                client=client, file_hash=file_hash
+                            ).first()
+
+                            if existing:
+                                result_reference = {
+                                    "already_exists": True,
+                                    "file": {
+                                        "id": str(existing.id),
+                                        "original_filename": existing.original_filename,
+                                        "status": existing.status,
+                                        "import_mode": existing.import_mode or "SFTP",
+                                        "remote_path": remote_path,
+                                    },
+                                }
+                            else:
+                                recon_file = RECONFile.objects.create(
+                                    client=client,
+                                    uploaded_by=(
+                                        request.user
+                                        if getattr(request.user, "is_authenticated", False)
+                                        else None
+                                    ),
+                                    original_filename=filename[:255],
+                                    stored_filename=(
+                                        f"{getattr(client, 'client_code', 'GLOBAL')}_"
+                                        f"{uuid.uuid4()}_{filename}"
+                                    )[:255],
+                                    file_content=text_reference,
+                                    file_hash=file_hash,
+                                    file_size=len(raw_reference),
+                                    import_mode="SFTP",
+                                )
+                                # Same processing operation as manual RECON processing.
+                                process_recon_file(recon_file, request.user)
+                                recon_file.refresh_from_db()
+                                result_reference = {
+                                    "already_exists": False,
+                                    "file": {
+                                        "id": str(recon_file.id),
+                                        "original_filename": recon_file.original_filename,
+                                        "status": recon_file.status,
+                                        "import_mode": "SFTP",
+                                        "remote_path": remote_path,
+                                        "claim_count": recon_file.claim_count,
+                                    },
+                                }
+
+                        sftp_837_results.append({
+                            "filename": filename,
+                            "folder": remote_reference_dir,
+                            **result_reference,
+                        })
+                    except Exception as recon_error:
+                        errors.append(
+                            f"{filename} (RECON/837 from {configured_folder}): {str(recon_error)}"
+                        )
+        except Exception as sftp_reference_error:
+            errors.append(f"SFTP RECON/837 Access Error: {str(sftp_reference_error)}")
         finally:
             if sftp_837:
-                try: sftp_837.close()
-                except Exception: pass
+                try:
+                    sftp_837.close()
+                except Exception:
+                    pass
             if ssh_837:
-                try: ssh_837.close()
-                except Exception: pass
+                try:
+                    ssh_837.close()
+                except Exception:
+                    pass
 
     # 3. Also process any local files dropped into media/edi835/input/ directory
     local_batch_items = []
