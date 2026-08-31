@@ -2034,9 +2034,7 @@ def _execute_batch_conversion(request):
     if reference_folders:
         ssh_837 = sftp_837 = None
         try:
-            from .recon_service import ingest_837_reference, process_recon_file
-            from .models import RECONFile
-            import hashlib
+            from .recon_service import ingest_837_reference, ingest_sftp_recon_file
 
             ssh_837 = paramiko.SSHClient()
             if inbound_credentials["trust_unknown_key"]:
@@ -2113,11 +2111,10 @@ def _execute_batch_conversion(request):
                             "utf-8-sig", errors="replace"
                         )
 
-                        # The configured folder decides the pipeline.
-                        # Do not try to classify RECON files by looking for "CLM":
-                        # valid RECON/reference files can contain that token and were
-                        # previously skipped even though they came from the dedicated
-                        # inbound_recon_folder.
+                        # The configured folder decides the pipeline. Valid
+                        # RECON/reference files can contain the token "CLM",
+                        # so content sniffing must not override the dedicated
+                        # inbound 837 or RECON folder selected by the client.
                         if reference_type == "837":
                             result_reference = ingest_837_reference(
                                 client=client,
@@ -2128,54 +2125,33 @@ def _execute_batch_conversion(request):
                                 text=text_reference,
                             )
                         else:
-                            file_hash = hashlib.sha256(raw_reference).hexdigest()
-                            existing = RECONFile.objects.filter(
-                                client=client, file_hash=file_hash
-                            ).first()
+                            result_reference = ingest_sftp_recon_file(
+                                client=client,
+                                actor=request.user,
+                                filename=filename,
+                                remote_path=remote_path,
+                                raw=raw_reference,
+                                text=text_reference,
+                            )
 
-                            if existing:
-                                result_reference = {
-                                    "already_exists": True,
-                                    "file": {
-                                        "id": str(existing.id),
-                                        "original_filename": existing.original_filename,
-                                        "status": existing.status,
-                                        "import_mode": existing.import_mode or "SFTP",
-                                        "remote_path": remote_path,
-                                    },
-                                }
+                            # Remove only after the same processing used by a
+                            # manual upload has completed successfully. Failed
+                            # files remain remotely available for a safe retry.
+                            if result_reference["file"]["status"] == "PROCESSED":
+                                try:
+                                    sftp_837.remove(remote_path)
+                                    result_reference["remote_deleted"] = True
+                                except Exception as delete_error:
+                                    result_reference["remote_deleted"] = False
+                                    errors.append(
+                                        f"{filename}: processed successfully, but could not be removed "
+                                        f"from the RECON SFTP folder: {delete_error}"
+                                    )
                             else:
-                                recon_file = RECONFile.objects.create(
-                                    client=client,
-                                    uploaded_by=(
-                                        request.user
-                                        if getattr(request.user, "is_authenticated", False)
-                                        else None
-                                    ),
-                                    original_filename=filename[:255],
-                                    stored_filename=(
-                                        f"{getattr(client, 'client_code', 'GLOBAL')}_"
-                                        f"{uuid.uuid4()}_{filename}"
-                                    )[:255],
-                                    file_content=text_reference,
-                                    file_hash=file_hash,
-                                    file_size=len(raw_reference),
-                                    import_mode="SFTP",
+                                result_reference["remote_deleted"] = False
+                                errors.append(
+                                    f"{filename}: RECON processing failed; the remote file was retained for retry."
                                 )
-                                # Same processing operation as manual RECON processing.
-                                process_recon_file(recon_file, request.user)
-                                recon_file.refresh_from_db()
-                                result_reference = {
-                                    "already_exists": False,
-                                    "file": {
-                                        "id": str(recon_file.id),
-                                        "original_filename": recon_file.original_filename,
-                                        "status": recon_file.status,
-                                        "import_mode": "SFTP",
-                                        "remote_path": remote_path,
-                                        "claim_count": recon_file.claim_count,
-                                    },
-                                }
 
                         target_results = sftp_837_results if reference_type == "837" else sftp_recon_results
                         target_results.append({

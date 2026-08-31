@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import re
+import uuid
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
 
@@ -314,6 +316,61 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
             error_message=str(exc),
         )
         raise
+
+
+def ingest_sftp_recon_file(*, client, actor, filename, remote_path, raw, text):
+    """Persist and process a RECON fetched from the configured SFTP folder.
+
+    This intentionally uses ``process_recon_file`` so SFTP and manual uploads
+    produce the same normalized claims, services, totals, and Result-page data.
+    """
+    file_hash = hashlib.sha256(raw).hexdigest()
+    recon = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
+    already_exists = recon is not None
+
+    if recon is None:
+        recon = RECONFile.objects.create(
+            client=client,
+            uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
+            original_filename=filename[:255],
+            stored_filename=(
+                f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{filename}"
+            )[:255],
+            file_content=text,
+            file_hash=file_hash,
+            file_size=len(raw),
+            import_mode="SFTP",
+        )
+    else:
+        # The latest ingestion source is SFTP. This also ensures a file first
+        # uploaded manually is shown as SFTP after the Test pipeline fetches it.
+        updates = []
+        if recon.import_mode != "SFTP":
+            recon.import_mode = "SFTP"
+            updates.append("import_mode")
+        if not recon.file_content:
+            recon.file_content = text
+            updates.append("file_content")
+        if updates:
+            updates.append("updated_at")
+            recon.save(update_fields=updates)
+
+    if recon.status != "PROCESSED":
+        process_recon_file(recon, actor)
+        recon.refresh_from_db()
+
+    return {
+        "already_exists": already_exists,
+        "file": {
+            "id": str(recon.id),
+            "original_filename": recon.original_filename,
+            "status": recon.status,
+            "import_mode": "SFTP",
+            "remote_path": remote_path,
+            "claim_count": recon.claim_count,
+            "processing_error": recon.processing_error,
+        },
+    }
 
 
 def _x12_elements(text):

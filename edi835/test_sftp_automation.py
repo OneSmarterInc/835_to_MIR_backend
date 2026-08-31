@@ -1,11 +1,16 @@
 from datetime import datetime, time, timezone as dt_timezone
+import io
+import json
+import stat
+from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import RequestFactory, TestCase
 
 from accounts.models import Client, User
-from .models import SFTPAutomationRun, SFTPAutomationSchedule
+from .models import RECONFile, SFTPAutomationRun, SFTPAutomationSchedule
 from .sftp_automation import enqueue_due_automations, finish_automation_run, next_daily_run
+from .views import _execute_batch_conversion
 
 
 class SFTPAutomationTestCase(TestCase):
@@ -110,3 +115,66 @@ class SFTPAutomationTestCase(TestCase):
         )
         self.assertEqual(response.status_code, 202)
         self.assertEqual(write_job.call_args.args[0]["client_id"], str(self.client_record.id))
+
+    @patch("paramiko.SSHClient")
+    @patch("edi835.views.get_sftp_runtime_credentials")
+    @patch("edi835.services.resolve_sftp_config")
+    def test_test_pipeline_processes_and_removes_recon_as_sftp(
+        self, resolve_config, runtime_credentials, ssh_client
+    ):
+        content = (
+            "Claim ID,Member ID,Line Number,Procedure Code,Charge Amount,Paid Amount\n"
+            "CLAIM-100,MEMBER-1,1,99213,100.00,80.00\n"
+        ).encode("utf-8")
+
+        class FakeSFTP:
+            def __init__(self):
+                self.removed = []
+
+            def normalize(self, path):
+                return path
+
+            def listdir_attr(self, _path):
+                return [SimpleNamespace(filename="daily-recon.csv", st_mode=stat.S_IFREG)]
+
+            def open(self, _path, _mode):
+                return io.BytesIO(content)
+
+            def remove(self, path):
+                self.removed.append(path)
+
+            def close(self):
+                pass
+
+        fake_sftp = FakeSFTP()
+        ssh_client.return_value.open_sftp.return_value = fake_sftp
+        config = SimpleNamespace(
+            status="CONNECTED", host="sftp.example.com", port=22,
+            username="client", inbound_835_folder="/in/835",
+            inbound_837_folder="/in/837", inbound_recon_folder="/in/recon",
+        )
+        resolve_config.return_value = config
+        runtime_credentials.return_value = {
+            "host": config.host, "port": 22, "username": config.username,
+            "password": "secret", "ssh_key": "", "auth_method": "Password",
+            "trust_unknown_key": True, "remote_folder": config.inbound_835_folder,
+        }
+        request = RequestFactory().post(
+            "/edi835/api/start-batch-conversion/",
+            data=json.dumps({"automation_type": "RECON", "client_id": str(self.client_record.id)}),
+            content_type="application/json",
+        )
+        request.user = self.admin
+
+        response = _execute_batch_conversion(request)
+        payload = json.loads(response.content)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["success"])
+        self.assertEqual(len(payload["sftp_recon_files"]), 1)
+        self.assertTrue(payload["sftp_recon_files"][0]["remote_deleted"])
+        self.assertEqual(fake_sftp.removed, ["/in/recon/daily-recon.csv"])
+        recon = RECONFile.objects.get(client=self.client_record)
+        self.assertEqual(recon.import_mode, "SFTP")
+        self.assertEqual(recon.status, "PROCESSED")
+        self.assertEqual(recon.claim_count, 1)
