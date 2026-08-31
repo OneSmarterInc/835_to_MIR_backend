@@ -1,6 +1,7 @@
 import os
 import dj_database_url
 from pathlib import Path
+from django.core.exceptions import ImproperlyConfigured
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -132,16 +133,32 @@ ASGI_APPLICATION = "project835.asgi.application"
 
 # ============================================================
 # DATABASE CONFIGURATION
-# Default: SQLite3 for zero-setup execution.
+# PostgreSQL is mandatory. Never silently create or use a SQLite database when
+# DATABASE_URL is missing, because that can make a healthy service appear to
+# have lost all production data.
 # ============================================================
 
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+if not DATABASE_URL:
+    raise ImproperlyConfigured(
+        "DATABASE_URL is required. This application must use PostgreSQL."
+    )
+
 DATABASES = {
-    "default": dj_database_url.config(
-        default=f"sqlite:///{BASE_DIR / 'db.sqlite3'}",
+    "default": dj_database_url.parse(
+        DATABASE_URL,
         conn_max_age=600,
         conn_health_checks=True,
     )
 }
+
+if DATABASES["default"]["ENGINE"] not in {
+    "django.db.backends.postgresql",
+    "django.contrib.gis.db.backends.postgis",
+}:
+    raise ImproperlyConfigured(
+        "DATABASE_URL must use PostgreSQL; SQLite and other engines are disabled."
+    )
 
 
 # ============================================================
