@@ -248,6 +248,16 @@ class RECONFile(models.Model):
     service_count = models.PositiveIntegerField(default=0)
     total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     total_paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    IMPORT_MODE_CHOICES = [
+        ("MANUAL", "Manual"),
+        ("SFTP", "SFTP"),
+    ]
+    import_mode = models.CharField(
+        max_length=20,
+        choices=IMPORT_MODE_CHOICES,
+        default="MANUAL",
+        help_text="How this RECON file entered the system: MANUAL or SFTP.",
+    )
     status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="UPLOADED")
     processing_error = models.TextField(blank=True, default="")
     uploaded_at = models.DateTimeField(auto_now_add=True)
