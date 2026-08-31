@@ -155,7 +155,10 @@ DATABASES = {
 if DATABASES["default"]["ENGINE"] not in {
     "django.db.backends.postgresql",
     "django.contrib.gis.db.backends.postgis",
-}:
+} and not (
+    os.getenv("ALLOW_SQLITE_FOR_TESTS") == "1"
+    and DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+):
     raise ImproperlyConfigured(
         "DATABASE_URL must use PostgreSQL; SQLite and other engines are disabled."
     )

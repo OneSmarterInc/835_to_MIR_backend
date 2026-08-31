@@ -576,8 +576,8 @@ def api_admin_clients(request):
             "status": c.status,
             "notes": c.notes or "",
             "users_count": c.users_count,
-            "created_at": c.created_at.strftime("%Y-%m-%d %H:%M:%S") if c.created_at else "",
-            "updated_at": c.updated_at.strftime("%Y-%m-%d %H:%M:%S") if c.updated_at else "",
+            "created_at": c.created_at.isoformat() if c.created_at else "",
+            "updated_at": c.updated_at.isoformat() if c.updated_at else "",
         })
 
     return JsonResponse({
@@ -650,7 +650,7 @@ def api_admin_create_client(request):
             "address": client_obj.address or "",
             "status": client_obj.status,
             "notes": client_obj.notes or "",
-            "created_at": client_obj.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "created_at": client_obj.created_at.isoformat(),
         }
     })
 
@@ -710,7 +710,7 @@ def api_admin_update_client(request, client_id):
             "address": client_obj.address or "",
             "status": client_obj.status,
             "notes": client_obj.notes or "",
-            "updated_at": client_obj.updated_at.strftime("%Y-%m-%d %H:%M:%S"),
+            "updated_at": client_obj.updated_at.isoformat(),
         }
     })
 
@@ -790,7 +790,7 @@ def api_admin_users(request):
             "client_id": str(u.client.id) if u.client else None,
             "client_name": u.client.name if u.client else None,
             "client_code": u.client.client_code if u.client else None,
-            "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+            "created_at": u.created_at.isoformat() if u.created_at else "",
         })
 
     return JsonResponse({
@@ -995,7 +995,7 @@ def api_admin_users(request):
             "client_id": str(u.client.id) if u.client else None,
             "client_name": client_name,
             "client_code": u.client.client_code if u.client else None,
-            "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+            "created_at": u.created_at.isoformat() if u.created_at else "",
             "clients": [client_name],
             "person": u.name,
             "mfa": "Enabled" if u.totp_enabled else "Disabled",

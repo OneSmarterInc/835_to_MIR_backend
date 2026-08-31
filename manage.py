@@ -8,6 +8,8 @@ def main():
     """Run administrative tasks."""
     os.environ['DJANGO_SETTINGS_MODULE'] = 'project835.settings'
     try:
+        from project835.database_guard import require_postgresql
+        require_postgresql()
         from django.core.management import execute_from_command_line
     except ImportError as exc:
         raise ImportError(

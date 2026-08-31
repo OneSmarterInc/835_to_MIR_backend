@@ -567,7 +567,7 @@ def api_admin_users(request):
             "client_id": str(u.client.id) if u.client else None,
             "client_name": "OneSmarter" if u.is_staff else (u.client.name if u.client else None),
             "client_code": u.client.client_code if u.client else None,
-            "created_at": u.created_at.strftime("%Y-%m-%d %H:%M:%S") if u.created_at else "",
+            "created_at": u.created_at.isoformat() if u.created_at else "",
         })
 
     return JsonResponse({
