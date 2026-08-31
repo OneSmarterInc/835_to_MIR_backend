@@ -27,10 +27,7 @@ def _is_client_access_revoked(user):
     client = getattr(user, "client", None)
     return bool(
         client
-        and (
-            getattr(client, "stage", "") == "offboarded"
-            or getattr(client, "status", "") == "INACTIVE"
-        )
+        and getattr(client, "stage", "") == "offboarded"
     )
 
 
