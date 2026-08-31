@@ -2113,11 +2113,11 @@ def _execute_batch_conversion(request):
                             "utf-8-sig", errors="replace"
                         )
 
-                        is_837 = "CLM" in text_reference.upper()
-                        if reference_type == "837" and not is_837:
-                            continue
-                        if reference_type == "RECON" and is_837:
-                            continue
+                        # The configured folder decides the pipeline.
+                        # Do not try to classify RECON files by looking for "CLM":
+                        # valid RECON/reference files can contain that token and were
+                        # previously skipped even though they came from the dedicated
+                        # inbound_recon_folder.
                         if reference_type == "837":
                             result_reference = ingest_837_reference(
                                 client=client,
