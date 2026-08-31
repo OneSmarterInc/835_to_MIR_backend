@@ -18,10 +18,7 @@ def client_access_revoked(user):
         not getattr(user, "is_active", False)
         or (
             client
-            and (
-                getattr(client, "stage", "") == "offboarded"
-                or getattr(client, "status", "") == "INACTIVE"
-            )
+            and getattr(client, "stage", "") == "offboarded"
         )
     )
 
