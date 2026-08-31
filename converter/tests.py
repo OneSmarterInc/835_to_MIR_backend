@@ -66,6 +66,7 @@ class ViewsTestCase(TestCase):
         data = response.json()
         self.assertEqual(data['status'], 'healthy')
         self.assertEqual(data['database'], 'connected')
+        self.assertEqual(data['database_schema'], 'current')
 
     def test_file_viewer_uses_only_database_content_and_has_empty_fallbacks(self):
         from edi835.models import EDI835File, MIRFile

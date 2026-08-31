@@ -1,5 +1,6 @@
 import logging
 from django.db import connections
+from django.db.migrations.executor import MigrationExecutor
 from django.db.utils import OperationalError
 from django.http import JsonResponse
 
@@ -17,6 +18,17 @@ def health_check(request):
         with connection.cursor() as cursor:
             cursor.execute("SELECT 1;")
         status["database"] = "connected"
+        executor = MigrationExecutor(connection)
+        pending = executor.migration_plan(executor.loader.graph.leaf_nodes())
+        if pending:
+            status["status"] = "unhealthy"
+            status["database_schema"] = "pending_migrations"
+            status["pending_migrations"] = [
+                f"{migration.app_label}.{migration.name}"
+                for migration, _backwards in pending
+            ]
+        else:
+            status["database_schema"] = "current"
     except OperationalError as e:
         logger.error(f"Database health check failed: {e}")
         status["status"] = "unhealthy"
