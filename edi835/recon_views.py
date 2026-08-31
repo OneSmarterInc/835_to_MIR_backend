@@ -309,3 +309,133 @@ def reconciliation_claim_detail(request, claim_id):
                   "date": latest_recon_claim.recon_file.processed_at.isoformat() if latest_recon_claim and latest_recon_claim.recon_file.processed_at else None,
                   "claim": latest_recon_claim.segment_data if latest_recon_claim else None, "services": recon_services},
     })
+
+
+# SFTP 837 reference ingestion -------------------------------------------------
+
+def _resolve_sftp_config_for_request(request, config_id=None):
+    from .models import SFTPConfig
+    from .services import resolve_sftp_config
+    config = SFTPConfig.objects.filter(id=config_id).first() if config_id else None
+    actor_client_id = getattr(request.user, "client_id", None)
+    if config:
+        if actor_client_id and str(config.client_id) != str(actor_client_id):
+            return None, "You are not authorized to use this SFTP configuration."
+        if not actor_client_id and not request.user.is_staff and config.client_id is None:
+            return None, "Administrator access is required."
+    else:
+        config = resolve_sftp_config(client=getattr(request.user, "client", None), outbound=False)
+    if not config:
+        return None, "No inbound SFTP configuration is available."
+    return config, None
+
+
+def _open_sftp(config):
+    import paramiko
+    from project835.field_crypto import get_sftp_runtime_credentials
+    from .views import parse_ssh_private_key
+    creds = get_sftp_runtime_credentials(config, outbound=False)
+    ssh = paramiko.SSHClient()
+    if creds.get("trust_unknown_key", True):
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        ssh.load_system_host_keys()
+    pkey = None
+    password = creds.get("password") or ""
+    if creds.get("auth_method") in ["SSH Key", "SSH Key + Password"]:
+        pkey, err = parse_ssh_private_key(creds.get("ssh_key") or "", password=password)
+        if not pkey:
+            raise ValueError("SSH private key error: " + str(err))
+    ssh.connect(hostname=creds["host"], port=creds["port"], username=creds["username"],
+        password=password if creds.get("auth_method") in ["Password", "SSH Key + Password"] else None,
+        pkey=pkey, timeout=10, banner_timeout=10, auth_timeout=10,
+        look_for_keys=False, allow_agent=False)
+    return ssh, ssh.open_sftp()
+
+
+def _safe_837_path(config, filename):
+    import posixpath
+    name = posixpath.basename(str(filename or ""))
+    if not name or name in {".", ".."} or name != str(filename):
+        raise ValueError("Invalid 837 filename.")
+    base = config.inbound_837_folder or ""
+    if not base:
+        raise ValueError("The inbound 837 folder is not configured.")
+    return posixpath.normpath(posixpath.join(base, name))
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def sftp_837_files(request):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
+    try:
+        body = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except Exception:
+        body = {}
+    config, error = _resolve_sftp_config_for_request(request, body.get("config_id"))
+    if error:
+        return JsonResponse({"success": False, "error": error}, status=400)
+    if not config.inbound_837_folder:
+        return JsonResponse({"success": False, "error": "The inbound 837 folder is not configured."}, status=400)
+    import stat, posixpath
+    from datetime import datetime
+    ssh = sftp = None
+    try:
+        ssh, sftp = _open_sftp(config)
+        base = sftp.normalize(config.inbound_837_folder)
+        files = []
+        for attr in sftp.listdir_attr(base):
+            if stat.S_ISDIR(attr.st_mode):
+                continue
+            name = attr.filename
+            ext = posixpath.splitext(name)[1].lower()
+            files.append({"name": name, "path": posixpath.join(base, name), "size": attr.st_size,
+                "mtime": datetime.fromtimestamp(attr.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if attr.st_mtime else None,
+                "extension": ext, "is_837_candidate": ext in {".837", ".x12", ".edi", ".txt"}})
+        files.sort(key=lambda x: x["name"].lower())
+        return JsonResponse({"success": True, "folder": base, "files": files})
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": f"Failed to list 837 files: {exc}"}, status=400)
+    finally:
+        if sftp: sftp.close()
+        if ssh: ssh.close()
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def sftp_837_ingest(request):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
+    try:
+        body = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except Exception:
+        body = {}
+    filename = str(body.get("filename") or "")
+    config, error = _resolve_sftp_config_for_request(request, body.get("config_id"))
+    if error:
+        return JsonResponse({"success": False, "error": error}, status=400)
+    try:
+        remote_path = _safe_837_path(config, filename)
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    ssh = sftp = None
+    try:
+        ssh, sftp = _open_sftp(config)
+        with sftp.open(remote_path, "rb") as remote:
+            raw = remote.read()
+        if not raw:
+            return JsonResponse({"success": False, "error": "The selected 837 file is empty."}, status=400)
+        text = raw.decode("utf-8-sig", errors="replace")
+        from .recon_service import ingest_837_reference
+        client = config.client or getattr(request.user, "client", None)
+        result = ingest_837_reference(client=client, actor=request.user, filename=filename,
+            remote_path=remote_path, raw=raw, text=text)
+        return JsonResponse({"success": True, **result}, status=200)
+    except Exception as exc:
+        return JsonResponse({"success": False, "error": f"837 ingestion failed: {exc}"}, status=400)
+    finally:
+        if sftp: sftp.close()
+        if ssh: ssh.close()
