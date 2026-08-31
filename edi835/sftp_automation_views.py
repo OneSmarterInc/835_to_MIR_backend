@@ -22,6 +22,7 @@ def _schedule_data(schedule):
         "client_id": str(schedule.client_id),
         "client_name": schedule.client.name,
         "client_code": schedule.client.client_code,
+        "automation_type": schedule.automation_type,
         "run_time": schedule.run_time.strftime("%H:%M"),
         "timezone": schedule.timezone,
         "enabled": schedule.enabled,
@@ -37,6 +38,7 @@ def _run_data(run):
         "client_id": str(run.client_id),
         "client_name": run.client.name,
         "client_code": run.client.client_code,
+        "automation_type": run.automation_type,
         "scheduled_for": run.scheduled_for.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
@@ -88,9 +90,11 @@ def sftp_automation(request):
         return JsonResponse({"success": False, "error": "Invalid JSON request."}, status=400)
 
     client_id = str(payload.get("client_id") or "").strip()
+    automation_type = str(payload.get("automation_type") or "").strip().upper()
     raw_time = str(payload.get("run_time") or "").strip()
-    if not client_id or not raw_time:
-        return JsonResponse({"success": False, "error": "Client and run time are required."}, status=400)
+    valid_types = {value for value, _label in SFTPAutomationSchedule.AUTOMATION_TYPES}
+    if not client_id or not raw_time or automation_type not in valid_types:
+        return JsonResponse({"success": False, "error": "Client, automation type, and run time are required."}, status=400)
     try:
         hour, minute = [int(value) for value in raw_time.split(":", 1)]
         run_time = time(hour=hour, minute=minute)
@@ -109,7 +113,7 @@ def sftp_automation(request):
         return JsonResponse({"success": False, "error": "Automation cannot be enabled for an inactive or offboarded client."}, status=409)
 
     schedule, created = SFTPAutomationSchedule.objects.get_or_create(
-        client=client,
+        client=client, automation_type=automation_type,
         defaults={"created_by": request.user, "run_time": run_time},
     )
     schedule.run_time = run_time

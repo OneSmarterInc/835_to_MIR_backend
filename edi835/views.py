@@ -433,6 +433,10 @@ def api_get_sftp_config(request):
                 config.inbound_835_folder
             ),
 
+            "inbound_recon_folder": (
+                config.inbound_recon_folder
+            ),
+
             # Outbound non-sensitive settings
             "outbound_host": (
                 config.outbound_host
@@ -524,6 +528,7 @@ def api_get_sftp_config(request):
                 "trust_unknown_key": effective.trust_unknown_key,
                 "inbound_837_folder": effective.inbound_837_folder,
                 "inbound_835_folder": effective.inbound_835_folder,
+                "inbound_recon_folder": effective.inbound_recon_folder,
                 "outbound_host": effective.outbound_host,
                 "outbound_port": effective.outbound_port,
                 "outbound_username": effective.outbound_username,
@@ -572,6 +577,7 @@ def api_get_sftp_config(request):
             "trust_unknown_key": inbound.get("trust_unknown_key") if inbound else True,
             "inbound_837_folder": inbound.get("inbound_837_folder") if inbound else "",
             "inbound_835_folder": inbound.get("inbound_835_folder") if inbound else "",
+            "inbound_recon_folder": inbound.get("inbound_recon_folder") if inbound else "",
             "outbound_host": outbound.get("outbound_host") if outbound else "",
             "outbound_port": outbound.get("outbound_port") if outbound else 22,
             "outbound_username": outbound.get("outbound_username") if outbound else "",
@@ -1096,6 +1102,7 @@ def api_save_sftp_config(request):
 
         inbound_837_folder = ""
         inbound_835_folder = ""
+        inbound_recon_folder = ""
         outbound_mir_folder = body.get("outbound_mir_folder", "").strip()
         test_folder = outbound_mir_folder or "/"
     else:
@@ -1111,6 +1118,7 @@ def api_save_sftp_config(request):
 
         inbound_837_folder = body.get("inbound_837_folder", "").strip()
         inbound_835_folder = body.get("inbound_835_folder", "").strip()
+        inbound_recon_folder = body.get("inbound_recon_folder", "").strip()
         outbound_mir_folder = body.get("outbound_mir_folder", "").strip() if use_same_server else ""
         test_folder = inbound_835_folder or "/"
 
@@ -1232,6 +1240,7 @@ def api_save_sftp_config(request):
         config.trust_unknown_key = trust_unknown_key
         config.inbound_837_folder = inbound_837_folder
         config.inbound_835_folder = inbound_835_folder
+        config.inbound_recon_folder = inbound_recon_folder
         if use_same_server:
             config.outbound_mir_folder = outbound_mir_folder
         try:
@@ -1286,6 +1295,7 @@ def api_save_sftp_config(request):
     discovered_folders = [
         {"path": inbound_835_folder, "type": "835 Inbound Source"},
         {"path": inbound_837_folder, "type": "837 Reference (Optional)"},
+        {"path": inbound_recon_folder, "type": "RECON Inbound Source (Optional)"},
         {"path": outbound_mir_folder, "type": "MIR Outbound Destination"},
     ]
 
@@ -1351,6 +1361,7 @@ def api_verify_sftp_paths(request):
 
     path_837 = (body.get("inbound_837_folder") or "").strip()
     path_835 = (body.get("inbound_835_folder") or "").strip()
+    path_recon = (body.get("inbound_recon_folder") or "").strip()
     path_mir = (body.get("outbound_mir_folder") or "").strip()
 
     if not host or not username:
@@ -1424,6 +1435,7 @@ def api_verify_sftp_paths(request):
 
         path_statuses.append(ensure_remote_dir(path_835, "835 Inbound Source (.835 / .x12)"))
         path_statuses.append(ensure_remote_dir(path_837, "837 Reference Folder (.837 / .x12)"))
+        path_statuses.append(ensure_remote_dir(path_recon, "RECON Inbound Folder"))
         path_statuses.append(ensure_remote_dir(path_mir, "MIR Outbound Destination (.mir)"))
 
         return JsonResponse({
@@ -1832,6 +1844,17 @@ def _execute_batch_conversion(request):
     archive_dir = dirs["archive"]
     output_dir = dirs["output"]
 
+    try:
+        request_body = json.loads(request.body.decode("utf-8")) if request.method == "POST" and request.body else {}
+    except (TypeError, ValueError, UnicodeDecodeError):
+        request_body = {}
+    automation_type = str(request_body.get("automation_type") or "ALL").strip().upper()
+    if automation_type not in {"ALL", "835", "837", "RECON"}:
+        return JsonResponse({"success": False, "error": "Invalid SFTP automation type."}, status=400)
+    run_835 = automation_type in {"ALL", "835"}
+    run_837 = automation_type in {"ALL", "837"}
+    run_recon = automation_type in {"ALL", "RECON"}
+
     client = None
     if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
@@ -1839,10 +1862,6 @@ def _execute_batch_conversion(request):
     # System administrators may run the batch for the client selected in the
     # admin conversion screen. Client users remain locked to their own tenant.
     if request.method == "POST" and request.user.is_staff:
-        try:
-            request_body = json.loads(request.body.decode("utf-8")) if request.body else {}
-        except (TypeError, ValueError, UnicodeDecodeError):
-            request_body = {}
         selected_client_id = request_body.get("client_id") or request_body.get("client")
         if selected_client_id:
             from accounts.models import Client
@@ -1861,6 +1880,7 @@ def _execute_batch_conversion(request):
     errors = []
     sftp_batch_items = []
     sftp_837_results = []
+    sftp_recon_results = []
     inbound_credentials = None
 
     if not config:
@@ -1878,19 +1898,23 @@ def _execute_batch_conversion(request):
             ),
         }, status=400)
 
-    if not config.host or not config.username or not config.inbound_835_folder:
+    if not config.host or not config.username or (run_835 and not config.inbound_835_folder):
         return JsonResponse({
             "success": False,
             "error": "The inbound SFTP host, username, or 835 folder is incomplete.",
         }, status=400)
+    if automation_type == "837" and not config.inbound_837_folder:
+        return JsonResponse({"success": False, "error": "The inbound 837 folder is not configured."}, status=400)
+    if automation_type == "RECON" and not config.inbound_recon_folder:
+        return JsonResponse({"success": False, "error": "The inbound RECON folder is not configured."}, status=400)
 
-    outbound_config = resolve_sftp_config(client=client, outbound=True)
-    if not outbound_config:
+    outbound_config = resolve_sftp_config(client=client, outbound=True) if run_835 else None
+    if run_835 and not outbound_config:
         return JsonResponse({
             "success": False,
             "error": "No outbound SFTP configuration is available for this client.",
         }, status=400)
-    if outbound_config.status != "CONNECTED":
+    if run_835 and outbound_config.status != "CONNECTED":
         return JsonResponse({
             "success": False,
             "error": (
@@ -1899,11 +1923,14 @@ def _execute_batch_conversion(request):
             ),
         }, status=400)
 
+    outbound_credentials = {}
     try:
-        outbound_credentials = get_sftp_runtime_credentials(outbound_config, outbound=True)
+        if run_835:
+            outbound_credentials = get_sftp_runtime_credentials(outbound_config, outbound=True)
+        inbound_credentials = get_sftp_runtime_credentials(config, outbound=False)
     except SFTPCredentialError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=400)
-    if not (
+    if run_835 and not (
         outbound_credentials.get("host")
         and outbound_credentials.get("username")
         and outbound_credentials.get("remote_folder")
@@ -1914,12 +1941,7 @@ def _execute_batch_conversion(request):
         }, status=400)
 
     # 1. Process remote SFTP Inbound folder if configuration is present
-    if config and config.host and config.username and config.inbound_835_folder:
-        try:
-            inbound_credentials = get_sftp_runtime_credentials(config, outbound=False)
-        except SFTPCredentialError as exc:
-            return JsonResponse({"success": False, "error": str(exc)}, status=500)
-
+    if run_835 and config and config.host and config.username and config.inbound_835_folder:
         inbound_host = inbound_credentials["host"]
         inbound_port = inbound_credentials["port"]
         inbound_user = inbound_credentials["username"]
@@ -2002,15 +2024,12 @@ def _execute_batch_conversion(request):
                 try: ssh.close()
                 except Exception: pass
 
-    # 2. Process RECON/837 reference files from every configured reference folder.
-    # Use the configured inbound_837_folder and also tolerate comma/newline-separated
-    # folder paths so the SFTP settings can point to dedicated RECON and 837 folders.
+    # 2. Process 837 and RECON from their dedicated configured folders.
     reference_folders = []
-    raw_reference_folders = str(config.inbound_837_folder or "").replace("\n", ",")
-    for folder in raw_reference_folders.split(","):
-        folder = folder.strip()
-        if folder and folder not in reference_folders:
-            reference_folders.append(folder)
+    if run_837 and config.inbound_837_folder:
+        reference_folders.append(("837", config.inbound_837_folder.strip()))
+    if run_recon and config.inbound_recon_folder:
+        reference_folders.append(("RECON", config.inbound_recon_folder.strip()))
 
     if reference_folders:
         ssh_837 = sftp_837 = None
@@ -2059,7 +2078,7 @@ def _execute_batch_conversion(request):
                 ".csv", ".tsv", ".json", ".xml",
             }
 
-            for configured_folder in reference_folders:
+            for reference_type, configured_folder in reference_folders:
                 try:
                     remote_reference_dir = sftp_837.normalize(configured_folder)
                 except Exception:
@@ -2094,10 +2113,12 @@ def _execute_batch_conversion(request):
                             "utf-8-sig", errors="replace"
                         )
 
-                        # X12 837 files go through the existing 837 ingestion path.
-                        # Everything else uses the exact same RECON processing service
-                        # as a manually uploaded RECON file.
-                        if "CLM" in text_reference.upper():
+                        is_837 = "CLM" in text_reference.upper()
+                        if reference_type == "837" and not is_837:
+                            continue
+                        if reference_type == "RECON" and is_837:
+                            continue
+                        if reference_type == "837":
                             result_reference = ingest_837_reference(
                                 client=client,
                                 actor=request.user,
@@ -2156,7 +2177,8 @@ def _execute_batch_conversion(request):
                                     },
                                 }
 
-                        sftp_837_results.append({
+                        target_results = sftp_837_results if reference_type == "837" else sftp_recon_results
+                        target_results.append({
                             "filename": filename,
                             "folder": remote_reference_dir,
                             **result_reference,
@@ -2182,7 +2204,7 @@ def _execute_batch_conversion(request):
     # 3. Also process any local files dropped into media/edi835/input/ directory
     local_batch_items = []
     ALLOWED_EXTENSIONS = [".x12", ".835", ".edi", ".txt", ".dat"]
-    if os.path.exists(input_dir):
+    if run_835 and os.path.exists(input_dir):
         sftp_filenames = {item["filename"] for item in sftp_batch_items}
         for fname in os.listdir(input_dir):
             if fname in sftp_filenames:
@@ -2283,7 +2305,12 @@ def _execute_batch_conversion(request):
         else:
             errors.append(f"Batch conversion error: {batch_res.get('error')}")
 
-    msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
+    if automation_type == "837":
+        msg = f"Imported {len(sftp_837_results)} 837 reference file(s)."
+    elif automation_type == "RECON":
+        msg = f"Imported {len(sftp_recon_results)} RECON file(s)."
+    else:
+        msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
     batch_failed = bool(combined_items and not processed_files)
     # process_multiple_edi835_files persists the exact admin-configured
@@ -2303,6 +2330,8 @@ def _execute_batch_conversion(request):
         "processed_count": len(processed_files),
         "files": processed_files,
         "sftp_837_files": sftp_837_results,
+        "sftp_recon_files": sftp_recon_results,
+        "automation_type": automation_type,
         "mir_filename": batch_mir_filename,
         "errors": errors,
         "message": errors[-1] if batch_failed and errors else msg,
@@ -2348,12 +2377,15 @@ def api_start_batch_conversion(request):
     except (TypeError, ValueError, UnicodeDecodeError):
         request_body = {}
     requested_client_id = request_body.get("client_id") or request_body.get("client")
+    automation_type = str(request_body.get("automation_type") or "ALL").strip().upper()
+    if automation_type not in {"ALL", "835", "837", "RECON"}:
+        return JsonResponse({"success": False, "error": "Invalid SFTP automation type."}, status=400)
     client_id = str(
         (requested_client_id or getattr(request.user, "client_id", None))
         if request.user.is_staff
         else (getattr(request.user, "client_id", None) or "")
     )
-    scope_key = client_id or "GLOBAL"
+    scope_key = f"{client_id or 'GLOBAL'}:{automation_type}"
     existing = active_job_for(scope_key)
     if existing:
         return JsonResponse({
@@ -2367,6 +2399,7 @@ def api_start_batch_conversion(request):
         "id": job_id,
         "owner_user_id": str(request.user.id),
         "client_id": client_id,
+        "automation_type": automation_type,
         "scope_key": scope_key,
         "state": "QUEUED",
         "started_at": timezone.now().isoformat(),

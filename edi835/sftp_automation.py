@@ -52,7 +52,11 @@ def enqueue_due_automations(now=None):
     with transaction.atomic():
         due = list(
             SFTPAutomationSchedule.objects.select_for_update(skip_locked=True)
-            .select_related("client", "created_by", "updated_by")
+            # Keep nullable user relations out of this locking query. PostgreSQL
+            # rejects FOR UPDATE against the nullable side of an outer join.
+            # Accessing created_by/updated_by below performs a normal lookup
+            # while the schedule row itself remains locked by this transaction.
+            .select_related("client")
             .filter(enabled=True, next_run_at__lte=now)
             .order_by("next_run_at")[:50]
         )
@@ -67,6 +71,7 @@ def enqueue_due_automations(now=None):
             run = SFTPAutomationRun.objects.create(
                 schedule=schedule,
                 client=schedule.client,
+                automation_type=schedule.automation_type,
                 scheduled_for=scheduled_for,
             )
             if schedule.client.status != "ACTIVE" or schedule.client.stage == "offboarded":
@@ -76,7 +81,7 @@ def enqueue_due_automations(now=None):
                 run.save(update_fields=["status", "finished_at", "error_message"])
                 continue
             actor = _automation_actor(schedule)
-            active = active_job_for(str(schedule.client_id))
+            active = active_job_for(f"{schedule.client_id}:{schedule.automation_type}")
             if active:
                 run.status = "SKIPPED"
                 run.finished_at = now
@@ -97,7 +102,8 @@ def enqueue_due_automations(now=None):
                 "id": job_id,
                 "owner_user_id": str(actor.id),
                 "client_id": str(schedule.client_id),
-                "scope_key": str(schedule.client_id),
+                "automation_type": schedule.automation_type,
+                "scope_key": f"{schedule.client_id}:{schedule.automation_type}",
                 "automation_run_id": str(run.id),
                 "state": "QUEUED",
                 "started_at": now.isoformat(),
@@ -123,10 +129,10 @@ def finish_automation_run(job):
     if not run_id:
         return
     result = job.get("result") or {}
-    recon_items = result.get("sftp_837_files") or []
+    reference_items = (result.get("sftp_837_files") or []) + (result.get("sftp_recon_files") or [])
     recon_names = [
         item.get("filename") or (item.get("file") or {}).get("original_filename")
-        for item in recon_items if isinstance(item, dict)
+        for item in reference_items if isinstance(item, dict)
     ]
     mir_name = result.get("mir_filename") or ""
     success = job.get("state") == "COMPLETED" and result.get("success") is True

@@ -73,6 +73,7 @@ class SFTPConfig(models.Model):
     trust_unknown_key = models.BooleanField(default=True)
     inbound_837_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/in/837/")
     inbound_835_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/in/835/")
+    inbound_recon_folder = models.CharField(max_length=500, blank=True, null=True, default="")
 
     outbound_host = models.CharField(max_length=255, blank=True, null=True)
     outbound_port = models.IntegerField(default=22)
@@ -125,12 +126,19 @@ class SFTPConfig(models.Model):
 
 
 class SFTPAutomationSchedule(models.Model):
-    """One daily invocation of the client-side SFTP Test pipeline per client."""
+    """One independently scheduled SFTP ingestion operation per client/type."""
+
+    AUTOMATION_TYPES = [
+        ("835", "835 to MIR"),
+        ("837", "837 Reference"),
+        ("RECON", "RECON"),
+    ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    client = models.OneToOneField(
-        "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_schedule"
+    client = models.ForeignKey(
+        "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_schedules"
     )
+    automation_type = models.CharField(max_length=10, choices=AUTOMATION_TYPES, default="835")
     run_time = models.TimeField()
     timezone = models.CharField(max_length=64, default="America/New_York")
     enabled = models.BooleanField(default=True)
@@ -149,7 +157,12 @@ class SFTPAutomationSchedule(models.Model):
 
     class Meta:
         db_table = "sftp_automation_schedule"
-        ordering = ["client__name"]
+        ordering = ["client__name", "automation_type"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["client", "automation_type"], name="uniq_sftp_auto_client_type"
+            )
+        ]
 
 
 class SFTPAutomationRun(models.Model):
@@ -169,6 +182,7 @@ class SFTPAutomationRun(models.Model):
     client = models.ForeignKey(
         "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_runs"
     )
+    automation_type = models.CharField(max_length=10, choices=SFTPAutomationSchedule.AUTOMATION_TYPES, default="835")
     scheduled_for = models.DateTimeField(db_index=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)

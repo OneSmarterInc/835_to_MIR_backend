@@ -99,6 +99,7 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         # Check DB record
         db_rec = res["db_record"]
         self.assertEqual(db_rec.status, "ARCHIVED")
+        self.assertEqual(db_rec.ingestion_source, "SFTP")
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
 class MIRPersistenceTestCase(TestCase):

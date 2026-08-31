@@ -27,7 +27,7 @@ class SFTPAutomationTestCase(TestCase):
     def test_admin_can_save_and_read_schedule(self):
         response = self.client.post(
             "/edi835/api/admin/sftp-automation/",
-            data={"client_id": str(self.client_record.id), "run_time": "09:30", "timezone": "America/New_York", "enabled": True},
+            data={"client_id": str(self.client_record.id), "automation_type": "835", "run_time": "09:30", "timezone": "America/New_York", "enabled": True},
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 201)
@@ -37,6 +37,17 @@ class SFTPAutomationTestCase(TestCase):
         listing = self.client.get(f"/edi835/api/admin/sftp-automation/?client_id={self.client_record.id}")
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["schedules"][0]["client_code"], "AUTO01")
+
+    def test_client_can_have_three_independent_schedules(self):
+        for index, automation_type in enumerate(("835", "837", "RECON"), start=1):
+            response = self.client.post(
+                "/edi835/api/admin/sftp-automation/",
+                data={"client_id": str(self.client_record.id), "automation_type": automation_type,
+                      "run_time": f"0{index}:00", "timezone": "America/New_York", "enabled": True},
+                content_type="application/json",
+            )
+            self.assertIn(response.status_code, (200, 201))
+        self.assertEqual(SFTPAutomationSchedule.objects.filter(client=self.client_record).count(), 3)
 
     def test_non_admin_is_forbidden(self):
         user = User.objects.create_user(
@@ -60,6 +71,7 @@ class SFTPAutomationTestCase(TestCase):
         queued = write_job.call_args.args[0]
         self.assertEqual(queued["client_id"], str(self.client_record.id))
         self.assertEqual(queued["automation_run_id"], str(run.id))
+        self.assertEqual(queued["automation_type"], "835")
         schedule.refresh_from_db()
         self.assertGreater(schedule.next_run_at, now)
 

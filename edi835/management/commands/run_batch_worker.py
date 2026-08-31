@@ -60,7 +60,10 @@ class Command(BaseCommand):
         mark_automation_running(job)
         try:
             user = get_user_model().objects.get(id=job["owner_user_id"])
-            body = json.dumps({"client_id": job.get("client_id") or ""}).encode("utf-8")
+            body = json.dumps({
+                "client_id": job.get("client_id") or "",
+                "automation_type": job.get("automation_type") or "ALL",
+            }).encode("utf-8")
             request_context = SimpleNamespace(method="POST", body=body, user=user)
             # Import after Django has initialized and after the job is claimed.
             from edi835.views import _execute_batch_conversion
