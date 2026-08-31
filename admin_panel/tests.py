@@ -79,6 +79,81 @@ class PermanentClientDeletionTestCase(TestCase):
         self.assertTrue(User.objects.filter(id=self.superadmin.id).exists())
 
 
+class AdministrativeRoleTransitionTestCase(TestCase):
+    def setUp(self):
+        self.superadmin = User.objects.create_superuser(
+            email="role-superadmin@example.com",
+            name="Role Superadmin",
+            mobile="5550199100",
+            password="test-password",
+        )
+        self.admin = User.objects.create_user(
+            email="role-admin@example.com",
+            name="Role Admin",
+            mobile="5550199101",
+            password="test-password",
+            is_staff=True,
+        )
+        self.standard_user = User.objects.create_user(
+            email="role-user@example.com",
+            name="Role User",
+            mobile="5550199102",
+            password="test-password",
+        )
+
+    def update_role(self, actor, target, role, client_id=None):
+        self.client.force_login(actor)
+        return self.client.post(
+            f"/admin-panel/api/users/{target.id}/update/",
+            data=json.dumps({
+                "name": target.name,
+                "email": target.email,
+                "mobile": target.mobile,
+                "role": role,
+                "is_staff": role in {"Admin", "Super Admin"},
+                "is_superuser": role == "Super Admin",
+                "client_id": client_id,
+            }),
+            content_type="application/json",
+        )
+
+    def test_superadmin_can_promote_admin_without_client_assignment(self):
+        response = self.update_role(self.superadmin, self.admin, "Super Admin")
+        self.assertEqual(response.status_code, 200)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_staff)
+        self.assertTrue(self.admin.is_superuser)
+        self.assertIsNone(self.admin.client_id)
+
+    def test_superadmin_can_demote_superadmin_to_admin_without_client_assignment(self):
+        promoted = User.objects.create_superuser(
+            email="role-second-superadmin@example.com",
+            name="Second Superadmin",
+            mobile="5550199103",
+            password="test-password",
+        )
+        response = self.update_role(self.superadmin, promoted, "Admin")
+        self.assertEqual(response.status_code, 200)
+        promoted.refresh_from_db()
+        self.assertTrue(promoted.is_staff)
+        self.assertFalse(promoted.is_superuser)
+        self.assertIsNone(promoted.client_id)
+
+    def test_standard_admin_cannot_change_administrative_roles(self):
+        response = self.update_role(self.admin, self.standard_user, "Super Admin")
+        self.assertEqual(response.status_code, 403)
+        self.standard_user.refresh_from_db()
+        self.assertFalse(self.standard_user.is_staff)
+        self.assertFalse(self.standard_user.is_superuser)
+
+    def test_standard_user_still_requires_client_assignment(self):
+        response = self.update_role(self.superadmin, self.admin, "User")
+        self.assertEqual(response.status_code, 400)
+        self.admin.refresh_from_db()
+        self.assertTrue(self.admin.is_staff)
+        self.assertFalse(self.admin.is_superuser)
+
+
 class OnboardingSequenceTestCase(TestCase):
     def setUp(self):
         self.admin = User.objects.create_superuser(
