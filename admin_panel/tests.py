@@ -1,6 +1,7 @@
 from django.test import TestCase
 import json
 from unittest.mock import patch
+from zoneinfo import ZoneInfo
 
 from accounts.models import Client, ClientContact, User
 
@@ -169,3 +170,55 @@ class OnboardingSequenceTestCase(TestCase):
             if item["id"] == str(self.client_record.id)
         )
         self.assertEqual(listed_client["stage"], "offboarded")
+
+
+class ScheduleTimezoneTestCase(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            email="timezone-admin@example.com",
+            name="Timezone Admin",
+            mobile="5550104000",
+            password="test-password",
+        )
+        self.client.force_login(self.admin)
+        self.client_record = Client.objects.create(
+            name="Timezone Test Client",
+            client_code="TZTEST",
+            email="timezone@example.com",
+        )
+
+    def test_golive_schedule_persists_selected_iana_timezone(self):
+        response = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/golive/steps/4/schedule/",
+            data=json.dumps({
+                "production_date": "01-15-2026",
+                "production_time": "10:00",
+                "timezone": "America/New_York",
+                "notes": "Timezone regression",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.client_record.refresh_from_db()
+        self.assertEqual(self.client_record.timezone, "America/New_York")
+        self.assertEqual(
+            self.client_record.live_since.astimezone(ZoneInfo("America/New_York")).strftime("%Y-%m-%d %H:%M"),
+            "2026-01-15 10:00",
+        )
+        step4 = next(item for item in response.json()["state"]["steps"] if item["step_number"] == 4)
+        self.assertEqual(step4["extra"]["schedule"]["timezone"], "America/New_York")
+        self.assertIn("scheduled_at", step4["extra"]["schedule"])
+
+    def test_invalid_timezone_falls_back_to_eastern(self):
+        response = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/golive/steps/4/schedule/",
+            data=json.dumps({
+                "production_date": "01-15-2026",
+                "production_time": "10:00",
+                "timezone": "Not/A_Zone",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        self.client_record.refresh_from_db()
+        self.assertEqual(self.client_record.timezone, "America/New_York")

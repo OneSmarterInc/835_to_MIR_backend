@@ -9,7 +9,7 @@ class ClientSerializer(serializers.ModelSerializer):
         fields = (
             "id", "name", "client_code", "email", "phone", "address",
             "status", "claims_system", "owner", "stage", "progress_pct",
-            "live_since", "mir_filename_format", "created_at", "updated_at",
+            "live_since", "mir_filename_format", "timezone", "created_at", "updated_at",
         )
         read_only_fields = ("id", "created_at", "updated_at")
 

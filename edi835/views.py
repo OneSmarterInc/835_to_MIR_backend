@@ -478,13 +478,7 @@ def api_get_sftp_config(request):
             "status": config.status,
             "last_error": config.last_error,
 
-            "last_tested_at": (
-                config.last_tested_at.strftime(
-                    "%Y-%m-%d %H:%M:%S"
-                )
-                if config.last_tested_at
-                else None
-            ),
+            "last_tested_at": config.last_tested_at.isoformat() if config.last_tested_at else None,
             "updated_at": config.updated_at.isoformat() if config.updated_at else None,
         }
 
@@ -542,10 +536,7 @@ def api_get_sftp_config(request):
                 "has_outbound_ssh_key": bool(effective.outbound_ssh_key),
                 "status": effective.status,
                 "last_error": effective.last_error,
-                "last_tested_at": (
-                    effective.last_tested_at.strftime("%Y-%m-%d %H:%M:%S")
-                    if effective.last_tested_at else None
-                ),
+                "last_tested_at": effective.last_tested_at.isoformat() if effective.last_tested_at else None,
                 "updated_at": effective.updated_at.isoformat() if effective.updated_at else None,
                 "inherited_from_default": True,
             })
@@ -1307,7 +1298,7 @@ def api_save_sftp_config(request):
         "pwd": test_res.get("pwd"),
         "config_id": str(config.id),
         "status": config.status,
-        "last_tested_at": config.last_tested_at.strftime("%Y-%m-%d %H:%M:%S"),
+        "last_tested_at": config.last_tested_at.isoformat(),
         "discovered_folders": discovered_folders,
         "remote_files": test_res.get("remote_files", []),
     }, status=200)

@@ -104,6 +104,12 @@ class Client(models.Model):
         help_text="Preferred MIR filename format",
     )
 
+    timezone = models.CharField(
+        max_length=64,
+        default="America/New_York",
+        help_text="IANA timezone used for client-entered schedules.",
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

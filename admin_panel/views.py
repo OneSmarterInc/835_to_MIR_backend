@@ -8,6 +8,7 @@ from project835.decorators import (
 import json
 import logging
 from pathlib import Path
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.db import models, transaction
 from django.db.models import Count, Prefetch, Q
 from django.http import JsonResponse
@@ -39,6 +40,21 @@ ONBOARDING_PROCESS_POSITION = {
     step_number: position
     for position, step_number in enumerate(ONBOARDING_PROCESS_ORDER)
 }
+
+EASTERN_TIMEZONE = "America/New_York"
+
+
+def _valid_timezone_name(value):
+    candidate = (value or EASTERN_TIMEZONE).strip()
+    try:
+        ZoneInfo(candidate)
+        return candidate
+    except (ZoneInfoNotFoundError, ValueError):
+        return EASTERN_TIMEZONE
+
+
+def _client_timezone(client):
+    return _valid_timezone_name(getattr(client, "timezone", EASTERN_TIMEZONE))
 
 
 def onboarding_process_position(step_number):
@@ -190,6 +206,7 @@ def api_admin_clients(request):
             "claims_system": c.claims_system,
             "owner": c.owner,
             "progress_pct": c.progress_pct,
+            "timezone": _client_timezone(c),
             "live_since": c.live_since.strftime("%Y-%m-%dT%H:%M:%SZ") if c.live_since else (c.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if c.created_at else None),
             "notes": c.notes or "",
             "users_count": c.users_count,
@@ -324,6 +341,7 @@ def api_admin_create_client(request):
                 "claims_system": client_obj.claims_system,
                 "owner": client_obj.owner,
                 "progress_pct": client_obj.progress_pct,
+                "timezone": _client_timezone(client_obj),
                 "live_since": client_obj.live_since.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.live_since else (client_obj.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.created_at else None),
                 "notes": client_obj.notes or "",
                 "created_at": client_obj.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.created_at else "",
@@ -425,6 +443,7 @@ def api_admin_update_client(request, client_id):
             "claims_system": client_obj.claims_system,
             "owner": client_obj.owner,
             "progress_pct": client_obj.progress_pct,
+            "timezone": _client_timezone(client_obj),
             "live_since": client_obj.live_since.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.live_since else (client_obj.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.created_at else None),
             "notes": client_obj.notes or "",
             "updated_at": client_obj.updated_at.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.updated_at else "",
@@ -870,10 +889,13 @@ def api_admin_client_state(request, client_id):
         elif step.step_number == 13:
             if client_obj.live_since:
                 from django.utils.timezone import localtime
-                local_dt = localtime(client_obj.live_since)
+                timezone_name = _client_timezone(client_obj)
+                local_dt = localtime(client_obj.live_since, ZoneInfo(timezone_name))
                 extra_data["schedule"] = {
                     "scheduled_date": local_dt.strftime("%Y-%m-%d"),
-                    "scheduled_time": local_dt.strftime("%H:%M")
+                    "scheduled_time": local_dt.strftime("%H:%M"),
+                    "timezone": timezone_name,
+                    "scheduled_at": client_obj.live_since.isoformat(),
                 }
 
         # Load the latest uploaded document for this step (persisted across redos)
@@ -1633,6 +1655,7 @@ def api_admin_step_action(request, client_id, step_key, action):
                     body = json.loads(request.body.decode('utf-8'))
                     scheduled_date = body.get('scheduled_date', '').strip()
                     scheduled_time = body.get('scheduled_time', '10:00').strip()
+                    timezone_name = _valid_timezone_name(body.get('timezone'))
                     notes = body.get('notes', '').strip()
                     
                     if notes:
@@ -1657,8 +1680,9 @@ def api_admin_step_action(request, client_id, step_key, action):
                                 dt = datetime.strptime(f"{scheduled_date} {scheduled_time}", "%Y-%m-%d %H:%M")
                             else:
                                 dt = datetime.strptime(f"{scheduled_date} {scheduled_time}", "%m-%d-%Y %H:%M")
-                            client_obj.live_since = timezone.make_aware(dt)
-                            client_obj.save()
+                            client_obj.live_since = timezone.make_aware(dt, ZoneInfo(timezone_name))
+                            client_obj.timezone = timezone_name
+                            client_obj.save(update_fields=["live_since", "timezone", "updated_at"])
                         except ValueError:
                             pass
                 except Exception:
@@ -2409,10 +2433,13 @@ def helper_get_golive_state(client_obj):
         if step.step_number == 4:
             if client_obj.live_since:
                 from django.utils.timezone import localtime
-                local_dt = localtime(client_obj.live_since)
+                timezone_name = _client_timezone(client_obj)
+                local_dt = localtime(client_obj.live_since, ZoneInfo(timezone_name))
                 extra_data["schedule"] = {
                     "production_date": local_dt.strftime("%Y-%m-%d"),
-                    "production_time": local_dt.strftime("%H:%M")
+                    "production_time": local_dt.strftime("%H:%M"),
+                    "timezone": timezone_name,
+                    "scheduled_at": client_obj.live_since.isoformat(),
                 }
             note = golive_comments.get(104)
             if note:
@@ -2571,6 +2598,7 @@ def api_admin_golive_step4_schedule(request, client_id):
         body = json.loads(request.body.decode('utf-8'))
         production_date = body.get('production_date', '').strip()
         production_time = body.get('production_time', '10:00').strip()
+        timezone_name = _valid_timezone_name(body.get('timezone'))
         notes = body.get('notes', '').strip()
         
         if notes:
@@ -2594,8 +2622,9 @@ def api_admin_golive_step4_schedule(request, client_id):
                     dt = datetime.strptime(f"{production_date} {production_time}", "%Y-%m-%d %H:%M")
                 else:
                     dt = datetime.strptime(f"{production_date} {production_time}", "%m-%d-%Y %H:%M")
-                client_obj.live_since = timezone.make_aware(dt)
-                client_obj.save()
+                client_obj.live_since = timezone.make_aware(dt, ZoneInfo(timezone_name))
+                client_obj.timezone = timezone_name
+                client_obj.save(update_fields=["live_since", "timezone", "updated_at"])
             except ValueError:
                 pass
                 
