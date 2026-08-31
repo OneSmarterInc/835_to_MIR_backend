@@ -381,7 +381,7 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
         client=client, uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
         original_filename=os.path.basename(filename)[:255],
         stored_filename=f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{os.path.basename(filename)}"[:255],
-        file_content=text, file_hash=file_hash, file_size=len(raw), status="PROCESSING",
+        file_content=text, file_hash=file_hash, file_size=len(raw), import_mode="SFTP", status="PROCESSING",
         processing_started_at=timezone.now(), processing_error="",
     )
     total_charge = Decimal("0")
