@@ -2013,7 +2013,7 @@ def _execute_batch_conversion(request):
             from .recon_service import process_recon_file
 
             ssh_837 = paramiko.SSHClient()
-            if inbound_credentials[\"trust_unknown_key\"]:
+            if inbound_credentials["trust_unknown_key"]:
                 ssh_837.set_missing_host_key_policy(paramiko.AutoAddPolicy())
             else:
                 ssh_837.load_system_host_keys()
