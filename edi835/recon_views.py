@@ -58,6 +58,7 @@ def _serialize_file(item):
         "service_count": item.service_count,
         "total_charge_amount": str(item.total_charge_amount),
         "total_paid_amount": str(item.total_paid_amount),
+        "import_mode": item.import_mode or "MANUAL",
         "status": item.status,
         "processing_error": item.processing_error,
         "uploaded_by": item.uploaded_by.email if item.uploaded_by else "",
@@ -135,6 +136,7 @@ def recon_upload(request):
             file_content=text,
             file_hash=file_hash,
             file_size=len(raw),
+            import_mode="MANUAL",
         )
     except IntegrityError:
         existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
