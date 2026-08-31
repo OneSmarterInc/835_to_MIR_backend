@@ -121,3 +121,28 @@ class OffboardedClientAccessTestCase(TestCase):
         blocked = self.http.get("/accounts/api/contacts/")
         self.assertEqual(blocked.status_code, 403)
         self.assertEqual(blocked.json()["code"], "CLIENT_OFFBOARDED")
+
+
+class AdministratorLoginRouteTestCase(TestCase):
+    def setUp(self):
+        self.http = DjangoTestClient()
+
+    def test_anonymous_visitor_can_load_admin_login_shell(self):
+        response = self.http.get("/administrator")
+        self.assertEqual(response.status_code, 200)
+
+    def test_anonymous_visitor_cannot_access_admin_api(self):
+        response = self.http.get("/admin-panel/api/clients/")
+        self.assertEqual(response.status_code, 403)
+        self.assertFalse(response.json()["success"])
+
+    def test_authenticated_standard_user_cannot_load_admin_ui(self):
+        user = User.objects.create_user(
+            email="standard-route-user@example.com",
+            name="Standard Route User",
+            mobile="+15550200",
+            password="correct-password",
+        )
+        self.http.force_login(user)
+        response = self.http.get("/administrator")
+        self.assertEqual(response.status_code, 403)

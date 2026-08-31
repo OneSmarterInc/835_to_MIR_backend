@@ -51,15 +51,21 @@ class AdminAccessMiddleware:
                     "Access denied. Contact your administrator."
                 )
 
-        # Protect all admin-panel api calls and UI paths (administrator/mapping)
-        if path.startswith('/admin-panel/') or path.startswith('/administrator') or path.startswith('/mapping') or path.startswith('/accounts/api/admin/'):
-            if not request.user.is_authenticated or not request.user.is_staff:
-                if '/api/' in path or '/api/' in request.path.lower():
-                    return JsonResponse({"success": False, "error": "Access denied. Administrative privileges required."}, status=403)
+        # The administrator/mapping routes serve the React application shell.
+        # Anonymous visitors must be allowed to load that shell so React can
+        # display the dedicated Admin Sign In screen.  Actual admin APIs remain
+        # protected, and an authenticated standard user still cannot enter an
+        # administrative UI route.
+        is_admin_api = path.startswith('/admin-panel/') or path.startswith('/accounts/api/admin/')
+        is_admin_ui = path.startswith('/administrator') or path.startswith('/mapping')
+        if is_admin_api or is_admin_ui:
+            if is_admin_api and (not request.user.is_authenticated or not request.user.is_staff):
+                return JsonResponse({"success": False, "error": "Access denied. Administrative privileges required."}, status=403)
+            if is_admin_ui and request.user.is_authenticated and not request.user.is_staff:
                 return HttpResponseForbidden("Access Denied: Standard users cannot access administrative paths.")
             
             # Block administrative API access if TOTP is enabled but not verified in the session
-            if getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False):
+            if request.user.is_authenticated and getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False):
                 if '/api/' in path:
                     return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
                 
