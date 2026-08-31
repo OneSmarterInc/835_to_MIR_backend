@@ -314,3 +314,107 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
             error_message=str(exc),
         )
         raise
+
+
+def _x12_elements(text):
+    text = (text or "").strip()
+    if not text:
+        raise ValueError("The 837 file is empty.")
+    # ISA is fixed width; element separator is character 4 and segment separator
+    # is character 106 when present. Fall back to common separators.
+    element_sep = text[3] if text.startswith("ISA") and len(text) > 3 else "*"
+    segment_sep = text[105] if text.startswith("ISA") and len(text) > 105 else "~"
+    return [seg.strip().split(element_sep) for seg in text.split(segment_sep) if seg.strip()]
+
+
+def parse_837_rows(text):
+    """Extract claim/service reference records from X12 837 transaction data."""
+    segments = _x12_elements(text)
+    rows, current = [], None
+    for seg in segments:
+        tag = seg[0].strip().upper() if seg else ""
+        if tag == "CLM":
+            if current:
+                rows.append(current)
+            current = {
+                "claim_control_number": (seg[1] if len(seg) > 1 else "").strip(),
+                "member_id": "",
+                "patient_control_number": (seg[1] if len(seg) > 1 else "").strip(),
+                "claim_status": "",
+                "service_count": 0,
+                "charge_amount": _decimal(seg[2] if len(seg) > 2 else ""),
+                "paid_amount": Decimal("0"),
+                "services": [],
+                "segment_data": {"CLM": seg},
+            }
+        elif current and tag == "NM1":
+            entity = seg[1] if len(seg) > 1 else ""
+            if entity in {"IL", "QC"}:
+                current["member_id"] = (seg[9] if len(seg) > 9 else "").strip() or current["member_id"]
+        elif current and tag == "SV1":
+            procedure = (seg[1] if len(seg) > 1 else "").split(":")[-1]
+            charge = _decimal(seg[2] if len(seg) > 2 else "")
+            units = _decimal(seg[4] if len(seg) > 4 else "")
+            service = {"procedure_code": procedure, "charge_amount": charge, "paid_amount": Decimal("0"),
+                       "allowed_amount": Decimal("0"), "units": units}
+            current["services"].append(service)
+            current["service_count"] += 1
+        elif current and tag == "DTP":
+            current["segment_data"].setdefault("DTP", []).append(seg)
+    if current:
+        rows.append(current)
+    if not rows:
+        raise ValueError("No CLM claim segments were found in the 837 file.")
+    return rows
+
+
+@transaction.atomic
+def ingest_837_reference(client, actor, filename, remote_path, raw, text):
+    import hashlib, os, uuid
+    file_hash = hashlib.sha256(raw).hexdigest()
+    existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
+    if existing:
+        return {"already_exists": True, "file": {"id": str(existing.id), "original_filename": existing.original_filename,
+                "status": existing.status, "source": "SFTP", "remote_path": remote_path}}
+    rows = parse_837_rows(text)
+    recon = RECONFile.objects.create(
+        client=client, uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
+        original_filename=os.path.basename(filename)[:255],
+        stored_filename=f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{os.path.basename(filename)}"[:255],
+        file_content=text, file_hash=file_hash, file_size=len(raw), status="PROCESSING",
+        processing_started_at=timezone.now(), processing_error="",
+    )
+    total_charge = Decimal("0")
+    services_total = 0
+    for sequence, data in enumerate(rows, start=1):
+        services = data["services"] or [{"procedure_code": "", "charge_amount": data["charge_amount"],
+                                         "paid_amount": Decimal("0"), "allowed_amount": Decimal("0"), "units": Decimal("0")}]
+        claim = RECONClaim.objects.create(
+            recon_file=recon, client=client, claim_sequence=sequence,
+            claim_control_number=data["claim_control_number"], member_id=data["member_id"],
+            patient_control_number=data["patient_control_number"], record_type="837",
+            claim_status=data["claim_status"], service_count=len(services),
+            charge_amount=sum((s["charge_amount"] for s in services), Decimal("0")),
+            allowed_amount=Decimal("0"), paid_amount=Decimal("0"),
+            raw_record="", segment_data={**data["segment_data"], "source": "SFTP", "remote_path": remote_path},
+        )
+        RECONServiceLine.objects.bulk_create([
+            RECONServiceLine(recon_claim=claim, recon_file=recon, service_sequence=i,
+                source_row_number=0, procedure_code=s["procedure_code"], units=s["units"],
+                charge_amount=s["charge_amount"], allowed_amount=s["allowed_amount"],
+                paid_amount=s["paid_amount"], raw_service="", segment_data={"source": "837"})
+            for i, s in enumerate(services, start=1)
+        ])
+        total_charge += claim.charge_amount
+        services_total += len(services)
+    now = timezone.now()
+    recon.status = "PROCESSED"
+    recon.record_count = len(rows)
+    recon.claim_count = len(rows)
+    recon.service_count = services_total
+    recon.total_charge_amount = total_charge
+    recon.total_paid_amount = Decimal("0")
+    recon.processed_at = now
+    recon.save()
+    return {"already_exists": False, "file": {"id": str(recon.id), "original_filename": recon.original_filename,
+            "status": recon.status, "source": "SFTP", "remote_path": remote_path, "claim_count": recon.claim_count}}
