@@ -127,7 +127,18 @@ def recon_upload(request):
     raw = upload.read()
     if not raw:
         return JsonResponse({"success": False, "error": "The RECON file is empty."}, status=400)
-    text = raw.decode("utf-8-sig", errors="replace")
+    # PostgreSQL text columns cannot store NUL characters. Decode supported
+    # Unicode text explicitly and reject binary/encrypted payloads before any
+    # database write instead of allowing an internal server error.
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = raw.decode("utf-16", errors="replace")
+    else:
+        text = raw.decode("utf-8-sig", errors="replace")
+    if "\x00" in text:
+        return JsonResponse({
+            "success": False,
+            "error": "The RECON file contains binary data and cannot be processed. Upload a text-based RECON file in a supported format.",
+        }, status=400)
     file_hash = hashlib.sha256(raw).hexdigest()
     original = os.path.basename(upload.name)[:255]
     try:

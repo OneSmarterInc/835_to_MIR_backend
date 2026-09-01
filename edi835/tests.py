@@ -303,6 +303,7 @@ class RECONResultAPITestCase(TestCase):
         download = self.client.get(f"/edi835/api/recon/files/{file_id}/download/")
         self.assertEqual(download.status_code, 200)
         self.assertEqual(download.content.decode("utf-8"), content)
+
         self.assertIn('filename="recon.csv"', download["Content-Disposition"])
 
         hidden = RECONFile.objects.get(client=self.other_tenant)
@@ -335,6 +336,18 @@ class RECONResultAPITestCase(TestCase):
             {row["claim_id"] for row in comma_search.json()["claims"]},
             {"CLAIM100", "CLAIM200"},
         )
+
+    def test_binary_recon_is_rejected_before_database_write(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        response = self.client.post(
+            "/edi835/api/recon/upload/",
+            {"recon_file": SimpleUploadedFile("binary.p7a", b"valid-prefix\x00binary-data")},
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("contains binary data", response.json()["error"])
+        self.assertFalse(RECONFile.objects.filter(original_filename="binary.p7a").exists())
 
     def test_reconciliation_aggregates_mir_chunks_and_uses_latest_recon(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
