@@ -528,7 +528,10 @@ def api_admin_access_info(request):
         return JsonResponse({"success": False, "error": "Not authenticated"}, status=401)
 
     staff_list = []
-    for u in User.objects.select_related("client").all().order_by("-created_at"):
+    visible_users = User.objects.select_related("client").exclude(
+        client__stage="offboarded", is_staff=False, is_superuser=False,
+    ).order_by("-created_at")
+    for u in visible_users:
         staff_list.append({
             "id": u.id,
             "person": u.name or u.email.split("@")[0],
@@ -3294,6 +3297,14 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                 client_obj.status = 'INACTIVE'
                 client_obj.stage = 'offboarded'
                 client_obj.save(update_fields=['status', 'stage'])
+
+                # Permanently stop every future scheduled ingestion for this
+                # tenant at the same transaction boundary as offboarding.
+                from edi835.models import SFTPAutomationSchedule
+                SFTPAutomationSchedule.objects.filter(client=client_obj).update(
+                    enabled=False,
+                    next_run_at=None,
+                )
 
                 # Deactivate all users belonging to this client
                 from accounts.models import User as AccountUser

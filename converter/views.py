@@ -42,6 +42,17 @@ def _request_client(request, requested_client_id=None):
     return getattr(user, "client", None) if user and user.is_authenticated else None
 
 
+def _offboarded_client_response(client):
+    if client and str(getattr(client, "stage", "") or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False,
+            "code": "CLIENT_OFFBOARDED",
+            "error": "This client has been permanently offboarded. New file validation and processing are locked.",
+            "offboarded": True,
+        }, status=409)
+    return None
+
+
 def _canonical_mir_filename(record):
     """Return the persisted admin-configured MIR filename for a conversion record."""
     if not record:
@@ -126,6 +137,9 @@ def api_convert(request):
         body_client_id = request.POST.get('client_id') or request.POST.get('client')
 
     client = _request_client(request, body_client_id)
+    offboarded = _offboarded_client_response(client)
+    if offboarded:
+        return offboarded
 
     if files_list and len(files_list) > 0:
         invalid = _invalid_835_batch_response(files_list)
@@ -304,6 +318,9 @@ def api_validate(request):
         body_client_id = request.POST.get('client_id') or request.POST.get('client')
 
     client = _request_client(request, body_client_id)
+    offboarded = _offboarded_client_response(client)
+    if offboarded:
+        return offboarded
 
     files_list = []
     edi_text = ""

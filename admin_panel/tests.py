@@ -334,9 +334,15 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertFalse(User.objects.filter(id=user.id).exists())
 
     def test_offboarding_requires_sequence_and_revokes_client_users(self):
+        from datetime import time
+        from edi835.models import SFTPAutomationSchedule
         user = User.objects.create_user(
             email="offboard-user@example.com", name="Offboard User", mobile="5550103000",
             password="test-password", client=self.client_record,
+        )
+        schedule = SFTPAutomationSchedule.objects.create(
+            client=self.client_record, automation_type="835", run_time=time(9, 0),
+            enabled=True, created_by=self.admin, updated_by=self.admin,
         )
         step3_url = f"/admin-panel/api/clients/{self.client_record.id}/offboarding/steps/3/complete/"
         self.assertEqual(self.client.post(step3_url).status_code, 409)
@@ -362,6 +368,13 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertEqual(self.client_record.status, "INACTIVE")
         self.assertEqual(self.client_record.stage, "offboarded")
         self.assertFalse(user.is_active)
+        schedule.refresh_from_db()
+        self.assertFalse(schedule.enabled)
+        self.assertIsNone(schedule.next_run_at)
+
+        access = self.client.get("/admin-panel/api/access/info/")
+        self.assertEqual(access.status_code, 200)
+        self.assertNotIn(user.email, [item["email"] for item in access.json()["users"]])
 
         # Finalization is irreversible: repeat completion and every workflow
         # mutation are rejected while read-only history remains available.

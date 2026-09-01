@@ -314,6 +314,14 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         except (EDI835File.DoesNotExist, ValueError):
             db_record = None
 
+    if client and str(getattr(client, "stage", "") or "").lower() == "offboarded":
+        return {
+            "success": False,
+            "error": "This client has been permanently offboarded. New file processing is locked.",
+            "code": "CLIENT_OFFBOARDED",
+            "db_record": db_record,
+        }
+
     # Sanitize filename to prevent path traversal
     original_filename = os.path.basename(original_filename)
     base_name = os.path.splitext(original_filename)[0]
@@ -449,6 +457,12 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     """
     from admin_panel.mir_mapper_logic.edi835_parser import parse_835
     from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+    if client and str(getattr(client, "stage", "") or "").lower() == "offboarded":
+        return {
+            "success": False,
+            "error": "This client has been permanently offboarded. New file processing is locked.",
+            "code": "CLIENT_OFFBOARDED",
+        }
     dirs = get_edi835_storage_dirs()
 
     all_claims = []

@@ -114,8 +114,15 @@ def sftp_automation(request):
         return JsonResponse({"success": False, "error": "The selected client was not found."}, status=404)
 
     enabled = payload.get("enabled", True) is not False
-    if enabled and (client.status != "ACTIVE" or client.stage == "offboarded"):
-        return JsonResponse({"success": False, "error": "Automation cannot be enabled for an inactive or offboarded client."}, status=409)
+    if client.stage == "offboarded":
+        return JsonResponse({
+            "success": False,
+            "code": "CLIENT_OFFBOARDED",
+            "error": "This client has been permanently offboarded. SFTP automation schedules are locked.",
+            "offboarded": True,
+        }, status=409)
+    if enabled and client.status != "ACTIVE":
+        return JsonResponse({"success": False, "error": "Automation cannot be enabled for an inactive client."}, status=409)
 
     schedule, created = SFTPAutomationSchedule.objects.get_or_create(
         client=client, automation_type=automation_type,

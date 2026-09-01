@@ -124,6 +124,11 @@ def recon_upload(request):
     if not client and not request.user.is_staff:
         message = "Select a client." if request.user.is_staff else "Your account is not associated with a client."
         return JsonResponse({"success": False, "error": message}, status=400)
+    if client and str(client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+            "error": "This client has been permanently offboarded. New RECON uploads and processing are locked.",
+        }, status=409)
     raw = upload.read()
     if not raw:
         return JsonResponse({"success": False, "error": "The RECON file is empty."}, status=400)
@@ -171,6 +176,11 @@ def recon_process(request, file_id):
     recon = _visible_file(request, file_id)
     if not recon:
         return JsonResponse({"success": False, "error": "RECON file was not found."}, status=404)
+    if recon.client and str(recon.client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+            "error": "This client has been permanently offboarded. RECON processing is locked.",
+        }, status=409)
     if recon.status == "PROCESSING":
         return JsonResponse({"success": True, "file": _serialize_file(recon), "background": True}, status=202)
     if getattr(settings, "RECON_PROCESS_SYNCHRONOUS", False):

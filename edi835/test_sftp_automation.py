@@ -71,6 +71,25 @@ class SFTPAutomationTestCase(TestCase):
             self.assertIn(response.status_code, (200, 201))
         self.assertEqual(SFTPAutomationSchedule.objects.filter(client=self.client_record).count(), 3)
 
+    def test_offboarded_client_schedule_and_batch_are_locked(self):
+        self.client_record.stage = "offboarded"
+        self.client_record.status = "INACTIVE"
+        self.client_record.save(update_fields=["stage", "status"])
+        schedule = self.client.post(
+            "/edi835/api/admin/sftp-automation/",
+            data={"client_id": str(self.client_record.id), "automation_type": "835",
+                  "run_time": "09:00", "timezone": "America/New_York", "enabled": False},
+            content_type="application/json",
+        )
+        self.assertEqual(schedule.status_code, 409)
+        self.assertEqual(schedule.json()["code"], "CLIENT_OFFBOARDED")
+        batch = self.client.post(
+            "/edi835/api/start-batch-conversion/",
+            data={"client_id": str(self.client_record.id)}, content_type="application/json",
+        )
+        self.assertEqual(batch.status_code, 409)
+        self.assertEqual(batch.json()["code"], "CLIENT_OFFBOARDED")
+
     def test_non_admin_is_forbidden(self):
         user = User.objects.create_user(
             email="client@example.com", name="Client User", mobile="2000000000",

@@ -85,6 +85,24 @@ class ViewsTestCase(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertEqual(EDI835File.objects.get(id=response.json()['file_id']).client, tenant)
 
+    def test_offboarded_client_cannot_validate_or_convert_new_files(self):
+        from accounts.models import Client as AccountClient
+        tenant = AccountClient.objects.create(
+            name='Offboarded Conversion Tenant', client_code='OFF-CONVERSION',
+            email='offboarded-conversion@example.com', stage='offboarded', status='INACTIVE',
+        )
+        self.user.is_staff = True
+        self.user.save(update_fields=['is_staff'])
+        payload = json.dumps({
+            'edi_text': SAMPLE_ONE_LINE, 'original_filename': 'blocked.835',
+            'client_id': str(tenant.id),
+        })
+        for endpoint in ('/api/validate/', '/api/convert/'):
+            with self.subTest(endpoint=endpoint):
+                response = self.client.post(endpoint, data=payload, content_type='application/json')
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(response.json()['code'], 'CLIENT_OFFBOARDED')
+
     def test_health_check_endpoint(self):
         response = self.client.get('/health/')
         self.assertEqual(response.status_code, 200)

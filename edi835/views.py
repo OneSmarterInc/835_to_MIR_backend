@@ -67,6 +67,12 @@ def api_process_tracked_file(request):
     if request.user and request.user.is_authenticated:
         client = getattr(request.user, "client", None)
 
+    if client and str(client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+            "error": "This client has been permanently offboarded. New file processing is locked.",
+        }, status=409)
+
     res = process_edi835_file_content(edi_text, original_filename=original_filename, client=client)
 
     if not res.get("success"):
@@ -1535,6 +1541,12 @@ def api_push_to_sftp(request):
     except (EDI835File.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "File record not found."}, status=404)
 
+    if file_record.client and str(file_record.client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+            "error": "This client has been permanently offboarded. SFTP delivery is locked.",
+        }, status=409)
+
     if not request.user.is_staff:
         request_client = getattr(request.user, "client", None)
         if not request_client or file_record.client_id != request_client.id:
@@ -1875,6 +1887,12 @@ def _execute_batch_conversion(request):
                     "success": False,
                     "error": "The selected client was not found.",
                 }, status=404)
+
+    if client and str(client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+            "error": "This client has been permanently offboarded. SFTP batch processing is locked.",
+        }, status=409)
 
     config = resolve_sftp_config(client=client, outbound=False)
     if not client and config:
@@ -2359,6 +2377,17 @@ def api_start_batch_conversion(request):
         if request.user.is_staff
         else (getattr(request.user, "client_id", None) or "")
     )
+    if client_id:
+        from accounts.models import Client
+        try:
+            selected_client = Client.objects.get(id=client_id)
+        except (Client.DoesNotExist, ValueError):
+            return JsonResponse({"success": False, "error": "The selected client was not found."}, status=404)
+        if str(selected_client.stage or "").lower() == "offboarded":
+            return JsonResponse({
+                "success": False, "code": "CLIENT_OFFBOARDED", "offboarded": True,
+                "error": "This client has been permanently offboarded. SFTP batch processing is locked.",
+            }, status=409)
     scope_key = f"{client_id or 'GLOBAL'}:{automation_type}"
     existing = active_job_for(scope_key)
     if existing:
