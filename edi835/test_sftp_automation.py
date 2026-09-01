@@ -30,6 +30,20 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(next_run, datetime(2026, 8, 31, 17, 0, tzinfo=dt_timezone.utc))
 
     @patch("edi835.sftp_automation_views.send_automation_schedule_notice", return_value=True)
+    def test_india_standard_time_alias_is_accepted_and_canonicalized(self, _schedule_email):
+        response = self.client.post(
+            "/edi835/api/admin/sftp-automation/",
+            data={"client_id": str(self.client_record.id), "automation_type": "837",
+                  "run_time": "13:29", "timezone": "Asia/Calcutta", "enabled": True},
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 201)
+        schedule = SFTPAutomationSchedule.objects.get(client=self.client_record, automation_type="837")
+        self.assertEqual(schedule.run_time, time(13, 29))
+        self.assertEqual(schedule.timezone, "Asia/Kolkata")
+        self.assertEqual(response.json()["schedule"]["timezone"], "Asia/Kolkata")
+
+    @patch("edi835.sftp_automation_views.send_automation_schedule_notice", return_value=True)
     def test_admin_can_save_and_read_schedule(self, schedule_email):
         response = self.client.post(
             "/edi835/api/admin/sftp-automation/",
