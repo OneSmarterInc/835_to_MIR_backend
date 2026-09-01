@@ -1,4 +1,5 @@
 import json
+import logging
 from datetime import time
 
 from django.http import JsonResponse
@@ -10,6 +11,10 @@ from project835.decorators import authenticated_api_required, json_api_errors
 
 from .models import SFTPAutomationRun, SFTPAutomationSchedule
 from .sftp_automation import next_daily_run, validated_timezone
+from admin_panel.email_service import send_automation_schedule_notice
+
+
+logger = logging.getLogger(__name__)
 
 
 def _admin_only(request):
@@ -122,4 +127,14 @@ def sftp_automation(request):
     schedule.updated_by = request.user
     schedule.next_run_at = next_daily_run(run_time, timezone_name) if enabled else None
     schedule.save()
-    return JsonResponse({"success": True, "created": created, "schedule": _schedule_data(schedule)}, status=201 if created else 200)
+    try:
+        email_sent = send_automation_schedule_notice(schedule, created=created)
+    except Exception:
+        logger.exception("Automation schedule saved, but its email notification failed.")
+        email_sent = False
+    return JsonResponse({
+        "success": True,
+        "created": created,
+        "schedule": _schedule_data(schedule),
+        "email_notification": {"sent": email_sent},
+    }, status=201 if created else 200)
