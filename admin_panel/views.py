@@ -8,12 +8,15 @@ from project835.decorators import (
 import json
 import logging
 from pathlib import Path
+from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.db import models, transaction
 from django.db.models import Count, Prefetch, Q
+from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
+from django.utils.dateparse import parse_date
 
 from accounts.client_deletion import ClientDeletionError, permanently_delete_client
 from accounts.models import Client, User
@@ -2926,34 +2929,81 @@ def api_mappings_reset(request):
 def api_admin_audit_logs(request):
     """
     GET /admin-panel/api/audit-logs/
-    Returns filtered, paginated audit log entries.
-    Supports ?client_id=<uuid>&module=<str>&limit=<int>
+    Returns filtered, sorted, paginated audit log entries.
+    Filters are applied to the complete audit trail before pagination.
     """
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
 
     client_id = request.GET.get("client_id", "").strip()
     module_filter = request.GET.get("module", "").strip().upper()
+    action_filter = request.GET.get("action", "").strip()
+    actor_filter = request.GET.get("performed_by", "").strip()
+    search = request.GET.get("search", "").strip()
+    date_from_raw = request.GET.get("date_from", "").strip()
+    date_to_raw = request.GET.get("date_to", "").strip()
     try:
-        limit = int(request.GET.get("limit", 500))
+        page = max(1, int(request.GET.get("page", 1)))
     except ValueError:
-        limit = 500
+        page = 1
+    try:
+        page_size = int(request.GET.get("page_size", 25))
+    except ValueError:
+        page_size = 25
+    if page_size not in {10, 25, 50, 100}:
+        page_size = 25
 
-    qs = AuditLog.objects.select_related("client").order_by("-timestamp")
+    ordering_map = {
+        "timestamp": "timestamp",
+        "module": "module",
+        "action": "action",
+        "client": "client__name",
+        "performed_by": "performed_by",
+    }
+    sort_field = ordering_map.get(request.GET.get("sort", "timestamp"), "timestamp")
+    sort_direction = "" if request.GET.get("direction", "desc") == "asc" else "-"
+
+    qs = AuditLog.objects.select_related("client")
 
     if client_id:
         try:
-            from accounts.models import Client as ClientModel
-            client_obj = ClientModel.objects.get(id=client_id)
-            qs = qs.filter(client=client_obj)
-        except Exception:
-            pass
+            qs = qs.filter(client_id=UUID(client_id))
+        except (TypeError, ValueError, AttributeError):
+            return JsonResponse({"success": False, "error": "Invalid client identifier."}, status=400)
 
     if module_filter and module_filter != "ALL":
         qs = qs.filter(module=module_filter)
 
+    if action_filter:
+        qs = qs.filter(action=action_filter)
+    if actor_filter:
+        qs = qs.filter(performed_by=actor_filter)
+    if search:
+        qs = qs.filter(
+            Q(module__icontains=search) |
+            Q(action__icontains=search) |
+            Q(details__icontains=search) |
+            Q(performed_by__icontains=search) |
+            Q(client__name__icontains=search)
+        )
+
+    date_from = parse_date(date_from_raw) if date_from_raw else None
+    date_to = parse_date(date_to_raw) if date_to_raw else None
+    if date_from_raw and not date_from:
+        return JsonResponse({"success": False, "error": "Invalid start date."}, status=400)
+    if date_to_raw and not date_to:
+        return JsonResponse({"success": False, "error": "Invalid end date."}, status=400)
+    if date_from:
+        qs = qs.filter(timestamp__date__gte=date_from)
+    if date_to:
+        qs = qs.filter(timestamp__date__lte=date_to)
+
+    qs = qs.order_by(f"{sort_direction}{sort_field}", "-id")
+    paginator = Paginator(qs, page_size)
+    page_obj = paginator.get_page(page)
+
     logs = []
-    for log in qs[:limit]:
+    for log in page_obj.object_list:
         logs.append({
             "id": log.id,
             "module": log.module,
@@ -2966,7 +3016,25 @@ def api_admin_audit_logs(request):
             "client_name": log.client.name if log.client else "System",
         })
 
-    return JsonResponse({"success": True, "logs": logs, "count": len(logs)})
+    all_logs = AuditLog.objects.all()
+    return JsonResponse({
+        "success": True,
+        "logs": logs,
+        "count": paginator.count,
+        "pagination": {
+            "page": page_obj.number,
+            "page_size": page_size,
+            "total_count": paginator.count,
+            "total_pages": paginator.num_pages,
+            "has_previous": page_obj.has_previous(),
+            "has_next": page_obj.has_next(),
+        },
+        "filter_options": {
+            "modules": list(all_logs.exclude(module="").order_by("module").values_list("module", flat=True).distinct()),
+            "actions": list(all_logs.exclude(action="").order_by("action").values_list("action", flat=True).distinct()),
+            "performed_by": list(all_logs.exclude(performed_by="").order_by("performed_by").values_list("performed_by", flat=True).distinct()),
+        },
+    })
 
 
 # ---------------------------------------------------------
