@@ -1217,8 +1217,17 @@ def api_admin_template_download(request, client_id, step_key):
                 response['X-OneSmarter-Filename'] = download_name
                 return response
 
+            if step_num == 2:
+                from admin_panel.baa_service import build_client_baa, baa_download_filename
+                client_obj = Client.objects.get(id=client_id)
+                pdf_bytes = build_client_baa(client_obj)
+                download_name = baa_download_filename(client_obj)
+                response = HttpResponse(pdf_bytes, content_type='application/pdf')
+                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
+                response['X-OneSmarter-Filename'] = download_name
+                return response
+
             template_map = {
-                2: "OneSmarter_BAA_Template.pdf",
                 3: "OneSmarter_SecurityReview_Template.pdf",
             }
 

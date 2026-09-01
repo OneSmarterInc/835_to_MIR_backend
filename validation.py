@@ -342,6 +342,22 @@ def validate_step_upload(step_number: int, buf: bytes, orig_filename: str, clien
         if not ok:
             return {"ok": False, "checks": nda_checks}
 
+    if step_number == 2:
+        if not is_pdf:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "BAA file format", "detail": "Upload the completed signed BAA as a PDF file."}],
+            }
+        if client is None:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Client identity", "detail": "A selected client is required to validate the BAA."}],
+            }
+        from admin_panel.baa_service import validate_signed_baa
+        ok, baa_checks = validate_signed_baa(buf, client)
+        if not ok:
+            return {"ok": False, "checks": baa_checks}
+
     # Steps 1, 2, 3 PDF & Word checks
     if step_number in (1, 2, 3):
         if not is_pdf and not is_word:
