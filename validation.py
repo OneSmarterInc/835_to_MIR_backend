@@ -358,6 +358,22 @@ def validate_step_upload(step_number: int, buf: bytes, orig_filename: str, clien
         if not ok:
             return {"ok": False, "checks": baa_checks}
 
+    if step_number == 3:
+        if not is_pdf:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Security Review file format", "detail": "Upload the completed signed Security Review as a PDF file."}],
+            }
+        if client is None:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Client identity", "detail": "A selected client is required to validate the Security Review."}],
+            }
+        from admin_panel.security_review_service import validate_signed_security_review
+        ok, security_checks = validate_signed_security_review(buf, client)
+        if not ok:
+            return {"ok": False, "checks": security_checks}
+
     # Steps 1, 2, 3 PDF & Word checks
     if step_number in (1, 2, 3):
         if not is_pdf and not is_word:

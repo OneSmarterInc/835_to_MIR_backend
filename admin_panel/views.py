@@ -1227,9 +1227,20 @@ def api_admin_template_download(request, client_id, step_key):
                 response['X-OneSmarter-Filename'] = download_name
                 return response
 
-            template_map = {
-                3: "OneSmarter_SecurityReview_Template.pdf",
-            }
+            if step_num == 3:
+                from admin_panel.security_review_service import (
+                    build_client_security_review,
+                    security_review_download_filename,
+                )
+                client_obj = Client.objects.get(id=client_id)
+                pdf_bytes = build_client_security_review(client_obj)
+                download_name = security_review_download_filename(client_obj)
+                response = HttpResponse(pdf_bytes, content_type='application/pdf')
+                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
+                response['X-OneSmarter-Filename'] = download_name
+                return response
+
+            template_map = {}
 
             filename = template_map.get(step_num)
 
