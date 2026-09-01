@@ -2985,12 +2985,33 @@ def api_admin_audit_logs(request):
     if actor_filter:
         qs = qs.filter(performed_by=actor_filter)
     if search:
+        def formatted_timestamp(timezone_name, format_mask):
+            localized = models.Func(
+                models.Value(timezone_name), models.F("timestamp"),
+                function="timezone", output_field=models.DateTimeField(),
+            )
+            return models.Func(
+                localized, models.Value(format_mask), function="to_char",
+                output_field=models.CharField(),
+            )
+
+        qs = qs.annotate(
+            audit_timestamp_iso=models.Func(
+                models.F("timestamp"), models.Value('YYYY-MM-DD"T"HH24:MI:SS'),
+                function="to_char", output_field=models.CharField(),
+            ),
+            audit_timestamp_eastern=formatted_timestamp("America/New_York", "MM/DD/YYYY HH12:MI:SS AM"),
+            audit_timestamp_eastern_24=formatted_timestamp("America/New_York", "MM/DD/YYYY HH24:MI:SS"),
+        )
         qs = qs.filter(
             Q(module__icontains=search) |
             Q(action__icontains=search) |
             Q(details__icontains=search) |
             Q(performed_by__icontains=search) |
-            Q(client__name__icontains=search)
+            Q(client__name__icontains=search) |
+            Q(audit_timestamp_iso__icontains=search) |
+            Q(audit_timestamp_eastern__icontains=search) |
+            Q(audit_timestamp_eastern_24__icontains=search)
         )
 
     date_from = parse_date(date_from_raw) if date_from_raw else None

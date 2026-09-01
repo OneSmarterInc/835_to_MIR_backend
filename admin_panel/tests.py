@@ -1,5 +1,6 @@
 from django.test import TestCase
 import json
+from datetime import datetime, timezone as datetime_timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
@@ -121,6 +122,19 @@ class AuditLogPaginationTestCase(TestCase):
         self.assertEqual(len(data["logs"]), 5)
         self.assertTrue(all(item["module"] == "AUTH" and item["action"] == "LOGIN" for item in data["logs"]))
         self.assertIn("AUTH", data["filter_options"]["modules"])
+
+    def test_universal_search_includes_displayed_timestamp_values(self):
+        target = AuditLog.objects.order_by("id").first()
+        AuditLog.objects.filter(id=target.id).update(
+            timestamp=datetime(2042, 2, 3, 12, 34, 56, tzinfo=datetime_timezone.utc)
+        )
+        response = self.client.get(
+            "/admin-panel/api/audit-logs/",
+            {"search": "02/03/2042", "page_size": 10},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["pagination"]["total_count"], 1)
+        self.assertEqual(response.json()["logs"][0]["id"], target.id)
 
 
 class AdministrativeRoleTransitionTestCase(TestCase):
