@@ -68,6 +68,25 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertTrue(has_valid_file_extension('RECON.P7A', 'RECON'))
         self.assertFalse(has_valid_file_extension('claim.pdf', '835'))
 
+    def test_every_configured_835_and_recon_extension_is_accepted(self):
+        from .file_types import allowed_extensions
+
+        for kind in ('835', 'RECON'):
+            for extension in allowed_extensions(kind):
+                with self.subTest(kind=kind, extension=extension):
+                    self.assertTrue(
+                        has_valid_file_extension(f'upload{extension}', kind)
+                    )
+                    self.assertTrue(
+                        has_valid_file_extension(f'upload{extension.upper()}', kind)
+                    )
+
+    def test_835_and_recon_extension_policies_reject_unrelated_files(self):
+        for kind in ('835', 'RECON'):
+            for filename in ('upload.pdf', 'upload.exe', 'upload.zip', 'upload'):
+                with self.subTest(kind=kind, filename=filename):
+                    self.assertFalse(has_valid_file_extension(filename, kind))
+
     def test_simultaneous_jobs_receive_distinct_mir_names(self):
         first = unique_mir_filename('MIROUT.MIR', '11111111-1111-1111-1111-111111111111')
         second = unique_mir_filename('MIROUT.MIR', '22222222-2222-2222-2222-222222222222')

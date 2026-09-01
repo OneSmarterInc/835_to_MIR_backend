@@ -1431,6 +1431,22 @@ def api_admin_step_validate_835(request, client_id):
     try:
         client_obj = Client.objects.get(id=client_id)
 
+        # The onboarding screen sends the original name in X-Filename because
+        # the request body contains the raw file bytes. Resolve and validate it
+        # before parsing so every extension in the shared 835 policy follows
+        # the normal 835 validation pipeline.
+        from urllib.parse import unquote
+        from edi835.file_types import file_extension_error, has_valid_file_extension
+        uploaded_filename = os.path.basename(
+            unquote(request.headers.get("X-Filename", "uploaded_file.x12"))
+        )
+        if not has_valid_file_extension(uploaded_filename, "835"):
+            return JsonResponse({
+                "success": False,
+                "error": file_extension_error("835"),
+                "checks": [],
+            }, status=400)
+
         file_bytes = request.body
         if not file_bytes:
             return JsonResponse({"success": False, "error": "No file uploaded"}, status=400)
