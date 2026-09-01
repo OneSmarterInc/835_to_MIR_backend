@@ -57,6 +57,13 @@ class Client(models.Model):
         help_text="Physical / Billing Address",
     )
 
+    state = models.CharField(
+        max_length=2,
+        blank=True,
+        null=True,
+        help_text="US state abbreviation",
+    )
+
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
