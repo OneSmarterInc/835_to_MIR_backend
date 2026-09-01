@@ -64,6 +64,13 @@ class Client(models.Model):
         help_text="US state abbreviation",
     )
 
+    zip_code = models.CharField(
+        max_length=10,
+        blank=True,
+        null=True,
+        help_text="US ZIP or ZIP+4 code",
+    )
+
     status = models.CharField(
         max_length=20,
         choices=STATUS_CHOICES,
