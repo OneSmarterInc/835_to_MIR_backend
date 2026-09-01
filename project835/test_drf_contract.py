@@ -91,3 +91,36 @@ class DRFCompatibilityContractTests(TestCase):
             file_hash="f" * 64,
         )
         self.assertEqual(EDI835FileSerializer(source).data["mir_filename"], canonical)
+
+
+class ClientPortalAccessContractTests(TestCase):
+    def setUp(self):
+        self.http = APIClient()
+        self.portal_client = Client.objects.create(
+            name="Portal Access Client",
+            client_code="PORTAL-ACCESS",
+            email="portal-access@example.com",
+        )
+        self.portal_user = User.objects.create_user(
+            email="portal-user@example.com",
+            name="Portal User",
+            mobile="+14155552671",
+            password="correct-password",
+            client=self.portal_client,
+        )
+        self.http.force_login(self.portal_user)
+
+    def test_visible_client_pages_accept_the_authenticated_client_session(self):
+        endpoints = (
+            "/accounts/api/contacts/",
+            "/edi835/api/metrics/",
+            "/edi835/api/tracked-files/",
+            "/edi835/api/archive-files/",
+            "/edi835/api/sftp/get/",
+            "/edi835/api/recon/files/",
+            "/edi835/api/reconciliation/",
+        )
+        for endpoint in endpoints:
+            with self.subTest(endpoint=endpoint):
+                response = self.http.get(endpoint)
+                self.assertNotIn(response.status_code, (401, 403), response.content)
