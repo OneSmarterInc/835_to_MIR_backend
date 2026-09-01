@@ -230,6 +230,7 @@ def api_admin_clients(request):
             "email": c.email,
             "phone": c.phone or "",
             "address": c.address or "",
+            "state": c.state or "",
             "status": c.status,
             "stage": dynamic_stage,
             "claims_system": c.claims_system,
@@ -272,6 +273,7 @@ def api_admin_create_client(request):
     email = (data.get("email") or "").strip().lower()
     phone = (data.get("phone") or "").strip()
     address = (data.get("address") or "").strip()
+    state = (data.get("state") or "").strip().upper()
     status = (data.get("status") or "ACTIVE").strip().upper()
     notes = (data.get("notes") or "").strip()
     claims_system = (data.get("claims_system") or "Vendor Hosted").strip()
@@ -296,6 +298,9 @@ def api_admin_create_client(request):
         safe_name = name.lower().replace(" ", "").replace(".", "")
         email = f"{safe_name}@client.com"
 
+    if state and (len(state) != 2 or not state.isalpha()):
+        return JsonResponse({"success": False, "error": "State must be a valid two-letter US state abbreviation."}, status=400)
+
     if status not in ["ACTIVE", "INACTIVE"]:
         status = "ACTIVE"
 
@@ -307,6 +312,7 @@ def api_admin_create_client(request):
                 email=email,
                 phone=phone,
                 address=address,
+                state=state,
                 status=status,
                 notes=notes,
                 claims_system=claims_system,
@@ -365,6 +371,7 @@ def api_admin_create_client(request):
                 "email": client_obj.email,
                 "phone": client_obj.phone or "",
                 "address": client_obj.address or "",
+                "state": client_obj.state or "",
                 "status": client_obj.status,
                 "stage": client_obj.stage,
                 "claims_system": client_obj.claims_system,
@@ -424,6 +431,11 @@ def api_admin_update_client(request, client_id):
         client_obj.phone = data["phone"].strip()
     if "address" in data:
         client_obj.address = data["address"].strip()
+    if "state" in data:
+        state = data["state"].strip().upper()
+        if state and (len(state) != 2 or not state.isalpha()):
+            return JsonResponse({"success": False, "error": "State must be a valid two-letter US state abbreviation."}, status=400)
+        client_obj.state = state
     if "notes" in data:
         client_obj.notes = data["notes"].strip()
 
