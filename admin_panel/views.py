@@ -65,6 +65,31 @@ def onboarding_process_position(step_number):
     return ONBOARDING_PROCESS_POSITION.get(step_number, len(ONBOARDING_PROCESS_ORDER))
 
 
+def _offboarded_workflow_lock(request, client_id, action):
+    """Return a permanent workflow-lock response for an offboarded tenant."""
+    try:
+        client_obj = Client.objects.get(id=client_id)
+    except (Client.DoesNotExist, ValueError):
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+    if str(client_obj.stage or "").lower() != "offboarded":
+        return None
+    try:
+        AuditLog.objects.create(
+            module="OFFBOARDING",
+            action="LOCKED_WORKFLOW_ATTEMPT",
+            details=f"Blocked {action} because client '{client_obj.name}' is permanently offboarded.",
+            performed_by=getattr(request.user, "name", "") or getattr(request.user, "email", "") or "Administrator",
+            client=client_obj,
+        )
+    except Exception:
+        logging.getLogger(__name__).exception("Failed to audit a blocked offboarded-client workflow request")
+    return JsonResponse({
+        "success": False,
+        "code": "CLIENT_OFFBOARDING_FINALIZED",
+        "error": "This client has been permanently offboarded. Its onboarding and offboarding workflows are locked.",
+    }, status=409)
+
+
 @csrf_exempt
 
 def _canonical_mir_filename(record):
@@ -384,6 +409,12 @@ def api_admin_update_client(request, client_id):
         data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
     except Exception:
         data = request.POST
+
+    if str(client_obj.stage or "").lower() == "offboarded":
+        requested_stage = str(data.get("stage", "offboarded") or "").strip().lower()
+        requested_status = str(data.get("status", "INACTIVE") or "").strip().upper()
+        if requested_stage != "offboarded" or requested_status == "ACTIVE":
+            return _offboarded_workflow_lock(request, client_id, "client reactivation")
 
     if "name" in data:
         client_obj.name = data["name"].strip() or client_obj.name
@@ -1014,9 +1045,12 @@ def update_client_onboarding_stats(client_obj):
     completed_steps = len(completed_step_nums)
     progress_pct = int((completed_steps / total_steps) * 100)
 
-    # Don't regress stage if they are already in production
+    # Offboarding is a terminal lifecycle state. Progress recalculation must
+    # never reopen onboarding for a finalized tenant.
     stage = client_obj.stage
-    if stage not in ['IN_PRODUCTION', 'PRODUCTION', 'production', 'production_pending']:
+    if str(stage or '').lower() == 'offboarded':
+        stage = 'offboarded'
+    elif stage not in ['IN_PRODUCTION', 'PRODUCTION', 'production', 'production_pending']:
         if completed_steps == total_steps:
             stage = "onboarding_completed"
         else:
@@ -1031,6 +1065,9 @@ def api_admin_step_upload(request, client_id, step_key):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/upload/ """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding file upload")
+    if locked:
+        return locked
 
     file_bytes = request.body
     filename = request.headers.get('X-Filename', 'uploaded_document.pdf')
@@ -1217,6 +1254,9 @@ def api_admin_step_notes(request, client_id, step_key):
         return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
 
     if request.method == "POST":
+        locked = _offboarded_workflow_lock(request, client_id, "workflow note creation")
+        if locked:
+            return locked
         try:
             body = json.loads(request.body.decode('utf-8'))
         except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1279,6 +1319,9 @@ def api_admin_delete_step_note(request, client_id, step_key, note_id):
     from accounts.models import ClientStepComment
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "workflow note deletion")
+    if locked:
+        return locked
     try:
         step_number = _comment_step_number(step_key)
     except (ValueError, IndexError):
@@ -1293,6 +1336,9 @@ def api_admin_delete_step_note(request, client_id, step_key, note_id):
 
 @csrf_exempt
 def api_admin_delete_client_contact(request, client_id, contact_id):
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding contact deletion")
+    if locked:
+        return locked
     from accounts.models import ClientContact
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
@@ -1304,6 +1350,9 @@ def api_admin_delete_client_contact(request, client_id, contact_id):
 
 @csrf_exempt
 def api_admin_delete_client_user(request, client_id, user_id):
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding user deletion")
+    if locked:
+        return locked
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
     user_obj = User.objects.filter(id=user_id, client_id=client_id, is_staff=False).first()
@@ -1319,6 +1368,9 @@ def api_admin_step_redo(request, client_id, step_key):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/redo/ """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding step redo")
+    if locked:
+        return locked
     try:
         parts = step_key.split('_')
         if len(parts) >= 2:
@@ -1373,6 +1425,9 @@ def api_admin_step_validate_835(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/steps/step_7_835_val/validate-uploaded/ """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding 835 validation")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
 
@@ -1561,6 +1616,9 @@ def api_admin_step_action(request, client_id, step_key, action):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/<action>/ """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, f"onboarding step action '{action}'")
+    if locked:
+        return locked
 
     try:
         parts = step_key.split('_')
@@ -1784,6 +1842,9 @@ def api_admin_client_smtp(request, client_id):
             return JsonResponse({'success': True, 'config': None})
 
     if request.method == 'POST':
+        locked = _offboarded_workflow_lock(request, client_id, "onboarding SMTP update")
+        if locked:
+            return locked
         try:
             data = json.loads(request.body.decode('utf-8'))
             smtp_fields = {
@@ -2542,6 +2603,9 @@ def api_admin_golive_state(request, client_id):
 @csrf_exempt
 def api_admin_golive_step_upload(request, client_id, step_num):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/upload/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live file upload")
+    if locked:
+        return locked
     file_bytes = request.body
     filename = request.headers.get('X-Filename', 'uploaded_document.pdf')
 
@@ -2602,6 +2666,9 @@ def api_admin_golive_step_download(request, client_id, step_num):
 @csrf_exempt
 def api_admin_golive_step3_sftp(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/3/sftp/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live SFTP completion")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
         step_def, _ = GoLiveStepDefinition.objects.get_or_create(step_number=3, defaults={"title": "Production SFTP"})
@@ -2625,6 +2692,9 @@ def api_admin_golive_step3_sftp(request, client_id):
 @csrf_exempt
 def api_admin_golive_step4_schedule(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/4/schedule/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live schedule update")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
 
@@ -2682,6 +2752,9 @@ def api_admin_golive_step4_schedule(request, client_id):
 @csrf_exempt
 def api_admin_golive_step5_comment(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/5/comment/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live comment completion")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
 
@@ -2722,6 +2795,9 @@ def api_admin_golive_step5_comment(request, client_id):
 @csrf_exempt
 def api_admin_golive_step6_complete(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/6/complete/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live final completion")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
         step_def, _ = GoLiveStepDefinition.objects.get_or_create(step_number=6, defaults={"title": "Final Production"})
@@ -2742,6 +2818,9 @@ def api_admin_golive_step6_complete(request, client_id):
 @csrf_exempt
 def api_admin_golive_step_redo(request, client_id, step_num):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/redo/ """
+    locked = _offboarded_workflow_lock(request, client_id, "Go Live step redo")
+    if locked:
+        return locked
     try:
         client_obj = Client.objects.get(id=client_id)
         step_def = GoLiveStepDefinition.objects.get(step_number=step_num)
@@ -2774,6 +2853,9 @@ def api_admin_test_environment(request, client_id):
     )
 
     if request.method == "POST":
+        locked = _offboarded_workflow_lock(request, client_id, "Go Live test environment update")
+        if locked:
+            return locked
         try:
             body = json.loads(request.body.decode('utf-8'))
             if "sftp_host" in body:
@@ -3098,6 +3180,8 @@ def helper_get_offboarding_state(client_obj):
     return {
         "total_steps": total,
         "completed_steps": sum(1 for s in steps_data if s["status"] == "COMPLETED"),
+        "finalized": str(client_obj.stage or "").lower() == "offboarded",
+        "locked": str(client_obj.stage or "").lower() == "offboarded",
         "steps": steps_data
     }
 
@@ -3121,6 +3205,9 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
     from django.http import JsonResponse
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "offboarding step completion")
+    if locked:
+        return locked
     try:
         from accounts.models import Client
         step_num = int(step_num)
@@ -3267,6 +3354,11 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
 @csrf_exempt
 def api_admin_offboarding_step_redo(request, client_id, step_num):
     from django.http import JsonResponse
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "offboarding step redo")
+    if locked:
+        return locked
     try:
         from accounts.models import Client
         client_obj = Client.objects.get(id=client_id)
@@ -3276,15 +3368,6 @@ def api_admin_offboarding_step_redo(request, client_id, step_num):
         status_obj.status = 'PENDING'
         status_obj.document_path = None
         status_obj.save()
-
-        if step_num == 3:
-            client_obj.status = 'ACTIVE'
-            client_obj.stage = 'production' # fallback
-            client_obj.save()
-
-            # Reactivate all users belonging to this client
-            from accounts.models import User as AccountUser
-            AccountUser.objects.filter(client=client_obj, is_staff=False, is_superuser=False).update(is_active=True)
 
     except ClientOffboardingStatus.DoesNotExist:
         pass

@@ -363,11 +363,51 @@ class OnboardingSequenceTestCase(TestCase):
         self.assertEqual(self.client_record.stage, "offboarded")
         self.assertFalse(user.is_active)
 
-        # Retrying the request is safe and retains the completed/revoked state.
+        # Finalization is irreversible: repeat completion and every workflow
+        # mutation are rejected while read-only history remains available.
         repeated = self.client.post(step3_url)
-        self.assertEqual(repeated.status_code, 200)
-        self.assertEqual(repeated.json()["revoked_users"], 0)
-        self.assertEqual(repeated.json()["state"]["completed_steps"], 3)
+        self.assertEqual(repeated.status_code, 409)
+        self.assertEqual(repeated.json()["code"], "CLIENT_OFFBOARDING_FINALIZED")
+
+        state = self.client.get(
+            f"/admin-panel/api/clients/{self.client_record.id}/offboarding/state/"
+        )
+        self.assertEqual(state.status_code, 200)
+        self.assertTrue(state.json()["state"]["locked"])
+        self.assertEqual(state.json()["state"]["completed_steps"], 3)
+
+        for step_number in (1, 2, 3):
+            redo = self.client.post(
+                f"/admin-panel/api/clients/{self.client_record.id}/offboarding/steps/{step_number}/redo/"
+            )
+            self.assertEqual(redo.status_code, 409)
+
+        onboarding_redo = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/step_1_mutual_nda_signed/redo/"
+        )
+        self.assertEqual(onboarding_redo.status_code, 409)
+
+        golive_redo = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/golive/steps/1/redo/"
+        )
+        self.assertEqual(golive_redo.status_code, 409)
+
+        add_note = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/steps/offboard_step_1/notes/",
+            data=json.dumps({"note_text": "Attempt to modify finalized history"}),
+            content_type="application/json",
+        )
+        self.assertEqual(add_note.status_code, 409)
+
+        reactivate = self.client.post(
+            f"/admin-panel/api/clients/{self.client_record.id}/update/",
+            data=json.dumps({"stage": "onboarding", "status": "ACTIVE"}),
+            content_type="application/json",
+        )
+        self.assertEqual(reactivate.status_code, 409)
+        self.client_record.refresh_from_db()
+        self.assertEqual(self.client_record.stage, "offboarded")
+        self.assertEqual(self.client_record.status, "INACTIVE")
 
         clients_response = self.client.get("/admin-panel/api/clients/")
         self.assertEqual(clients_response.status_code, 200)
