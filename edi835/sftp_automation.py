@@ -1,6 +1,7 @@
 """Persistent daily scheduling around the existing SFTP batch/Test pipeline."""
 
 from datetime import datetime, timedelta, timezone as dt_timezone
+import logging
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -10,9 +11,19 @@ from django.utils import timezone
 
 from .batch_jobs import active_job_for, write_job
 from .models import SFTPAutomationRun, SFTPAutomationSchedule
+from admin_panel.email_service import send_automation_run_notice
 
 
 DEFAULT_TIMEZONE = "America/New_York"
+logger = logging.getLogger(__name__)
+
+
+def _send_run_notice_safely(run):
+    try:
+        return send_automation_run_notice(run)
+    except Exception:
+        logger.exception("Automation run %s completed, but its email notification failed.", run.id)
+        return False
 
 
 def validated_timezone(value):
@@ -49,6 +60,7 @@ def enqueue_due_automations(now=None):
     """Queue each due schedule once and advance it to the next local day."""
     now = now or timezone.now()
     queued = 0
+    terminal_run_ids = []
     with transaction.atomic():
         due = list(
             SFTPAutomationSchedule.objects.select_for_update(skip_locked=True)
@@ -79,6 +91,7 @@ def enqueue_due_automations(now=None):
                 run.finished_at = now
                 run.error_message = "The client is inactive or offboarded; automated access is blocked."
                 run.save(update_fields=["status", "finished_at", "error_message"])
+                terminal_run_ids.append(run.id)
                 continue
             actor = _automation_actor(schedule)
             active = active_job_for(f"{schedule.client_id}:{schedule.automation_type}")
@@ -87,12 +100,14 @@ def enqueue_due_automations(now=None):
                 run.finished_at = now
                 run.error_message = "A batch conversion was already queued or running for this client."
                 run.save(update_fields=["status", "finished_at", "error_message"])
+                terminal_run_ids.append(run.id)
                 continue
             if not actor:
                 run.status = "FAILED"
                 run.finished_at = now
                 run.error_message = "No active administrator is available to execute this schedule."
                 run.save(update_fields=["status", "finished_at", "error_message"])
+                terminal_run_ids.append(run.id)
                 continue
 
             job_id = str(uuid.uuid4())
@@ -113,6 +128,8 @@ def enqueue_due_automations(now=None):
                 "result": None,
             })
             queued += 1
+    for run in SFTPAutomationRun.objects.select_related("client", "schedule").filter(id__in=terminal_run_ids):
+        _send_run_notice_safely(run)
     return queued
 
 
@@ -150,11 +167,20 @@ def finish_automation_run(job):
         error_message=str(error or ""),
         result=result,
     )
+    run = SFTPAutomationRun.objects.select_related("client", "schedule").filter(id=run_id).first()
+    if run:
+        _send_run_notice_safely(run)
 
 
 def recover_interrupted_automation_runs():
-    return SFTPAutomationRun.objects.filter(status="RUNNING", finished_at__isnull=True).update(
+    interrupted = list(SFTPAutomationRun.objects.filter(
+        status="RUNNING", finished_at__isnull=True
+    ).values_list("id", flat=True))
+    recovered = SFTPAutomationRun.objects.filter(id__in=interrupted).update(
         status="FAILED",
         finished_at=timezone.now(),
         error_message="The automation worker restarted before this run completed. Inbound files were retained for a safe retry.",
     )
+    for run in SFTPAutomationRun.objects.select_related("client", "schedule").filter(id__in=interrupted):
+        _send_run_notice_safely(run)
+    return recovered
