@@ -15,6 +15,9 @@ from admin_panel.email_service import send_automation_run_notice
 
 
 DEFAULT_TIMEZONE = "America/New_York"
+TIMEZONE_ALIASES = {
+    "Asia/Calcutta": "Asia/Kolkata",
+}
 logger = logging.getLogger(__name__)
 
 
@@ -28,6 +31,7 @@ def _send_run_notice_safely(run):
 
 def validated_timezone(value):
     name = str(value or DEFAULT_TIMEZONE).strip()
+    name = TIMEZONE_ALIASES.get(name, name)
     try:
         ZoneInfo(name)
     except ZoneInfoNotFoundError as exc:
