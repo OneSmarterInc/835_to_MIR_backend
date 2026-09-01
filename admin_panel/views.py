@@ -231,6 +231,7 @@ def api_admin_clients(request):
             "phone": c.phone or "",
             "address": c.address or "",
             "state": c.state or "",
+            "zip_code": c.zip_code or "",
             "status": c.status,
             "stage": dynamic_stage,
             "claims_system": c.claims_system,
@@ -274,6 +275,7 @@ def api_admin_create_client(request):
     phone = (data.get("phone") or "").strip()
     address = (data.get("address") or "").strip()
     state = (data.get("state") or "").strip().upper()
+    zip_code = (data.get("zip_code") or data.get("zip") or "").strip()
     status = (data.get("status") or "ACTIVE").strip().upper()
     notes = (data.get("notes") or "").strip()
     claims_system = (data.get("claims_system") or "Vendor Hosted").strip()
@@ -300,6 +302,8 @@ def api_admin_create_client(request):
 
     if state and (len(state) != 2 or not state.isalpha()):
         return JsonResponse({"success": False, "error": "State must be a valid two-letter US state abbreviation."}, status=400)
+    if zip_code and not __import__("re").fullmatch(r"\d{5}(?:-\d{4})?", zip_code):
+        return JsonResponse({"success": False, "error": "ZIP code must be in 12345 or 12345-6789 format."}, status=400)
 
     if status not in ["ACTIVE", "INACTIVE"]:
         status = "ACTIVE"
@@ -313,6 +317,7 @@ def api_admin_create_client(request):
                 phone=phone,
                 address=address,
                 state=state,
+                zip_code=zip_code,
                 status=status,
                 notes=notes,
                 claims_system=claims_system,
@@ -372,6 +377,7 @@ def api_admin_create_client(request):
                 "phone": client_obj.phone or "",
                 "address": client_obj.address or "",
                 "state": client_obj.state or "",
+                "zip_code": client_obj.zip_code or "",
                 "status": client_obj.status,
                 "stage": client_obj.stage,
                 "claims_system": client_obj.claims_system,
