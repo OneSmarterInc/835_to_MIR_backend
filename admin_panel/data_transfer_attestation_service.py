@@ -15,54 +15,53 @@ from admin_panel.nda_service import (
 )
 
 
-BAA_TEMPLATE_FILENAME = "OneSmarter_BAA_Template.pdf"
+DATA_TRANSFER_TEMPLATE_FILENAME = "OneSmarter_ProductionBaseline_Template.pdf"
 SIGNATURE_REGIONS = {
-    "OneSmarter": (86, 266, 335, 310),
-    "Client": (356, 266, 575, 310),
+    "OneSmarter": (86, 388, 335, 443),
+    "Client": (356, 388, 575, 443),
 }
 
 
 def _template_bytes():
-    path = Path(settings.BASE_DIR) / "sample_docs" / BAA_TEMPLATE_FILENAME
+    path = Path(settings.BASE_DIR) / "sample_docs" / DATA_TRANSFER_TEMPLATE_FILENAME
     return path.read_bytes()
 
 
-def build_client_baa(client, effective_date=None):
-    """Overlay client-specific fields on the approved four-page BAA."""
+def build_client_data_transfer_attestation(client, attestation_date=None):
+    """Overlay client-specific fields on the approved three-page attestation."""
     from reportlab.lib.pagesizes import letter
     from reportlab.pdfgen.canvas import Canvas
 
     if not (client.name or "").strip():
-        raise ValueError("Client legal name is required before downloading the BAA.")
+        raise ValueError("Client legal name is required before downloading the Data Transfer Attestation.")
     full_address = client_nda_address(client)
     if not full_address:
-        raise ValueError("Client address is required before downloading the BAA.")
+        raise ValueError("Client address is required before downloading the Data Transfer Attestation.")
 
-    agreement_date = effective_date or datetime.now(ZoneInfo("America/New_York")).date()
-    date_label = agreement_date.strftime("%B %d, %Y").replace(" 0", " ")
+    signed_date = attestation_date or datetime.now(ZoneInfo("America/New_York")).date()
+    date_label = signed_date.strftime("%B %d, %Y").replace(" 0", " ")
     overlay_buffer = io.BytesIO()
     canvas = Canvas(overlay_buffer, pagesize=letter)
 
-    # Page 1: effective date, Covered Entity name, and full address.
+    # Page 1: attestation date, client legal name, and full stored address.
     canvas.setFillColorRGB(1, 1, 1)
-    canvas.rect(75, 588, 151, 17, fill=1, stroke=0)
-    canvas.rect(75, 557, 237, 17, fill=1, stroke=0)
-    canvas.rect(75, 542, 235, 17, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 78, 593, 144, align="center")
-    _fit_text(canvas, client.name, 78, 562, 228, font_name="Helvetica-Bold", align="center")
-    _fit_text(canvas, full_address, 78, 547, 225, align="center")
+    canvas.rect(75, 568, 151, 17, fill=1, stroke=0)
+    canvas.rect(75, 537, 237, 17, fill=1, stroke=0)
+    canvas.rect(75, 522, 235, 17, fill=1, stroke=0)
+    _fit_text(canvas, date_label, 78, 573, 144, align="center")
+    _fit_text(canvas, client.name, 78, 542, 228, font_name="Helvetica-Bold", align="center")
+    _fit_text(canvas, full_address, 78, 527, 225, align="center")
     canvas.showPage()
 
-    # Pages 2 and 3 have no personalized fields.
-    canvas.showPage()
+    # Page 2 has no personalized fields.
     canvas.showPage()
 
-    # Page 4: agreement date and Covered Entity name under its signature line.
+    # Page 3: attestation date and client name beneath its countersignature line.
     canvas.setFillColorRGB(1, 1, 1)
-    canvas.rect(181, 586, 350, 18, fill=1, stroke=0)
-    canvas.rect(359, 466, 225, 18, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 185, 591, 335, align="center")
-    _fit_text(canvas, client.name, 362, 471, 215, font_name="Helvetica-Bold", align="center")
+    canvas.rect(171, 466, 190, 18, fill=1, stroke=0)
+    canvas.rect(359, 348, 225, 18, fill=1, stroke=0)
+    _fit_text(canvas, date_label, 174, 471, 181, align="center")
+    _fit_text(canvas, client.name, 362, 353, 215, font_name="Helvetica-Bold", align="center")
     canvas.save()
     overlay_buffer.seek(0)
 
@@ -78,9 +77,9 @@ def build_client_baa(client, effective_date=None):
     return output.getvalue()
 
 
-def baa_download_filename(client):
+def data_transfer_attestation_download_filename(client):
     safe_name = re.sub(r"[^A-Za-z0-9]+", "_", client.name or "Client").strip("_")
-    return f"OneSmarter_BAA_{safe_name}.pdf"
+    return f"OneSmarter_Data_Transfer_Attestation_{safe_name}.pdf"
 
 
 def _signature_region_has_ink(uploaded_pdf, reference_pdf, region):
@@ -89,9 +88,9 @@ def _signature_region_has_ink(uploaded_pdf, reference_pdf, region):
 
     def crop(pdf_bytes):
         document = fitz.open(stream=pdf_bytes, filetype="pdf")
-        if len(document) < 4:
-            raise ValueError("The signed BAA must contain all four pages.")
-        pixmap = document[3].get_pixmap(
+        if len(document) < 3:
+            raise ValueError("The signed Data Transfer Attestation must contain all three pages.")
+        pixmap = document[2].get_pixmap(
             matrix=fitz.Matrix(2, 2),
             clip=fitz.Rect(*region),
             colorspace=fitz.csGRAY,
@@ -108,8 +107,8 @@ def _signature_region_has_ink(uploaded_pdf, reference_pdf, region):
     return uploaded_ink >= reference_ink + max(120, int(reference_ink * 0.06))
 
 
-def validate_signed_baa(pdf_bytes, client):
-    """Require the approved terms, complete client identity, date, and signatures."""
+def validate_signed_data_transfer_attestation(pdf_bytes, client):
+    """Require approved attestation terms, client identity, date, and signatures."""
     PdfReader, _ = _pdf_classes()
     checks = []
     try:
@@ -118,22 +117,22 @@ def validate_signed_baa(pdf_bytes, client):
     except Exception:
         return False, [{
             "ok": False,
-            "label": "BAA PDF integrity",
-            "detail": "The uploaded BAA is not a readable PDF document.",
+            "label": "Data Transfer Attestation PDF integrity",
+            "detail": "The uploaded Data Transfer Attestation is not a readable PDF document.",
         }]
 
     normalized_text = _normalized(extracted)
-    required_legal_text = (
-        "BUSINESS ASSOCIATE AGREEMENT",
-        "Obligations of the Business Associate",
-        "Breach Notification",
-        "Governing Law",
+    required_attestation_text = (
+        "PRODUCTION DATA TRANSFER SECURITY ATTESTATION",
+        "Identification of the Transfer",
+        "Protection in Transit",
+        "Attestation and Reliance",
     )
-    legal_text_present = all(_normalized(phrase) in normalized_text for phrase in required_legal_text)
+    approved_content = all(_normalized(phrase) in normalized_text for phrase in required_attestation_text)
     checks.append({
-        "ok": legal_text_present,
-        "label": "Approved BAA content",
-        "detail": "Required HIPAA BAA terms are present." if legal_text_present else "The uploaded file is not the approved OneSmarter BAA template.",
+        "ok": approved_content,
+        "label": "Approved Data Transfer Attestation content",
+        "detail": "Required Data Transfer Attestation terms are present." if approved_content else "The uploaded file is not the approved OneSmarter Data Transfer Attestation template.",
     })
 
     for label, value in (
@@ -144,7 +143,7 @@ def validate_signed_baa(pdf_bytes, client):
         checks.append({
             "ok": present,
             "label": label,
-            "detail": f"{label} is present in the agreement." if present else f"The BAA must contain the selected client's {label.lower()}.",
+            "detail": f"{label} is present in the attestation." if present else f"The Data Transfer Attestation must contain the selected client's {label.lower()}.",
         })
 
     date_present = bool(re.search(
@@ -154,12 +153,12 @@ def validate_signed_baa(pdf_bytes, client):
     ))
     checks.append({
         "ok": date_present,
-        "label": "Agreement date",
-        "detail": "Agreement date is present." if date_present else "The BAA must contain a completed agreement date.",
+        "label": "Attestation date",
+        "detail": "Attestation date is present." if date_present else "The Data Transfer Attestation must contain a completed attestation date.",
     })
 
     digital_signatures = _signed_digital_fields(pdf_bytes)
-    reference = build_client_baa(client)
+    reference = build_client_data_transfer_attestation(client)
     for party, region in SIGNATURE_REGIONS.items():
         try:
             signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)

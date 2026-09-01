@@ -27,16 +27,28 @@ def _template_bytes():
     return path.read_bytes()
 
 
-def _fit_text(canvas, text, x, y, max_width, preferred_size=9, minimum_size=6.5):
+def _fit_text(
+    canvas,
+    text,
+    x,
+    y,
+    max_width,
+    preferred_size=10,
+    minimum_size=6.5,
+    font_name="Helvetica",
+    align="left",
+):
     from reportlab.pdfbase.pdfmetrics import stringWidth
 
     value = " ".join(str(text or "").split())
     size = preferred_size
-    while size > minimum_size and stringWidth(value, "Helvetica", size) > max_width:
+    while size > minimum_size and stringWidth(value, font_name, size) > max_width:
         size -= 0.25
-    canvas.setFont("Helvetica", size)
+    canvas.setFont(font_name, size)
     canvas.setFillColorRGB(0.05, 0.05, 0.05)
-    canvas.drawString(x, y, value)
+    text_width = stringWidth(value, font_name, size)
+    draw_x = x + max(0, (max_width - text_width) / 2) if align == "center" else x
+    canvas.drawString(draw_x, y, value)
 
 
 def client_nda_address(client):
@@ -72,9 +84,9 @@ def build_client_nda(client, effective_date=None):
     canvas.rect(416, 630, 108, 16, fill=1, stroke=0)
     canvas.rect(234, 601, 194, 16, fill=1, stroke=0)
     canvas.rect(126, 587, 191, 16, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 418, 635, 104, preferred_size=8.5)
-    _fit_text(canvas, client.name, 237, 606, 186)
-    _fit_text(canvas, full_address, 129, 592, 183, preferred_size=8)
+    _fit_text(canvas, date_label, 418, 635, 104, align="center")
+    _fit_text(canvas, client.name, 237, 606, 186, font_name="Helvetica-Bold", align="center")
+    _fit_text(canvas, full_address, 129, 592, 183, align="center")
     canvas.showPage()
 
     # Page 2 has no client-specific fields.
@@ -84,8 +96,8 @@ def build_client_nda(client, effective_date=None):
     canvas.setFillColorRGB(1, 1, 1)
     canvas.rect(166, 636, 150, 17, fill=1, stroke=0)
     canvas.rect(327, 545, 220, 18, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 169, 641, 144, preferred_size=9)
-    _fit_text(canvas, client.name, 330, 550, 205, preferred_size=9)
+    _fit_text(canvas, date_label, 169, 641, 144, align="center")
+    _fit_text(canvas, client.name, 330, 550, 205, font_name="Helvetica-Bold", align="center")
     canvas.save()
     overlay_buffer.seek(0)
 

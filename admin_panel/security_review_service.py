@@ -48,9 +48,9 @@ def build_client_security_review(client, return_date=None):
     canvas.rect(75, 588, 151, 17, fill=1, stroke=0)
     canvas.rect(75, 557, 237, 17, fill=1, stroke=0)
     canvas.rect(75, 542, 235, 17, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 78, 593, 144, preferred_size=9)
-    _fit_text(canvas, client.name, 78, 562, 228, preferred_size=9)
-    _fit_text(canvas, full_address, 78, 547, 225, preferred_size=8)
+    _fit_text(canvas, date_label, 78, 593, 144, align="center")
+    _fit_text(canvas, client.name, 78, 562, 228, font_name="Helvetica-Bold", align="center")
+    _fit_text(canvas, full_address, 78, 547, 225, align="center")
     canvas.showPage()
 
     # Page 2 has no personalized fields.
@@ -60,8 +60,8 @@ def build_client_security_review(client, return_date=None):
     canvas.setFillColorRGB(1, 1, 1)
     canvas.rect(163, 440, 190, 18, fill=1, stroke=0)
     canvas.rect(359, 326, 225, 18, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 166, 445, 181, preferred_size=9)
-    _fit_text(canvas, client.name, 362, 331, 215, preferred_size=9)
+    _fit_text(canvas, date_label, 166, 445, 181, align="center")
+    _fit_text(canvas, client.name, 362, 331, 215, font_name="Helvetica-Bold", align="center")
     canvas.save()
     overlay_buffer.seek(0)
 

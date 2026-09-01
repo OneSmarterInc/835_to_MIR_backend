@@ -421,6 +421,17 @@ def validate_golive_step_upload(step_number: int, buf: bytes, orig_filename: str
         if not ok:
             return {"ok": False, "checks": authorization_checks}
 
+    if step_number == 2:
+        if client is None:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Client identity", "detail": "A selected client is required to validate the Data Transfer Attestation."}],
+            }
+        from admin_panel.data_transfer_attestation_service import validate_signed_data_transfer_attestation
+        ok, attestation_checks = validate_signed_data_transfer_attestation(buf, client)
+        if not ok:
+            return {"ok": False, "checks": attestation_checks}
+
     template_filename_map = {
         1: 'OneSmarter_CutoverAuthorization_Template.pdf',
         2: 'OneSmarter_ProductionBaseline_Template.pdf',

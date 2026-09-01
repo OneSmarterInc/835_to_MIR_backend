@@ -48,9 +48,9 @@ def build_client_golive_authorization(client, authorization_date=None):
     canvas.rect(369, 604, 151, 17, fill=1, stroke=0)
     canvas.rect(303, 573, 237, 17, fill=1, stroke=0)
     canvas.rect(243, 557, 235, 17, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 372, 609, 144, preferred_size=9)
-    _fit_text(canvas, client.name, 306, 578, 228, preferred_size=9)
-    _fit_text(canvas, full_address, 246, 562, 225, preferred_size=8)
+    _fit_text(canvas, date_label, 372, 609, 144, align="center")
+    _fit_text(canvas, client.name, 306, 578, 228, font_name="Helvetica-Bold", align="center")
+    _fit_text(canvas, full_address, 246, 562, 225, align="center")
     canvas.showPage()
 
     # Page 2 contains schedule fields completed during go-live planning.
@@ -60,8 +60,8 @@ def build_client_golive_authorization(client, authorization_date=None):
     canvas.setFillColorRGB(1, 1, 1)
     canvas.rect(183, 407, 190, 18, fill=1, stroke=0)
     canvas.rect(359, 290, 225, 18, fill=1, stroke=0)
-    _fit_text(canvas, date_label, 186, 412, 181, preferred_size=9)
-    _fit_text(canvas, client.name, 362, 295, 215, preferred_size=9)
+    _fit_text(canvas, date_label, 186, 412, 181, align="center")
+    _fit_text(canvas, client.name, 362, 295, 215, font_name="Helvetica-Bold", align="center")
     canvas.save()
     overlay_buffer.seek(0)
 
