@@ -9,6 +9,31 @@ from admin_panel.models import AuditLog
 from edi835.models import EDI835File
 
 
+class Onboarding835ValidationTestCase(TestCase):
+    def setUp(self):
+        self.client_record = Client.objects.create(
+            name="835 Validation Health",
+            client_code="VALIDATE-835",
+            email="validation-835@example.com",
+            owner="System Admin",
+        )
+        self.url = (
+            f"/admin-panel/api/clients/{self.client_record.id}/"
+            "steps/step_7_835_val/validate-uploaded/"
+        )
+
+    def test_validator_reads_uploaded_filename_without_name_error(self):
+        response = self.client.post(
+            self.url,
+            data=b"not an X12 document",
+            content_type="application/octet-stream",
+            HTTP_X_FILENAME="sample.835",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertNotIn("name 'os' is not defined", response.json().get("error", ""))
+
+
 class PermanentClientDeletionTestCase(TestCase):
     def setUp(self):
         self.superadmin = User.objects.create_superuser(
