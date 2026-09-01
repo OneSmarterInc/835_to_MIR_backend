@@ -211,6 +211,33 @@ class AdministrativeRoleTransitionTestCase(TestCase):
         self.assertTrue(self.admin.is_staff)
         self.assertFalse(self.admin.is_superuser)
 
+    def test_access_matrix_keeps_staff_separate_from_offboarded_clients(self):
+        offboarded = Client.objects.create(
+            name="Former Tenant",
+            code="FORMER-TENANT",
+            stage="offboarded",
+        )
+        User.objects.filter(pk=self.admin.pk).update(client=offboarded)
+        User.objects.filter(pk=self.superadmin.pk).update(client=offboarded)
+        tenant_user = User.objects.create_user(
+            email="former-user@example.com",
+            name="Former User",
+            mobile="5550199199",
+            password="test-password",
+            client=offboarded,
+        )
+
+        self.client.force_login(self.superadmin)
+        response = self.client.get("/admin-panel/api/access/info/")
+
+        self.assertEqual(response.status_code, 200)
+        rows = {row["email"]: row for row in response.json()["staff"]}
+        self.assertIn(self.admin.email, rows)
+        self.assertIn(self.superadmin.email, rows)
+        self.assertNotIn(tenant_user.email, rows)
+        self.assertEqual(rows[self.admin.email]["clients"], ["OneSmarter"])
+        self.assertEqual(rows[self.superadmin.email]["clients"], ["OneSmarter"])
+
 
 class OnboardingSequenceTestCase(TestCase):
     def setUp(self):

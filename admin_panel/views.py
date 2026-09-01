@@ -528,8 +528,16 @@ def api_admin_access_info(request):
         return JsonResponse({"success": False, "error": "Not authenticated"}, status=401)
 
     staff_list = []
-    visible_users = User.objects.select_related("client").exclude(
-        client__stage="offboarded", is_staff=False, is_superuser=False,
+    # Administrative identities belong to OneSmarter, never to a tenant.  Keep
+    # their visibility and account state completely independent from any stale
+    # legacy client relation.  Tenant state applies only to ordinary users.
+    administrative_accounts = Q(is_staff=True) | Q(is_superuser=True)
+    active_tenant_accounts = (
+        Q(is_staff=False, is_superuser=False)
+        & (Q(client__isnull=True) | ~Q(client__stage="offboarded"))
+    )
+    visible_users = User.objects.select_related("client").filter(
+        administrative_accounts | active_tenant_accounts
     ).order_by("-created_at")
     for u in visible_users:
         staff_list.append({
