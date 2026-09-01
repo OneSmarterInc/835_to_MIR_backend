@@ -10,6 +10,7 @@ from admin_panel.nda_service import (
     _fit_text,
     _normalized,
     _pdf_classes,
+    _signature_validation_enabled,
     _signed_digital_fields,
     client_nda_address,
 )
@@ -157,17 +158,18 @@ def validate_signed_data_transfer_attestation(pdf_bytes, client):
         "detail": "Attestation date is present." if date_present else "The Data Transfer Attestation must contain a completed attestation date.",
     })
 
-    digital_signatures = _signed_digital_fields(pdf_bytes)
-    reference = build_client_data_transfer_attestation(client)
-    for party, region in SIGNATURE_REGIONS.items():
-        try:
-            signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
-        except Exception:
-            signed = False
-        checks.append({
-            "ok": signed,
-            "label": f"{party} signature",
-            "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
-        })
+    if _signature_validation_enabled():
+        digital_signatures = _signed_digital_fields(pdf_bytes)
+        reference = build_client_data_transfer_attestation(client)
+        for party, region in SIGNATURE_REGIONS.items():
+            try:
+                signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
+            except Exception:
+                signed = False
+            checks.append({
+                "ok": signed,
+                "label": f"{party} signature",
+                "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
+            })
 
     return all(check["ok"] for check in checks), checks

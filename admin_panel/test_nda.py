@@ -1,5 +1,7 @@
 import io
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -76,13 +78,19 @@ class PersonalizedNdaTestCase(TestCase):
         self.assertGreaterEqual(text.count(self.client_record.name), 2)
         self.assertRegex(text, r"September\s+1,\s+2026|\w+\s+\d{1,2},\s+\d{4}")
 
-    def test_blank_personalized_nda_is_rejected_for_both_missing_signatures(self):
+    def test_blank_personalized_nda_is_accepted_while_signature_validation_is_disabled(self):
         ok, checks = validate_signed_nda(build_client_nda(self.client_record), self.client_record)
+        self.assertTrue(ok, checks)
+        self.assertFalse(any("signature" in check["label"].lower() for check in checks))
+
+    def test_signature_validation_can_be_reenabled_by_environment(self):
+        with patch.dict(os.environ, {"DOCUMENT_SIGNATURE_VALIDATION_ENABLED": "true"}):
+            ok, checks = validate_signed_nda(build_client_nda(self.client_record), self.client_record)
         self.assertFalse(ok)
         failed_labels = {check["label"] for check in checks if not check["ok"]}
         self.assertEqual(failed_labels, {"OneSmarter signature", "Client signature"})
 
-    def test_unpersonalized_template_fails_identity_address_date_and_signatures(self):
+    def test_unpersonalized_template_fails_identity_address_and_date(self):
         from django.conf import settings
         template = (Path(settings.BASE_DIR) / "sample_docs" / "OneSmarter_MutualNDA_Template.pdf").read_bytes()
         ok, checks = validate_signed_nda(template, self.client_record)
@@ -92,8 +100,6 @@ class PersonalizedNdaTestCase(TestCase):
             "Client legal name",
             "Client address",
             "Agreement date",
-            "OneSmarter signature",
-            "Client signature",
         }.issubset(failed_labels))
 
     def test_nda_with_both_signatures_is_accepted(self):

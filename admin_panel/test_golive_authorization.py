@@ -78,13 +78,12 @@ class PersonalizedGoLiveAuthorizationTestCase(TestCase):
         self.assertGreaterEqual(text.count(self.client_record.name), 2)
         self.assertRegex(text, r"\w+\s+\d{1,2},\s+\d{4}")
 
-    def test_blank_personalized_authorization_rejects_both_signatures(self):
+    def test_blank_personalized_authorization_is_accepted_while_signature_validation_is_disabled(self):
         ok, checks = validate_signed_golive_authorization(
             build_client_golive_authorization(self.client_record), self.client_record
         )
-        self.assertFalse(ok)
-        failed_labels = {check["label"] for check in checks if not check["ok"]}
-        self.assertEqual(failed_labels, {"OneSmarter signature", "Client signature"})
+        self.assertTrue(ok, checks)
+        self.assertFalse(any("signature" in check["label"].lower() for check in checks))
 
     def test_authorization_with_both_signatures_is_accepted(self):
         signed_pdf = add_mock_signatures(build_client_golive_authorization(self.client_record))

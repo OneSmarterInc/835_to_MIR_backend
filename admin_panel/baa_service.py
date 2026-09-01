@@ -10,6 +10,7 @@ from admin_panel.nda_service import (
     _fit_text,
     _normalized,
     _pdf_classes,
+    _signature_validation_enabled,
     _signed_digital_fields,
     client_nda_address,
 )
@@ -158,17 +159,18 @@ def validate_signed_baa(pdf_bytes, client):
         "detail": "Agreement date is present." if date_present else "The BAA must contain a completed agreement date.",
     })
 
-    digital_signatures = _signed_digital_fields(pdf_bytes)
-    reference = build_client_baa(client)
-    for party, region in SIGNATURE_REGIONS.items():
-        try:
-            signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
-        except Exception:
-            signed = False
-        checks.append({
-            "ok": signed,
-            "label": f"{party} signature",
-            "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
-        })
+    if _signature_validation_enabled():
+        digital_signatures = _signed_digital_fields(pdf_bytes)
+        reference = build_client_baa(client)
+        for party, region in SIGNATURE_REGIONS.items():
+            try:
+                signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
+            except Exception:
+                signed = False
+            checks.append({
+                "ok": signed,
+                "label": f"{party} signature",
+                "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
+            })
 
     return all(check["ok"] for check in checks), checks

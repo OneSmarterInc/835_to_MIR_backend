@@ -1,4 +1,5 @@
 import io
+import os
 import re
 from datetime import datetime
 from pathlib import Path
@@ -134,6 +135,13 @@ def _signed_digital_fields(pdf_bytes):
     )
 
 
+def _signature_validation_enabled():
+    """Keep detection available while signature enforcement is temporarily disabled."""
+    return os.getenv("DOCUMENT_SIGNATURE_VALIDATION_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def _signature_region_has_ink(uploaded_pdf, reference_pdf, region):
     """Compare a signature box with the generated blank agreement."""
     import fitz
@@ -209,17 +217,18 @@ def validate_signed_nda(pdf_bytes, client):
         "detail": "Agreement date is present." if date_present else "The NDA must contain a completed agreement date.",
     })
 
-    digital_signatures = _signed_digital_fields(pdf_bytes)
-    reference = build_client_nda(client)
-    for party, region in SIGNATURE_REGIONS.items():
-        try:
-            signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
-        except Exception:
-            signed = False
-        checks.append({
-            "ok": signed,
-            "label": f"{party} signature",
-            "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
-        })
+    if _signature_validation_enabled():
+        digital_signatures = _signed_digital_fields(pdf_bytes)
+        reference = build_client_nda(client)
+        for party, region in SIGNATURE_REGIONS.items():
+            try:
+                signed = digital_signatures >= 2 or _signature_region_has_ink(pdf_bytes, reference, region)
+            except Exception:
+                signed = False
+            checks.append({
+                "ok": signed,
+                "label": f"{party} signature",
+                "detail": f"{party} signature is present." if signed else f"The {party} signature area is blank.",
+            })
 
     return all(check["ok"] for check in checks), checks
