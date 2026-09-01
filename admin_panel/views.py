@@ -2691,7 +2691,7 @@ def api_admin_golive_step_upload(request, client_id, step_num):
         )
 
         # Document Validation & Integrity Engine check
-        val_res = validate_golive_step_upload(step_num, file_bytes, filename)
+        val_res = validate_golive_step_upload(step_num, file_bytes, filename, client=client_obj)
 
         if not val_res.get("ok", True):
             checks = val_res.get("checks", [])
@@ -2729,6 +2729,25 @@ def api_admin_golive_step_upload(request, client_id, step_num):
 def api_admin_golive_step_download(request, client_id, step_num):
     """ GET /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/download/ """
     from django.http import HttpResponse
+
+    if step_num == 1:
+        try:
+            from admin_panel.golive_authorization_service import (
+                build_client_golive_authorization,
+                golive_authorization_download_filename,
+            )
+            client_obj = Client.objects.get(id=client_id)
+            pdf_bytes = build_client_golive_authorization(client_obj)
+            filename = golive_authorization_download_filename(client_obj)
+            response = HttpResponse(pdf_bytes, content_type="application/pdf")
+            response['Content-Disposition'] = f'attachment; filename="{filename}"'
+            response['X-OneSmarter-Filename'] = filename
+            return response
+        except Client.DoesNotExist:
+            return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
     filename = f"OneSmarter_GoLive_Step{step_num}_Template.pdf"
     dummy_pdf_content = b"%PDF-1.4 Template Document Placeholder"
     response = HttpResponse(dummy_pdf_content, content_type="application/pdf")

@@ -400,7 +400,7 @@ def validate_step_upload(step_number: int, buf: bytes, orig_filename: str, clien
     return {"ok": True, "checks": checks}
 
 
-def validate_golive_step_upload(step_number: int, buf: bytes, orig_filename: str) -> dict:
+def validate_golive_step_upload(step_number: int, buf: bytes, orig_filename: str, client=None) -> dict:
     name = (orig_filename or "").strip()
     is_pdf = buf.startswith(b"%PDF") or b"%PDF-" in buf[:1024] or name.lower().endswith(".pdf")
 
@@ -409,6 +409,17 @@ def validate_golive_step_upload(step_number: int, buf: bytes, orig_filename: str
             "ok": False,
             "checks": [{"ok": False, "label": "File format", "detail": f"Expected a PDF document for this step. <b>{esc(name)}</b> is not a valid PDF file."}]
         }
+
+    if step_number == 1:
+        if client is None:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Client identity", "detail": "A selected client is required to validate the Go-Live Authorization."}],
+            }
+        from admin_panel.golive_authorization_service import validate_signed_golive_authorization
+        ok, authorization_checks = validate_signed_golive_authorization(buf, client)
+        if not ok:
+            return {"ok": False, "checks": authorization_checks}
 
     template_filename_map = {
         1: 'OneSmarter_CutoverAuthorization_Template.pdf',
