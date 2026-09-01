@@ -21,6 +21,7 @@ from django.utils.dateparse import parse_date
 
 from accounts.client_deletion import ClientDeletionError, permanently_delete_client
 from accounts.models import Client, User
+from accounts.phone_numbers import normalize_phone_number
 from edi835.models import EDI835File
 from .models import OnboardingStepDefinition, ClientStepStatus, GoLiveStepDefinition, ClientGoLiveStatus, ClientTestEnvironment, AuditLog, ClientSmtpConfig, ClientDocument
 from project835.field_crypto import (
@@ -286,6 +287,12 @@ def api_admin_create_client(request):
     if not name:
         return JsonResponse({"success": False, "error": "Client Name is required."}, status=400)
 
+    if phone:
+        try:
+            phone = normalize_phone_number(phone, data.get("country_code"), required=False)
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
     if not client_code:
         last_count = Client.objects.count() + 1
         client_code = f"CLT-{last_count:04d}"
@@ -435,7 +442,10 @@ def api_admin_update_client(request, client_id):
     if "email" in data:
         client_obj.email = data["email"].strip().lower() or client_obj.email
     if "phone" in data:
-        client_obj.phone = data["phone"].strip()
+        try:
+            client_obj.phone = normalize_phone_number(data["phone"], data.get("country_code"), required=False)
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
     if "address" in data:
         client_obj.address = data["address"].strip()
     if "state" in data:
@@ -676,13 +686,13 @@ def api_admin_create_user(request):
     if User.objects.filter(email=email).exists():
         return JsonResponse({"success": False, "error": f"Email '{email}' is already registered in the system."}, status=400)
 
-    if not mobile:
-        count = User.objects.count() + 1000
-        mobile = f"+1555{count:04d}"
+    try:
+        mobile = normalize_phone_number(mobile, data.get("country_code"))
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
 
     if User.objects.filter(mobile=mobile).exists():
-        count = User.objects.count() + 2000
-        mobile = f"+1555{count:04d}"
+        return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)
 
     if (is_staff or is_superuser) and not request.user.is_superuser:
         return JsonResponse({"success": False, "error": "Only a Super Admin can create Admin or Super Admin accounts."}, status=403)
@@ -776,7 +786,10 @@ def api_admin_update_user(request, user_id):
         user_obj.name = data["name"].strip()
 
     if "mobile" in data and data["mobile"].strip():
-        mobile = data["mobile"].strip()
+        try:
+            mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
         if mobile != user_obj.mobile:
             if User.objects.filter(mobile=mobile).exists():
                 return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)
@@ -1719,9 +1732,10 @@ def api_admin_step_action(request, client_id, step_key, action):
                     if not ok_email:
                         return JsonResponse({'success': False, 'error': err_email}, status=400)
                 if phone:
-                    ok_phone, err_phone = validate_phone_number(phone)
-                    if not ok_phone:
-                        return JsonResponse({'success': False, 'error': err_phone}, status=400)
+                    try:
+                        phone = normalize_phone_number(phone, data.get('country_code'), required=False)
+                    except ValueError as exc:
+                        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
                 with transaction.atomic():
                     Client.objects.select_for_update().get(id=client_id)
                     duplicate_filter = Q(name__iexact=name)

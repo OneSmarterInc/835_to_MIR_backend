@@ -15,6 +15,7 @@ from django.shortcuts import render, redirect
 
 from .forms import SignupForm, LoginForm
 from .client_deletion import ClientDeletionError, permanently_delete_client
+from .phone_numbers import normalize_phone_number
 
 
 OFFBOARDED_ERROR = "Access denied. Contact your administrator."
@@ -613,6 +614,12 @@ def api_admin_create_client(request):
     if not name:
         return JsonResponse({"success": False, "error": "Client Name is required."}, status=400)
 
+    if phone:
+        try:
+            phone = normalize_phone_number(phone, data.get("country_code"), required=False)
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
     if not client_code:
         # Auto generate code if not provided
         last_count = Client.objects.count() + 1
@@ -679,7 +686,10 @@ def api_admin_update_client(request, client_id):
     if "email" in data:
         client_obj.email = data["email"].strip().lower() or client_obj.email
     if "phone" in data:
-        client_obj.phone = data["phone"].strip()
+        try:
+            client_obj.phone = normalize_phone_number(data["phone"], data.get("country_code"), required=False)
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
     if "address" in data:
         client_obj.address = data["address"].strip()
     if "notes" in data:
@@ -837,6 +847,11 @@ def api_admin_create_user(request):
     if not mobile:
         return JsonResponse({"success": False, "error": "Mobile number is required."}, status=400)
 
+    try:
+        mobile = normalize_phone_number(mobile, data.get("country_code"))
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
     if User.objects.filter(email=email).exists():
         return JsonResponse({"success": False, "error": f"Email '{email}' is already registered."}, status=400)
     if User.objects.filter(mobile=mobile).exists():
@@ -894,7 +909,10 @@ def api_admin_update_user(request, user_id):
     if "name" in data and data["name"].strip():
         user_obj.name = data["name"].strip()
     if "mobile" in data and data["mobile"].strip():
-        user_obj.mobile = data["mobile"].strip()
+        try:
+            user_obj.mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
     if "password" in data and data["password"].strip():
         user_obj.set_password(data["password"].strip())
     if "is_active" in data:
@@ -1050,6 +1068,11 @@ def api_admin_create_user(request):
     if not mobile:
         return JsonResponse({"success": False, "error": "Mobile number is required."}, status=400)
 
+    try:
+        mobile = normalize_phone_number(mobile, data.get("country_code"))
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
     if User.objects.filter(email=email).exists():
         return JsonResponse({"success": False, "error": f"Email '{email}' is already registered."}, status=400)
     if User.objects.filter(mobile=mobile).exists():
@@ -1141,7 +1164,10 @@ def api_admin_update_user(request, user_id):
     if "name" in data and data["name"].strip():
         user_obj.name = data["name"].strip()
     if "mobile" in data and data["mobile"].strip():
-        mobile = data["mobile"].strip()
+        try:
+            mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
         if mobile != user_obj.mobile:
             if User.objects.filter(mobile=mobile).exists():
                 return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)

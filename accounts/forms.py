@@ -1,6 +1,7 @@
 from django import forms
 from django.contrib.auth import authenticate
 from .models import User
+from .phone_numbers import normalize_phone_number
 
 
 class SignupForm(forms.ModelForm):
@@ -27,7 +28,10 @@ class SignupForm(forms.ModelForm):
         return email
 
     def clean_mobile(self):
-        mobile = self.cleaned_data["mobile"]
+        mobile = normalize_phone_number(
+            self.cleaned_data["mobile"],
+            self.data.get("country_code"),
+        )
         if User.objects.filter(mobile=mobile).exists():
             raise forms.ValidationError("This mobile number is already registered.")
         return mobile

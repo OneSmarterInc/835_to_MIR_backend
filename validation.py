@@ -14,28 +14,14 @@ def esc(text: str) -> str:
     return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
 def validate_phone_number(phone_str: str) -> Tuple[bool, str]:
-    """Validates international phone numbers against country codes and standard lengths."""
+    """Validate a complete international number using global numbering metadata."""
     if not phone_str or not str(phone_str).strip():
         return True, ""
-    phone = str(phone_str).strip()
-    digits = re.sub(r'\D', '', phone)
-    
-    if len(digits) < 7 or len(digits) > 15:
-        return False, f"Phone number must have between 7 and 15 digits according to E.164 standards (received {len(digits)} digits)."
-    
-    if phone.startswith('+1'):
-        if len(digits) < 8 or len(digits) > 11:
-            return False, f"US/Canada (+1) phone numbers require 7 to 10 national digits (received {len(digits)-1} digits)."
-    elif phone.startswith('+44'):
-        if len(digits) < 10 or len(digits) > 13:
-            return False, f"UK (+44) phone numbers require 9 to 11 digits following the country code."
-    elif phone.startswith('+91'):
-        if len(digits) < 11 or len(digits) > 13:
-            return False, f"India (+91) phone numbers require 10 digits following the country code (received {len(digits)-2} digits)."
-    elif phone.startswith('+61'):
-        if len(digits) < 10 or len(digits) > 12:
-            return False, f"Australia (+61) phone numbers require 8 to 10 digits following the country code."
-            
+    from accounts.phone_numbers import normalize_phone_number
+    try:
+        normalize_phone_number(phone_str)
+    except ValueError as exc:
+        return False, str(exc)
     return True, ""
 
 def validate_email_address(email_str: str) -> Tuple[bool, str]:
