@@ -29,7 +29,8 @@ class SFTPAutomationTestCase(TestCase):
         next_run = next_daily_run(time(13, 0), "America/New_York", now=now)
         self.assertEqual(next_run, datetime(2026, 8, 31, 17, 0, tzinfo=dt_timezone.utc))
 
-    def test_admin_can_save_and_read_schedule(self):
+    @patch("edi835.sftp_automation_views.send_automation_schedule_notice", return_value=True)
+    def test_admin_can_save_and_read_schedule(self, schedule_email):
         response = self.client.post(
             "/edi835/api/admin/sftp-automation/",
             data={"client_id": str(self.client_record.id), "automation_type": "835", "run_time": "09:30", "timezone": "America/New_York", "enabled": True},
@@ -39,6 +40,8 @@ class SFTPAutomationTestCase(TestCase):
         schedule = SFTPAutomationSchedule.objects.get(client=self.client_record)
         self.assertEqual(schedule.run_time, time(9, 30))
         self.assertIsNotNone(schedule.next_run_at)
+        schedule_email.assert_called_once_with(schedule, created=True)
+        self.assertTrue(response.json()["email_notification"]["sent"])
         listing = self.client.get(f"/edi835/api/admin/sftp-automation/?client_id={self.client_record.id}")
         self.assertEqual(listing.status_code, 200)
         self.assertEqual(listing.json()["schedules"][0]["client_code"], "AUTO01")
@@ -80,7 +83,8 @@ class SFTPAutomationTestCase(TestCase):
         schedule.refresh_from_db()
         self.assertGreater(schedule.next_run_at, now)
 
-    def test_completed_job_persists_full_run_summary(self):
+    @patch("edi835.sftp_automation.send_automation_run_notice", return_value=True)
+    def test_completed_job_persists_full_run_summary(self, run_email):
         schedule = SFTPAutomationSchedule.objects.create(
             client=self.client_record, run_time=time(9), timezone="America/New_York",
             created_by=self.admin,
@@ -99,6 +103,8 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(run.input_835_files, ["a.835", "b.835"])
         self.assertEqual(run.input_recon_files, ["reference.837"])
         self.assertEqual(run.mir_output_files, ["output.MIR"])
+        run_email.assert_called_once()
+        self.assertEqual(run_email.call_args.args[0].id, run.id)
 
     @patch("edi835.views.write_job")
     @patch("edi835.views.active_job_for", return_value=None)
