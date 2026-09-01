@@ -114,6 +114,9 @@ def recon_upload(request):
     upload = request.FILES.get("recon_file")
     if not upload:
         return JsonResponse({"success": False, "error": "Select a RECON file."}, status=400)
+    from .file_types import file_extension_error, has_valid_file_extension
+    if not has_valid_file_extension(upload.name, "RECON"):
+        return JsonResponse({"success": False, "error": file_extension_error("RECON")}, status=400)
     max_bytes = getattr(settings, "RECON_MAX_UPLOAD_BYTES", 50 * 1024 * 1024)
     if upload.size > max_bytes:
         return JsonResponse({"success": False, "error": "RECON file exceeds the 50 MB limit."}, status=400)
@@ -360,6 +363,8 @@ def _safe_837_path(config, filename):
     name = posixpath.basename(str(filename or ""))
     if not name or name in {".", ".."} or name != str(filename):
         raise ValueError("Invalid 837 filename.")
+    from .file_types import validate_file_extension
+    validate_file_extension(name, "837")
     base = config.inbound_837_folder or ""
     if not base:
         raise ValueError("The inbound 837 folder is not configured.")
@@ -382,6 +387,7 @@ def sftp_837_files(request):
     if not config.inbound_837_folder:
         return JsonResponse({"success": False, "error": "The inbound 837 folder is not configured."}, status=400)
     import stat, posixpath
+    from .file_types import allowed_extensions
     from datetime import datetime
     ssh = sftp = None
     try:
@@ -395,7 +401,7 @@ def sftp_837_files(request):
             ext = posixpath.splitext(name)[1].lower()
             files.append({"name": name, "path": posixpath.join(base, name), "size": attr.st_size,
                 "mtime": datetime.fromtimestamp(attr.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if attr.st_mtime else None,
-                "extension": ext, "is_837_candidate": ext in {".837", ".x12", ".edi", ".txt"}})
+                "extension": ext, "is_837_candidate": ext in allowed_extensions("837")})
         files.sort(key=lambda x: x["name"].lower())
         return JsonResponse({"success": True, "folder": base, "files": files})
     except Exception as exc:

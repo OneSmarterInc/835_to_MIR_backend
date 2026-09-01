@@ -12,6 +12,7 @@ from project835.field_crypto import (
 )
 
 from .models import EDI835File
+from .file_types import file_extension_error, has_valid_file_extension
 from .mir_persistence import set_mir_push_status, store_mir_file
 from .parser import parse_835_to_mir, EDI835Validator
 from .mir_exporter import export_mir_file
@@ -52,6 +53,13 @@ def local_mir_filename(client, delivery_filename):
     """Namespace a locally stored MIR by tenant while preserving SFTP naming."""
     client_prefix = str(client.id) if client else "system"
     return f"{client_prefix}_{os.path.basename(delivery_filename)}"
+
+
+def unique_mir_filename(delivery_filename, file_uuid):
+    """Return a collision-free local and outbound name for one conversion."""
+    safe_name = os.path.basename(delivery_filename)
+    stem, suffix = os.path.splitext(safe_name)
+    return f"{stem}_{str(file_uuid).replace('-', '')[:12]}{suffix or '.MIR'}"
 
 
 def resolve_sftp_config(client=None, outbound=False):
@@ -281,6 +289,8 @@ def upload_835_to_sftp(local_file_path, filename):
 
 
 def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12", file_id=None, ingestion_source="MANUAL", client=None):
+    if not has_valid_file_extension(original_filename, "835"):
+        return {"success": False, "error": file_extension_error("835"), "db_record": None}
     edi_text = (edi_text or "").lstrip("\ufeff").strip()
     """
     Processes EDI 835 content through the complete pipeline when 'Submit & Convert to MIR' is triggered:
@@ -313,6 +323,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         client=client,
         fallback_base=base_name,
     )
+    delivery_mir_filename = unique_mir_filename(delivery_mir_filename, file_uuid)
     stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
 
     # Prefix with UUID to prevent file overwrite collisions
@@ -454,6 +465,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     for idx, item in enumerate(files_list):
         fname = item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
         fname = os.path.basename(fname)
+        if not has_valid_file_extension(fname, "835"):
+            return {"success": False, "error": file_extension_error("835")}
         file_names.append(fname)
 
         content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
@@ -494,6 +507,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         client=client,
         fallback_base=combined_base_name,
     )
+    delivery_mir_filename = unique_mir_filename(delivery_mir_filename, file_uuid)
     stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
     output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
     rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()

@@ -11,6 +11,35 @@ from converter.services.parser import parse_835_to_mir
 from converter.services.validator import EDI835Validator
 from edi835.models import EDI835File
 from edi835.services import process_edi835_file_content, process_multiple_edi835_files
+from edi835.file_types import file_extension_error, has_valid_file_extension
+
+
+def _invalid_835_response(filename):
+    if has_valid_file_extension(filename, "835"):
+        return None
+    return JsonResponse({'success': False, 'error': file_extension_error("835")}, status=400)
+
+
+def _invalid_835_batch_response(files):
+    for item in files or []:
+        invalid = _invalid_835_response(item.get('filename') or item.get('original_filename') or '')
+        if invalid:
+            return invalid
+    return None
+
+
+def _request_client(request, requested_client_id=None):
+    """Resolve tenant scope without letting a client user impersonate another tenant."""
+    user = getattr(request, "user", None)
+    if user and user.is_authenticated and not user.is_staff:
+        return getattr(user, "client", None)
+    if requested_client_id:
+        from accounts.models import Client
+        try:
+            return Client.objects.get(id=requested_client_id)
+        except (Client.DoesNotExist, ValueError):
+            return None
+    return getattr(user, "client", None) if user and user.is_authenticated else None
 
 
 def _canonical_mir_filename(record):
@@ -63,6 +92,9 @@ def api_convert(request):
         file_objs = request.FILES.getlist('edi_files') or request.FILES.getlist('edi_file')
         if file_objs and len(file_objs) > 1:
             for fobj in file_objs:
+                invalid = _invalid_835_response(fobj.name)
+                if invalid:
+                    return invalid
                 try:
                     content = fobj.read().decode('utf-8', errors='ignore')
                     files_list.append({'filename': fobj.name, 'content': content})
@@ -70,6 +102,9 @@ def api_convert(request):
                     pass
         elif file_objs:
             original_filename = file_objs[0].name
+            invalid = _invalid_835_response(original_filename)
+            if invalid:
+                return invalid
             try:
                 edi_text = file_objs[0].read().decode('utf-8', errors='ignore')
             except Exception as e:
@@ -90,17 +125,12 @@ def api_convert(request):
     else:
         body_client_id = request.POST.get('client_id') or request.POST.get('client')
 
-    if body_client_id:
-        from accounts.models import Client
-        try:
-            client = Client.objects.get(id=body_client_id)
-        except (Client.DoesNotExist, ValueError):
-            pass
-
-    if not client and request.user and request.user.is_authenticated:
-        client = getattr(request.user, "client", None)
+    client = _request_client(request, body_client_id)
 
     if files_list and len(files_list) > 0:
+        invalid = _invalid_835_batch_response(files_list)
+        if invalid:
+            return invalid
         batch_res = process_multiple_edi835_files(files_list, client=client)
         if not batch_res.get("success"):
             if client:
@@ -273,15 +303,7 @@ def api_validate(request):
     else:
         body_client_id = request.POST.get('client_id') or request.POST.get('client')
 
-    if body_client_id:
-        from accounts.models import Client
-        try:
-            client = Client.objects.get(id=body_client_id)
-        except (Client.DoesNotExist, ValueError):
-            pass
-
-    if not client and request.user and request.user.is_authenticated:
-        client = getattr(request.user, "client", None)
+    client = _request_client(request, body_client_id)
 
     files_list = []
     edi_text = ""
@@ -301,6 +323,9 @@ def api_validate(request):
         file_objs = request.FILES.getlist('edi_files') or request.FILES.getlist('edi_file')
         if file_objs and len(file_objs) > 1:
             for fobj in file_objs:
+                invalid = _invalid_835_response(fobj.name)
+                if invalid:
+                    return invalid
                 try:
                     content = fobj.read().decode('utf-8', errors='ignore')
                     files_list.append({'filename': fobj.name, 'content': content})
@@ -308,6 +333,9 @@ def api_validate(request):
                     pass
         elif file_objs:
             original_filename = file_objs[0].name
+            invalid = _invalid_835_response(original_filename)
+            if invalid:
+                return invalid
             try:
                 edi_text = file_objs[0].read().decode('utf-8', errors='ignore')
             except Exception as e:
@@ -317,6 +345,9 @@ def api_validate(request):
             original_filename = request.POST.get('original_filename', 'pasted_file.x12')
 
     if files_list and len(files_list) > 0:
+        invalid = _invalid_835_batch_response(files_list)
+        if invalid:
+            return invalid
         total_claims = 0
         total_errors = []
         valid_files_count = 0

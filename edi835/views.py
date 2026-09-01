@@ -23,6 +23,7 @@ from django.db.models import Sum
 from .models import SFTPConfig, EDI835File, MIRFile
 from .batch_jobs import active_job_for, read_job, write_job
 from .services import process_edi835_file_content, get_edi835_storage_dirs, sync_folder_observer, process_multiple_edi835_files
+from .file_types import allowed_extensions, file_extension_error, has_valid_file_extension
 
 
 @csrf_exempt
@@ -40,6 +41,8 @@ def api_process_tracked_file(request):
     file_obj = request.FILES.get("edi_file")
     if file_obj:
         original_filename = file_obj.name
+        if not has_valid_file_extension(original_filename, "835"):
+            return JsonResponse({"success": False, "error": file_extension_error("835")}, status=400)
         try:
             edi_text = file_obj.read().decode("utf-8", errors="ignore")
         except Exception as e:
@@ -87,8 +90,8 @@ def api_process_tracked_file(request):
 
         return JsonResponse({
             "error": res.get("error"),
-            "file_id": str(res["db_record"].id),
-            "status": res["db_record"].status,
+            "file_id": str(res["db_record"].id) if res.get("db_record") else None,
+            "status": res["db_record"].status if res.get("db_record") else "REJECTED",
         }, status=400)
 
     db_rec = res["db_record"]
@@ -1986,13 +1989,13 @@ def _execute_batch_conversion(request):
 
             remote_items = sftp.listdir_attr(remote_in_dir)
             files_to_process = []
-            ALLOWED_EXTENSIONS = [".x12", ".835", ".edi", ".txt", ".dat"]
+            allowed_835_extensions = allowed_extensions("835")
 
             for attr in remote_items:
                 if not stat.S_ISDIR(attr.st_mode):
                     fname = attr.filename
                     ext = os.path.splitext(fname)[1].lower()
-                    if not fname.startswith(".") and ext in ALLOWED_EXTENSIONS:
+                    if not fname.startswith(".") and ext in allowed_835_extensions:
                         files_to_process.append(fname)
 
             for fname in files_to_process:
@@ -2071,11 +2074,6 @@ def _execute_batch_conversion(request):
 
             # Accept the same practical file types used by manual RECON uploads
             # plus common X12/837 extensions.
-            allowed_reference_extensions = {
-                ".837", ".x12", ".edi", ".txt", ".dat", ".p7a",
-                ".csv", ".tsv", ".json", ".xml",
-            }
-
             for reference_type, configured_folder in reference_folders:
                 try:
                     remote_reference_dir = sftp_837.normalize(configured_folder)
@@ -2096,7 +2094,7 @@ def _execute_batch_conversion(request):
 
                     filename = attr.filename
                     extension = os.path.splitext(filename)[1].lower()
-                    if extension and extension not in allowed_reference_extensions:
+                    if extension not in allowed_extensions(reference_type):
                         continue
 
                     remote_path = posixpath.join(remote_reference_dir, filename)

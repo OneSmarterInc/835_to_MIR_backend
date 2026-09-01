@@ -371,6 +371,12 @@ def api_admin_update_client(request, client_id):
 
     try:
         client_obj = Client.objects.get(id=client_id)
+
+        from urllib.parse import unquote
+        from edi835.file_types import file_extension_error, has_valid_file_extension
+        uploaded_filename = unquote(request.headers.get('X-Filename', '835_file.x12'))
+        if not has_valid_file_extension(uploaded_filename, "835"):
+            return JsonResponse({"success": False, "error": file_extension_error("835"), "checks": []}, status=400)
     except (Client.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "Client not found."}, status=404)
 
@@ -1388,7 +1394,7 @@ def api_admin_step_validate_835(request, client_id):
             # Send failure email
             try:
                 from admin_panel.email_service import send_client_email
-                filename_to_report = request.headers.get('X-Filename', '835_file.x12')
+                filename_to_report = uploaded_filename
                 subject = f"OneSmarter: 835 File Validation Failed - {filename_to_report}"
                 html = f"<h3>835 File Validation Failed</h3><p>The file <b>{filename_to_report}</b> failed X12 validation.</p><p><b>Reason:</b> {err_msg}</p>"
                 send_client_email(client_obj, subject, html)
@@ -1400,7 +1406,7 @@ def api_admin_step_validate_835(request, client_id):
         checks = [{"ok": True, "label": "Structure", "detail": f"835 structural and balance checks passed. Claims found: {report.get('claims', 0)}"}]
 
         # Save as ClientDocument now that it is valid
-        filename = request.headers.get('X-Filename', '835_file.x12')
+        filename = uploaded_filename
         doc_name = f"Step 8: 835 File Validation"
         from admin_panel.models import ClientDocument
         from django.core.files.base import ContentFile

@@ -7,7 +7,8 @@ from django.test import TestCase, Client, override_settings
 from accounts.models import Client as AccountClient, User
 from .models import EDI835File, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
-from .services import process_edi835_file_content, get_edi835_storage_dirs
+from .services import process_edi835_file_content, get_edi835_storage_dirs, unique_mir_filename
+from .file_types import has_valid_file_extension
 
 SAMPLE_835_VALID = "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260813*1200*U*00501*000000001*0*P*:~GS*HP*SENDER*RECEIVER*20260813*1200*1*X*005010X221A1~ST*835*0001~BPR*I*150.00*C*CHK************20260813~TRN*1*123456789*1999999999~N1*PR*PAYER NAME~N1*PE*PROVIDER NAME*XX*1234567890~LX*1~CLP*CLM_PAYP_20260807*1*200.00*150.00*50.00*MC*REF12345~NM1*QC*1*SMITH*JOHN*M~NM1*IL*1*SMITH*JOHN****MI*SUB123456~REF*1L*GRP999~DTM*036*19850101~DTM*050*20260801~SVC*HC:99213*200.00*150.00**1~DTM*472*20260805~CAS*CO*45*50.00~SE*16*0001~GE*1*1~IEA*1*000000001~"
 
@@ -60,6 +61,18 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         arch_mir = self.dirs["archive"] / "TEST_RUN_FILE.mir"
         self.assertTrue(os.path.exists(arch_835))
         self.assertFalse(os.path.exists(arch_mir))
+
+    def test_file_extension_policy_is_case_insensitive(self):
+        self.assertTrue(has_valid_file_extension('CLAIM.835', '835'))
+        self.assertTrue(has_valid_file_extension('REFERENCE.X12', '837'))
+        self.assertTrue(has_valid_file_extension('RECON.P7A', 'RECON'))
+        self.assertFalse(has_valid_file_extension('claim.pdf', '835'))
+
+    def test_simultaneous_jobs_receive_distinct_mir_names(self):
+        first = unique_mir_filename('MIROUT.MIR', '11111111-1111-1111-1111-111111111111')
+        second = unique_mir_filename('MIROUT.MIR', '22222222-2222-2222-2222-222222222222')
+        self.assertNotEqual(first, second)
+        self.assertTrue(first.endswith('.MIR'))
 
     def test_error_lifecycle(self):
         original_name = "BAD_FILE_123.x12"

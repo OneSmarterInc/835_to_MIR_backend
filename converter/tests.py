@@ -1,6 +1,7 @@
 import io
 import os
 import zipfile
+import json
 from django.test import TestCase, Client
 from converter.services.parser import parse_835_to_mir
 from converter.services.validator import PyX12Validator
@@ -59,6 +60,30 @@ class ViewsTestCase(TestCase):
         data = response.json()
         self.assertTrue(data['success'])
         self.assertEqual(data['report']['total_segments'], 20)
+
+    def test_wrong_835_extension_is_rejected_before_processing(self):
+        response = self.client.post(
+            '/api/validate/',
+            data=json.dumps({'edi_text': SAMPLE_ONE_LINE, 'original_filename': 'claim.pdf'}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('Wrong file format for 835', response.json()['error'])
+
+    def test_standard_client_user_can_convert_and_is_tenant_scoped(self):
+        from accounts.models import Client as AccountClient
+        from edi835.models import EDI835File
+        tenant = AccountClient.objects.create(name='Conversion Tenant', client_code='CONVERSION', email='tenant@example.com')
+        other = AccountClient.objects.create(name='Other Tenant', client_code='OTHER-CONVERSION', email='other-tenant@example.com')
+        self.user.client = tenant
+        self.user.save(update_fields=['client'])
+        response = self.client.post(
+            '/api/convert/',
+            data=json.dumps({'edi_text': SAMPLE_ONE_LINE, 'original_filename': 'tenant-upload.835', 'client_id': str(other.id)}),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(EDI835File.objects.get(id=response.json()['file_id']).client, tenant)
 
     def test_health_check_endpoint(self):
         response = self.client.get('/health/')
