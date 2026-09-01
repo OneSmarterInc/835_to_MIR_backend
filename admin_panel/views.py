@@ -1109,7 +1109,7 @@ def api_admin_step_upload(request, client_id, step_key):
             step_def = OnboardingStepDefinition.objects.get(step_number=step_num)
 
             # Step Validation using validation.py engine
-            val_res = validate_step_upload(step_num, file_bytes, filename)
+            val_res = validate_step_upload(step_num, file_bytes, filename, client=client_obj)
 
             if not val_res.get("ok", True):
                 checks = val_res.get("checks", [])
@@ -1207,8 +1207,17 @@ def api_admin_template_download(request, client_id, step_key):
         if len(parts) >= 2:
             step_num = int(parts[1])
 
+            if step_num == 1:
+                from admin_panel.nda_service import build_client_nda, nda_download_filename
+                client_obj = Client.objects.get(id=client_id)
+                pdf_bytes = build_client_nda(client_obj)
+                download_name = nda_download_filename(client_obj)
+                response = HttpResponse(pdf_bytes, content_type='application/pdf')
+                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
+                response['X-OneSmarter-Filename'] = download_name
+                return response
+
             template_map = {
-                1: "OneSmarter_MutualNDA_Template.pdf",
                 2: "OneSmarter_BAA_Template.pdf",
                 3: "OneSmarter_SecurityReview_Template.pdf",
             }

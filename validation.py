@@ -275,7 +275,7 @@ def validate_template_structural_integrity(step_number: int, buf: bytes, is_pdf:
 
     return True, checks
 
-def validate_step_upload(step_number: int, buf: bytes, orig_filename: str) -> dict:
+def validate_step_upload(step_number: int, buf: bytes, orig_filename: str, client=None) -> dict:
     name = (orig_filename or "").strip()
     is_pdf = buf.startswith(b"%PDF") or b"%PDF-" in buf[:1024] or name.lower().endswith(".pdf")
     is_word = name.lower().endswith(".docx") or name.lower().endswith(".doc")
@@ -323,6 +323,24 @@ def validate_step_upload(step_number: int, buf: bytes, orig_filename: str) -> di
                 {"ok": True, "label": "Attachment Storage", "detail": f"Captured client confirmation ({len(buf)} bytes stored in database)."}
             ]
         }
+
+    # Step 1 must be the personalized PDF so both signature areas can be
+    # validated reliably. Word files cannot preserve the approved layout.
+    if step_number == 1:
+        if not is_pdf:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "NDA file format", "detail": "Upload the completed signed NDA as a PDF file."}],
+            }
+        if client is None:
+            return {
+                "ok": False,
+                "checks": [{"ok": False, "label": "Client identity", "detail": "A selected client is required to validate the NDA."}],
+            }
+        from admin_panel.nda_service import validate_signed_nda
+        ok, nda_checks = validate_signed_nda(buf, client)
+        if not ok:
+            return {"ok": False, "checks": nda_checks}
 
     # Steps 1, 2, 3 PDF & Word checks
     if step_number in (1, 2, 3):
@@ -415,4 +433,3 @@ def validate_golive_step_upload(step_number: int, buf: bytes, orig_filename: str
     checks.append({"ok": True, "label": "Placeholder Verification", "detail": "All required placeholders have been filled."})
 
     return {"ok": True, "checks": checks}
-
