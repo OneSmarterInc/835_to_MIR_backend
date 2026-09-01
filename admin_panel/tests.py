@@ -79,6 +79,50 @@ class PermanentClientDeletionTestCase(TestCase):
         self.assertTrue(User.objects.filter(id=self.superadmin.id).exists())
 
 
+class AuditLogPaginationTestCase(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            email="audit-admin@example.com", name="Audit Admin",
+            mobile="5550199200", password="test-password",
+        )
+        self.client.force_login(self.admin)
+        self.client_record = Client.objects.create(
+            name="Audit Health", client_code="AUDIT", email="audit-client@example.com",
+        )
+        for index in range(30):
+            AuditLog.objects.create(
+                module="AUTH" if index % 2 else "SYSTEM",
+                action="LOGIN" if index % 2 else "CONFIG_SAVED",
+                details="needle outside first page" if index == 0 else f"Routine event {index}",
+                performed_by="Audit Admin" if index % 2 else "System Worker",
+                client=self.client_record,
+            )
+
+    def test_paginates_after_filtering_the_complete_log(self):
+        response = self.client.get(
+            "/admin-panel/api/audit-logs/",
+            {"page": 1, "page_size": 10, "search": "needle outside first page"},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["pagination"]["total_count"], 1)
+        self.assertEqual(len(data["logs"]), 1)
+        self.assertIn("needle", data["logs"][0]["details"])
+
+    def test_supports_standard_filters_and_page_metadata(self):
+        response = self.client.get(
+            "/admin-panel/api/audit-logs/",
+            {"page": 2, "page_size": 10, "module": "AUTH", "action": "LOGIN"},
+        )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertEqual(data["pagination"]["page"], 2)
+        self.assertEqual(data["pagination"]["total_count"], 15)
+        self.assertEqual(len(data["logs"]), 5)
+        self.assertTrue(all(item["module"] == "AUTH" and item["action"] == "LOGIN" for item in data["logs"]))
+        self.assertIn("AUTH", data["filter_options"]["modules"])
+
+
 class AdministrativeRoleTransitionTestCase(TestCase):
     def setUp(self):
         self.superadmin = User.objects.create_superuser(
