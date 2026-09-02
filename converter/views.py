@@ -12,7 +12,44 @@ from converter.services.validator import EDI835Validator
 from edi835.models import EDI835File
 from edi835.services import process_edi835_file_content, process_multiple_edi835_files
 from edi835.file_types import file_extension_error, has_valid_file_extension
+from validation import validate_x12_835_content
 
+
+
+def _validate_835_for_conversion(content):
+    """Validate an 835 using the application's multi-transaction-aware rules."""
+    is_valid, checks = validate_x12_835_content(content)
+    errors = [str(check.get("detail", "Validation failed")) for check in checks if not check.get("ok")]
+    warnings = [
+        str(check.get("detail", ""))
+        for check in checks
+        if check.get("ok") and str(check.get("detail", "")).lower().startswith("warning:")
+    ]
+    claims = sum(
+        1
+        for segment in (content or "").lstrip("\ufeff").replace("\r", "\n").split("~")
+        if segment.strip().lstrip("\n").startswith("CLP*")
+    )
+    total_segments = len([
+        segment for segment in (content or "").replace("\r", "\n").split("~")
+        if segment.strip()
+    ])
+    return {
+        "valid": is_valid,
+        "is_valid": is_valid,
+        "validator_engine": "Validated using OneSmarter 835 structural validation",
+        "status_message": (
+            "Validated using OneSmarter 835 structural validation: File is valid."
+            if is_valid
+            else "Validated using OneSmarter 835 structural validation: Errors found."
+        ),
+        "total_segments": total_segments,
+        "claims": claims,
+        "claims_found": claims,
+        "errors": errors,
+        "warnings": warnings,
+        "checks": checks,
+    }
 
 def _invalid_835_response(filename):
     if has_valid_file_extension(filename, "835"):
@@ -368,15 +405,13 @@ def api_validate(request):
         total_claims = 0
         total_errors = []
         valid_files_count = 0
-        validator = EDI835Validator()
-
         for item in files_list:
             fname = item.get('filename') or item.get('original_filename') or 'file.835'
             content = (item.get('content') or item.get('edi_text') or '').strip()
             if not content:
                 continue
 
-            report = validator.validate(content)
+            report = _validate_835_for_conversion(content)
             is_val = report.get('valid', report.get('is_valid', True))
             claims = report.get('claims', report.get('claims_found', 0))
             total_claims += claims
@@ -430,8 +465,7 @@ def api_validate(request):
             f.write(edi_text)
         rel_archive_path = (Path("media") / "edi835" / "archive" / original_filename).as_posix()
 
-        validator = EDI835Validator()
-        report = validator.validate(edi_text)
+        report = _validate_835_for_conversion(edi_text)
 
         is_valid = report.get('valid', report.get('is_valid', True))
         claims_found = report.get('claims', report.get('claims_found', 0))
