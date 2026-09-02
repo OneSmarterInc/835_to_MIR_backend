@@ -526,9 +526,69 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         return {"success": False, "error": "No files provided for batch conversion."}
 
     first_archive_rel_path = None
+    batch_validation_errors = []
+
+    # Atomic batch validation gate: validate every file before parsing, MIR
+    # generation, archival success, or outbound delivery. One invalid member
+    # invalidates the entire batch.
+    normalized_items = []
+    for idx, item in enumerate(files_list):
+        fname = os.path.basename(
+            item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
+        )
+        if not has_valid_file_extension(fname, "835"):
+            batch_validation_errors.append({
+                "filename": fname,
+                "errors": [file_extension_error("835")],
+            })
+            continue
+
+        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
+        if not content:
+            batch_validation_errors.append({
+                "filename": fname,
+                "errors": ["File is empty."],
+            })
+            continue
+
+        report = EDI835Validator().validate(content)
+        is_valid = report.get("valid", report.get("is_valid", False))
+        if not is_valid:
+            batch_validation_errors.append({
+                "filename": fname,
+                "errors": report.get("errors") or ["835 validation failed."],
+                "findings": report.get("findings", []),
+            })
+        normalized_items.append((fname, content))
+
+    if batch_validation_errors:
+        combined_names = ", ".join(fname for fname, _ in normalized_items) or ", ".join(
+            str(err.get("filename", "unknown.835")) for err in batch_validation_errors
+        )
+        db_rec = EDI835File.objects.create(
+            client=client,
+            original_filename=combined_names,
+            stored_filename=(normalized_items[0][0] if normalized_items else "invalid_batch.835"),
+            input_file_content="\n\n".join(content for _, content in normalized_items),
+            status="ERROR",
+            error_message=json.dumps({
+                "message": "Batch validation failed. No files were converted.",
+                "batch_invalid": True,
+                "invalid_files": batch_validation_errors,
+                "validator_engine": "PyX12",
+            }),
+            ingestion_source=ingestion_source,
+            processing_completed_at=timezone.now(),
+        )
+        return {
+            "success": False,
+            "error": "Batch validation failed because one or more files are invalid. No files were converted.",
+            "errors": batch_validation_errors,
+            "db_record": db_rec,
+        }
 
     file_uuid = uuid.uuid4()
-    for idx, item in enumerate(files_list):
+    for idx, (fname, content) in enumerate(normalized_items):
         fname = item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
         fname = os.path.basename(fname)
         if not has_valid_file_extension(fname, "835"):
