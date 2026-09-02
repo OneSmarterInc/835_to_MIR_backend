@@ -9,7 +9,6 @@ class EDI835File(models.Model):
         ("PROCESSING", "Processing"),
         ("COMPLETED", "Completed"),
         ("ARCHIVED", "Archived"),
-        ("PARTIAL", "Partially delivered"),
         ("ERROR", "Error"),
     ]
 
