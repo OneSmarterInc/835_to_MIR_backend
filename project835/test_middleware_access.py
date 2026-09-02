@@ -1,3 +1,4 @@
+import json
 from types import SimpleNamespace
 
 from django.http import JsonResponse
@@ -37,4 +38,5 @@ class AdminClientGrantMiddlewareTests(SimpleTestCase):
         response = middleware(self._request(superuser=False))
 
         self.assertEqual(response.status_code, 403)
-        self.assertEqual(response.json()["code"], "CLIENT_GRANT_REQUIRED")
+        payload = json.loads(response.content.decode("utf-8"))
+        self.assertEqual(payload["code"], "CLIENT_GRANT_REQUIRED")
