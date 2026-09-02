@@ -369,9 +369,9 @@ def generate_mir_text(claims, filename=None):
         "records_count": len(records)
     }
 
-def parse_835_to_mir(text, filename=None, client=None):
+def parse_835_to_mir(text, filename=None, client=None, process_date=None):
     from admin_panel.mir_mapper_logic.converter import convert_835_to_mir
-    mir_text, summary = convert_835_to_mir(text, client=client)
+    mir_text, summary = convert_835_to_mir(text, client=client, process_date=process_date)
     return {
         "text": mir_text,
         "claims_count": summary["claims"],

@@ -1,6 +1,7 @@
 """Fixed-width MIR record generator driven by editable mapping configuration."""
 from __future__ import annotations
 
+from datetime import date
 from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Tuple
 
@@ -28,12 +29,15 @@ def _put(buffer: List[str], field: dict, value: str) -> None:
     buffer[start:start + length] = list(value)
 
 
-def _header(claim: Claim, sequence: int, max_sequence: int, line_count: int, fields: list[dict]) -> str:
+def _header(claim: Claim, sequence: int, max_sequence: int, line_count: int,
+            fields: list[dict], process_date: date | None = None) -> str:
     b = [config.BLANK_CHAR] * config.MIR_HEADER_LENGTH
     for field in fields:
         if field.get("scope") == "Service":
             continue
-        value = evaluate_field(field, claim, None, sequence, max_sequence, line_count)
+        value = evaluate_field(
+            field, claim, None, sequence, max_sequence, line_count, process_date=process_date
+        )
         _put(b, field, value)
     result = "".join(b)
     if len(result) != config.MIR_HEADER_LENGTH:
@@ -42,12 +46,16 @@ def _header(claim: Claim, sequence: int, max_sequence: int, line_count: int, fie
 
 
 def _service_block(service: ServiceLine, claim: Claim, sequence: int, max_sequence: int,
-                   line_count: int, inherited_reason: str, fields: list[dict]) -> str:
+                   line_count: int, inherited_reason: str, fields: list[dict],
+                   process_date: date | None = None) -> str:
     b = [config.BLANK_CHAR] * config.MIR_SERVICE_BLOCK_LENGTH
     for field in fields:
         if field.get("scope") != "Service":
             continue
-        value = evaluate_field(field, claim, service, sequence, max_sequence, line_count, inherited_reason)
+        value = evaluate_field(
+            field, claim, service, sequence, max_sequence, line_count,
+            inherited_reason, process_date=process_date,
+        )
         _put(b, field, value)
     result = "".join(b)
     if len(result) != config.MIR_SERVICE_BLOCK_LENGTH:
@@ -107,7 +115,8 @@ def _claim_findings(claim: Claim) -> list[dict]:
     return findings
 
 
-def generate_mir_records(claims: Iterable[Claim], client=None) -> Tuple[List[str], Dict[str, Any]]:
+def generate_mir_records(claims: Iterable[Claim], client=None,
+                         process_date: date | None = None) -> Tuple[List[str], Dict[str, Any]]:
     records: List[str] = []
     total_claims = 0
     total_services = 0
@@ -154,9 +163,14 @@ def generate_mir_records(claims: Iterable[Claim], client=None) -> Tuple[List[str
         try:
             for sequence, chunk in enumerate(chunks, start=1):
                 header_service_count = len(chunk)
-                record = _header(claim, sequence, max_sequence, header_service_count, fields)
+                record = _header(
+                    claim, sequence, max_sequence, header_service_count, fields, process_date
+                )
                 record += "".join(
-                    _service_block(svc, claim, sequence, max_sequence, header_service_count, inherited_reason, fields)
+                    _service_block(
+                        svc, claim, sequence, max_sequence, header_service_count,
+                        inherited_reason, fields, process_date,
+                    )
                     for svc in chunk
                 )
                 expected = config.MIR_HEADER_LENGTH + len(chunk) * config.MIR_SERVICE_BLOCK_LENGTH
@@ -201,8 +215,9 @@ def generate_mir_records(claims: Iterable[Claim], client=None) -> Tuple[List[str
     }
 
 
-def generate_mir_text(claims: Iterable[Claim], client=None) -> Tuple[str, Dict[str, Any]]:
-    records, summary = generate_mir_records(claims, client)
+def generate_mir_text(claims: Iterable[Claim], client=None,
+                      process_date: date | None = None) -> Tuple[str, Dict[str, Any]]:
+    records, summary = generate_mir_records(claims, client, process_date)
     text = "\r\n".join(records)
     if records:
         text += "\r\n"

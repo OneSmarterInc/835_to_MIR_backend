@@ -1,8 +1,9 @@
 import unittest
+from datetime import date
 from decimal import Decimal
 
 from . import config
-from .mir_generator import generate_mir_records
+from .mir_generator import generate_mir_records, generate_mir_text
 from .mir_mapper import co_adjustment_total, covered_charge, patient_liability
 from .models import Adjustment, Claim, ServiceLine
 
@@ -17,6 +18,16 @@ def service(charge="100", paid="0", adjustments=None):
 
 
 class HeldClaimGenerationTests(unittest.TestCase):
+    def test_stored_process_date_makes_regeneration_byte_identical(self):
+        claim = Claim(claim_number="REPEAT", status="1", services=[service("100", "80")])
+        stored_date = date(2026, 8, 31)
+
+        first, _ = generate_mir_text([claim], process_date=stored_date)
+        second, _ = generate_mir_text([claim], process_date=stored_date)
+
+        self.assertEqual(first, second)
+        self.assertEqual(first.splitlines()[0][36:52], "2026083120260831")
+
     def test_financial_values_are_not_silently_clamped(self):
         line = service("100", "25", [Adjustment("CO", "45", Decimal("125"))])
         self.assertEqual(co_adjustment_total(line), Decimal("125"))

@@ -414,7 +414,11 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         shutil.move(input_file_path, processing_file_path)
 
     db_record.status = "PROCESSING"
-    db_record.processing_started_at = timezone.now()
+    # This timestamp is the run's immutable source for MIR200/MIR201. Preserve
+    # it when an existing file record is regenerated so the MIR bytes remain
+    # reproducible across calendar days.
+    if not db_record.processing_started_at:
+        db_record.processing_started_at = timezone.now()
     db_record.save()
 
     try:
@@ -439,7 +443,10 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         # Only validated files may enter parsing and MIR conversion.
         client = db_record.client if db_record else None
-        res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
+        process_date = timezone.localdate(db_record.processing_started_at)
+        res = parse_835_to_mir(
+            edi_text, filename=stored_filename, client=client, process_date=process_date
+        )
         mir_text = res["text"]
         held_claims = res.get("held_claims_count", 0)
         delivered_claims = res.get("delivered_claims_count", res["claims_count"])
@@ -664,8 +671,13 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
             "errors": errors
         }
 
-    # Generate ONE single combined MIR file from all claims across all input 835 files
-    generated = generate_mir_text(all_claims, client=client)
+    # Select the runtime date once for the batch and persist the corresponding
+    # timestamp on its source record. All claims in this MIR use this same date.
+    batch_started_at = timezone.now()
+    batch_process_date = timezone.localdate(batch_started_at)
+    generated = generate_mir_text(
+        all_claims, client=client, process_date=batch_process_date
+    )
     mir_text, mir_res = normalize_mir_generation_result(generated, all_claims)
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
@@ -697,6 +709,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
             conversion_findings=conversion_findings,
             archive_path=first_archive_rel_path, present_in_archive_folder=True,
             ingestion_source=ingestion_source,
+            processing_started_at=batch_started_at,
             error_message="All claims were held for review; no MIR file was delivered.",
             processing_completed_at=timezone.now(),
         )
@@ -728,6 +741,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         present_in_sftp=False,
         present_in_archive_folder=True,
         ingestion_source=ingestion_source,
+        processing_started_at=batch_started_at,
         processing_completed_at=timezone.now()
     )
 

@@ -1,6 +1,7 @@
 import os
 import shutil
 import tempfile
+from datetime import datetime, timezone as dt_timezone
 from decimal import Decimal
 from pathlib import Path
 from django.test import TestCase, Client, override_settings
@@ -142,6 +143,28 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         # 2. error/ folder contains the failed file with original filename
         err_file = self.dirs["error"] / stored_name
         self.assertTrue(os.path.exists(err_file))
+
+    @patch("edi835.services.parse_835_to_mir", side_effect=RuntimeError("stop after date capture"))
+    @patch("edi835.services.EDI835Validator")
+    def test_regeneration_reuses_original_process_date(self, validator, parse_835_to_mir):
+        validator.return_value.validate.return_value = {"valid": True}
+        started_at = datetime(2026, 8, 31, 16, 30, tzinfo=dt_timezone.utc)
+        record = EDI835File.objects.create(
+            original_filename="repeat.835",
+            stored_filename="repeat.835",
+            processing_started_at=started_at,
+        )
+
+        process_edi835_file_content(
+            SAMPLE_835_VALID, original_filename="repeat.835", file_id=record.id
+        )
+
+        self.assertEqual(
+            parse_835_to_mir.call_args.kwargs["process_date"],
+            started_at.astimezone().date(),
+        )
+        record.refresh_from_db()
+        self.assertEqual(record.processing_started_at, started_at)
 
     def test_multiple_files_single_mir(self):
         from .services import process_multiple_edi835_files

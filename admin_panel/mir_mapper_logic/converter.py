@@ -3,9 +3,9 @@ from .edi835_parser import parse_835
 from .mir_generator import generate_mir_text
 
 
-def convert_835_to_mir(text: str, client=None):
+def convert_835_to_mir(text: str, client=None, process_date=None):
     claims = parse_835(text)
     if not claims:
         raise ValueError("No CLP claims were found in the uploaded 835 file.")
-    mir_text, summary = generate_mir_text(claims, client)
+    mir_text, summary = generate_mir_text(claims, client, process_date)
     return mir_text, summary

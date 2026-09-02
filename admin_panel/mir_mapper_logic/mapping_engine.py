@@ -240,11 +240,12 @@ def evaluate_formula(field: dict[str, Any], claim: Claim, service: ServiceLine |
     return _safe_eval_expr(rule, _formula_env(claim, service, inherited_reason))
 
 
-def system_value(name: str, sequence: int, max_sequence: int, service_count: int) -> str:
+def system_value(name: str, sequence: int, max_sequence: int, service_count: int,
+                 process_date: date | None = None) -> str:
     if name == "PROCESS_DATE":
         if not config.USE_PROCESS_DATE_FOR_HEADER_DATES:
             return ""
-        return date.today().strftime(config.PROCESS_DATE_FORMAT)
+        return (process_date or date.today()).strftime(config.PROCESS_DATE_FORMAT)
     if name == "RECORD_SEQUENCE":
         return f"{sequence:02d}"
     if name == "MAX_RECORD_SEQUENCE":
@@ -274,14 +275,16 @@ def _format_numeric(value: Any, length: int) -> str:
 
 def evaluate_field(field: dict[str, Any], claim: Claim, service: ServiceLine | None,
                    sequence: int, max_sequence: int, service_count: int,
-                   inherited_reason: str = "") -> str:
+                   inherited_reason: str = "", process_date: date | None = None) -> str:
     map_type = field.get("mapType")
     if map_type == "Blank":
         value: Any = ""
     elif map_type == "Hardcoded Text":
         value = field.get("map", "")
     elif map_type == "System / Runtime":
-        value = system_value(str(field.get("map", "")), sequence, max_sequence, service_count)
+        value = system_value(
+            str(field.get("map", "")), sequence, max_sequence, service_count, process_date
+        )
     elif map_type == "Direct from 835":
         value = resolve_source(str(field.get("map", "")), claim, service)
         if value in (None, "") and field.get("fallbackType") == "Hardcoded":
