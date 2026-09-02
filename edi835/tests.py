@@ -4,6 +4,7 @@ import tempfile
 from decimal import Decimal
 from pathlib import Path
 from django.test import TestCase, Client, override_settings
+from unittest.mock import patch
 from accounts.models import Client as AccountClient, User
 from .models import EDI835File, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
@@ -163,6 +164,21 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertEqual(db_rec.ingestion_source, "SFTP")
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
+
+    @patch("admin_panel.mir_mapper_logic.edi835_parser.parse_835")
+    def test_sftp_batch_validation_failure_never_reaches_parser(self, parse_835):
+        from .services import process_multiple_edi835_files
+
+        result = process_multiple_edi835_files([
+            {"filename": "invalid.835", "content": SAMPLE_835_INVALID},
+        ], ingestion_source="SFTP")
+
+        self.assertFalse(result["success"])
+        self.assertIn("validation failed", result["error"].lower())
+        parse_835.assert_not_called()
+        record = result["db_record"]
+        self.assertEqual(record.status, "ERROR")
+        self.assertEqual(record.ingestion_source, "SFTP")
 class MIRPersistenceTestCase(TestCase):
     def test_result_amount_uses_position_429_for_every_service(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text

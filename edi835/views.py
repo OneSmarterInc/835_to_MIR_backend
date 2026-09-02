@@ -1849,8 +1849,8 @@ def _execute_batch_conversion(request):
         upload_mir_to_sftp,
         process_multiple_edi835_files,
         resolve_sftp_config,
+        validate_835_content,
     )
-    from converter.services.validator import EDI835Validator
 
     logger = logging.getLogger(__name__)
 
@@ -1902,6 +1902,7 @@ def _execute_batch_conversion(request):
     sftp_batch_items = []
     sftp_837_results = []
     sftp_recon_results = []
+    validation_failed_835 = False
     inbound_credentials = None
 
     if not config:
@@ -2026,12 +2027,22 @@ def _execute_batch_conversion(request):
                         raw_bytes = raw_bytes[3:]
 
                     edi_content = raw_bytes.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
-                    if edi_content and "CLP" in edi_content:
+                    is_valid, validation_report = validate_835_content(edi_content)
+                    if is_valid:
                         sftp_batch_items.append({
                             "filename": fname,
                             "content": edi_content,
                             "remote_path": remote_file_path,
                         })
+                    else:
+                        validation_failed_835 = True
+                        validation_errors = validation_report.get("errors") or [
+                            {"code": "VALIDATION_FAILED", "message": "835 validation failed."}
+                        ]
+                        errors.append(
+                            f"{fname}: 835 validation failed; file retained on inbound SFTP. "
+                            f"Findings: {json.dumps(validation_errors)}"
+                        )
                 except Exception as file_err:
                     errors.append(f"{fname}: {str(file_err)}")
 
@@ -2212,12 +2223,22 @@ def _execute_batch_conversion(request):
                         raw_bytes = raw_bytes[3:]
 
                     edi_content = raw_bytes.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
-                    if edi_content and "CLP" in edi_content:
+                    is_valid, validation_report = validate_835_content(edi_content)
+                    if is_valid:
                         local_batch_items.append({
                             "filename": fname,
                             "content": edi_content,
                             "local_path": local_file_path,
                         })
+                    else:
+                        validation_failed_835 = True
+                        validation_errors = validation_report.get("errors") or [
+                            {"code": "VALIDATION_FAILED", "message": "835 validation failed."}
+                        ]
+                        errors.append(
+                            f"{fname} (local): 835 validation failed; file retained for review. "
+                            f"Findings: {json.dumps(validation_errors)}"
+                        )
                 except Exception as local_err:
                     errors.append(f"{fname} (local): {str(local_err)}")
 
@@ -2304,7 +2325,10 @@ def _execute_batch_conversion(request):
     else:
         msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
-    batch_failed = bool(combined_items and not processed_files)
+    batch_failed = bool(
+        (combined_items and not processed_files)
+        or (run_835 and validation_failed_835 and not processed_files)
+    )
     # process_multiple_edi835_files persists the exact admin-configured
     # delivery filename in MIRFile. Return that value to the frontend instead
     # of exposing the locally namespaced output filename.

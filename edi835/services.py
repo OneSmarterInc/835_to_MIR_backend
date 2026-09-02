@@ -21,6 +21,13 @@ from .mir_exporter import export_mir_file
 logger = logging.getLogger("edi835")
 
 
+def validate_835_content(edi_text):
+    """Run the authoritative validation gate used by every 835 ingestion path."""
+    report = EDI835Validator().validate(edi_text)
+    is_valid = report.get("valid", report.get("is_valid", False))
+    return is_valid, report
+
+
 def normalize_mir_generation_result(generated, claims):
     """Normalize supported MIR generator contracts without unpacking text."""
     claims = list(claims or [])
@@ -414,8 +421,8 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         # Step 3: Validate before parsing/conversion. Every ingestion path that
         # reaches this pipeline (manual upload, admin processing, and SFTP)
         # must be subject to the same authoritative 835 validation gate.
-        validation_report = EDI835Validator().validate(edi_text)
-        if not validation_report.get("valid", validation_report.get("is_valid", False)):
+        is_valid, validation_report = validate_835_content(edi_text)
+        if not is_valid:
             errors = validation_report.get("errors") or ["835 validation failed."]
             raise ValueError(
                 json.dumps(
@@ -582,8 +589,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
             })
             continue
 
-        report = EDI835Validator().validate(content)
-        is_valid = report.get("valid", report.get("is_valid", False))
+        is_valid, report = validate_835_content(content)
         if not is_valid:
             batch_validation_errors.append({
                 "filename": fname,
