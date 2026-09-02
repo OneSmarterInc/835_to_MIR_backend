@@ -809,12 +809,10 @@ def api_get_file_content(request, file_id):
     except (EDI835File.DoesNotExist, ValueError):
         return JsonResponse({"error": "File record not found."}, status=404)
 
+    # Staff already have access to the operational file list and may preview
+    # the same persisted records directly. Standard users remain tenant-bound.
     if getattr(request.user, "client", None) != db_rec.client and not request.user.is_staff:
         return JsonResponse({"error": "Unauthorized access to file."}, status=403)
-    if request.user.is_staff:
-        from admin_panel.access_control import has_active_client_grant
-        if not has_active_client_grant(request.user, db_rec.client_id):
-            return JsonResponse({"error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
     edi_text = db_rec.input_file_content or ""
     mir_record = getattr(db_rec, "mir_file", None)

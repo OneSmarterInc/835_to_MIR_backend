@@ -183,6 +183,56 @@ class ViewsTestCase(TestCase):
         self.assertEqual(empty_response.json()["edi_text"], "")
         self.assertEqual(empty_response.json()["mir_text"], "")
 
+    def test_staff_can_preview_client_database_content_without_temporary_grant(self):
+        from accounts.models import Client as AccountClient
+        from edi835.models import EDI835File, MIRFile
+
+        tenant = AccountClient.objects.create(
+            name="Preview Tenant", client_code="PREVIEW", email="preview@example.com"
+        )
+        source = EDI835File.objects.create(
+            client=tenant,
+            original_filename="client-source.835",
+            input_file_content="CLIENT DATABASE 835",
+        )
+        MIRFile.objects.create(
+            source_835=source,
+            client=tenant,
+            mir_filename="client-output.MIR",
+            file_content="CLIENT DATABASE MIR",
+            file_hash="b" * 64,
+        )
+        self.user.is_staff = True
+        self.user.save(update_fields=["is_staff"])
+
+        response = self.client.get(f"/api/file-content/{source.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["edi_text"], "CLIENT DATABASE 835")
+        self.assertEqual(response.json()["mir_text"], "CLIENT DATABASE MIR")
+
+    def test_standard_user_cannot_preview_another_clients_database_content(self):
+        from accounts.models import Client as AccountClient
+        from edi835.models import EDI835File
+
+        own_tenant = AccountClient.objects.create(
+            name="Own Tenant", client_code="OWN-PREVIEW", email="own-preview@example.com"
+        )
+        other_tenant = AccountClient.objects.create(
+            name="Other Tenant", client_code="OTHER-PREVIEW", email="other-preview@example.com"
+        )
+        self.user.client = own_tenant
+        self.user.save(update_fields=["client"])
+        source = EDI835File.objects.create(
+            client=other_tenant,
+            original_filename="other-client.835",
+            input_file_content="OTHER CLIENT DATABASE 835",
+        )
+
+        response = self.client.get(f"/api/file-content/{source.id}/")
+
+        self.assertEqual(response.status_code, 403)
+
     def test_client_archive_zip_contains_database_835_mir_and_recon_folders(self):
         from accounts.models import Client as AccountClient
         from edi835.models import EDI835File, MIRFile, RECONFile
