@@ -162,7 +162,12 @@ class AdminClientAccessGrant(models.Model):
     revoked_at = models.DateTimeField(null=True, blank=True)
 
     class Meta:
-        indexes = [models.Index(fields=["administrator", "client", "expires_at"])]
+        indexes = [
+            models.Index(
+                fields=["administrator", "client", "expires_at"],
+                name="admin_panel_adminis_725c13_idx",
+            )
+        ]
 
     @property
     def active(self):
