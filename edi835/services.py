@@ -589,15 +589,18 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
 
     file_uuid = uuid.uuid4()
     for idx, (fname, content) in enumerate(normalized_items):
-        fname = item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
-        fname = os.path.basename(fname)
+        # Use the already validated item from normalized_items. Do not reuse
+        # `item` from the validation loop above: that would make every batch
+        # member use the last file's filename/content.
         if not has_valid_file_extension(fname, "835"):
             return {"success": False, "error": file_extension_error("835")}
         file_names.append(fname)
 
-        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
         if not content:
-            continue
+            return {
+                "success": False,
+                "error": f"{fname}: File is empty after validation.",
+            }
         input_contents.append(content)
 
         # Prefix with UUID to avoid overwrites in batch mode
