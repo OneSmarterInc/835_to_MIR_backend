@@ -385,9 +385,34 @@ def _x12_elements(text):
 
 
 def parse_837_rows(text):
-    """Extract claim/service reference records from X12 837 transaction data."""
+    """Extract professional, institutional, and dental 837 claim services."""
     segments = _x12_elements(text)
     rows, current = [], None
+
+    def procedure_code(composite):
+        parts = [part.strip() for part in str(composite or "").split(":")]
+        # Composite medical-procedure identifiers normally start with a
+        # qualifier (HC/AD/etc.) followed by the actual procedure code.
+        return parts[1] if len(parts) > 1 else (parts[0] if parts else "")
+
+    def append_service(service_type, seg, procedure_index, charge_index,
+                       units_index, revenue_index=None):
+        procedure = procedure_code(seg[procedure_index] if len(seg) > procedure_index else "")
+        charge = _decimal(seg[charge_index] if len(seg) > charge_index else "")
+        units = _decimal(seg[units_index] if len(seg) > units_index else "")
+        revenue = (seg[revenue_index] if revenue_index is not None and len(seg) > revenue_index else "").strip()
+        current["services"].append({
+            "service_type": service_type,
+            "procedure_code": procedure,
+            "revenue_code": revenue,
+            "charge_amount": charge,
+            "paid_amount": Decimal("0"),
+            "allowed_amount": Decimal("0"),
+            "units": units,
+            "segment_data": {service_type: seg},
+        })
+        current["service_count"] += 1
+
     for seg in segments:
         tag = seg[0].strip().upper() if seg else ""
         if tag == "CLM":
@@ -409,19 +434,29 @@ def parse_837_rows(text):
             if entity in {"IL", "QC"}:
                 current["member_id"] = (seg[9] if len(seg) > 9 else "").strip() or current["member_id"]
         elif current and tag == "SV1":
-            procedure = (seg[1] if len(seg) > 1 else "").split(":")[-1]
-            charge = _decimal(seg[2] if len(seg) > 2 else "")
-            units = _decimal(seg[4] if len(seg) > 4 else "")
-            service = {"procedure_code": procedure, "charge_amount": charge, "paid_amount": Decimal("0"),
-                       "allowed_amount": Decimal("0"), "units": units}
-            current["services"].append(service)
-            current["service_count"] += 1
+            append_service("SV1", seg, procedure_index=1, charge_index=2, units_index=4)
+        elif current and tag == "SV2":
+            append_service(
+                "SV2", seg, procedure_index=2, charge_index=3,
+                units_index=5, revenue_index=1,
+            )
+        elif current and tag == "SV3":
+            append_service("SV3", seg, procedure_index=1, charge_index=2, units_index=6)
         elif current and tag == "DTP":
             current["segment_data"].setdefault("DTP", []).append(seg)
     if current:
         rows.append(current)
     if not rows:
         raise ValueError("No CLM claim segments were found in the 837 file.")
+    claims_without_services = [
+        row["claim_control_number"] or "(blank CLM01)"
+        for row in rows if not row["services"]
+    ]
+    if claims_without_services:
+        raise ValueError(
+            "837 claim(s) contain no supported SV1, SV2, or SV3 service segments: "
+            + ", ".join(claims_without_services)
+        )
     return rows
 
 
@@ -444,8 +479,7 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
     total_charge = Decimal("0")
     services_total = 0
     for sequence, data in enumerate(rows, start=1):
-        services = data["services"] or [{"procedure_code": "", "charge_amount": data["charge_amount"],
-                                         "paid_amount": Decimal("0"), "allowed_amount": Decimal("0"), "units": Decimal("0")}]
+        services = data["services"]
         claim = RECONClaim.objects.create(
             recon_file=recon, client=client, claim_sequence=sequence,
             claim_control_number=data["claim_control_number"], member_id=data["member_id"],
@@ -457,9 +491,11 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
         )
         RECONServiceLine.objects.bulk_create([
             RECONServiceLine(recon_claim=claim, recon_file=recon, service_sequence=i,
-                source_row_number=0, procedure_code=s["procedure_code"], units=s["units"],
+                source_row_number=0, procedure_code=s["procedure_code"],
+                revenue_code=s.get("revenue_code", ""), units=s["units"],
                 charge_amount=s["charge_amount"], allowed_amount=s["allowed_amount"],
-                paid_amount=s["paid_amount"], raw_service="", segment_data={"source": "837"})
+                paid_amount=s["paid_amount"], raw_service="",
+                segment_data={"source": "837", **s.get("segment_data", {})})
             for i, s in enumerate(services, start=1)
         ])
         total_charge += claim.charge_amount

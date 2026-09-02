@@ -202,6 +202,50 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         record = result["db_record"]
         self.assertEqual(record.status, "ERROR")
         self.assertEqual(record.ingestion_source, "SFTP")
+
+
+class EDI837ParserTestCase(TestCase):
+    def test_professional_sv1_service(self):
+        from .recon_service import parse_837_rows
+
+        rows = parse_837_rows("CLM*P-1*125.50~~~SV1*HC:99213*125.50*UN*2~")
+
+        service = rows[0]["services"][0]
+        self.assertEqual(service["service_type"], "SV1")
+        self.assertEqual(service["procedure_code"], "99213")
+        self.assertEqual(service["charge_amount"], Decimal("125.50"))
+        self.assertEqual(service["units"], Decimal("2"))
+
+    def test_institutional_sv2_service(self):
+        from .recon_service import parse_837_rows
+
+        rows = parse_837_rows("CLM*I-1*450.00~~~SV2*0450*HC:99284*450.00*UN*1~")
+
+        service = rows[0]["services"][0]
+        self.assertEqual(service["service_type"], "SV2")
+        self.assertEqual(service["revenue_code"], "0450")
+        self.assertEqual(service["procedure_code"], "99284")
+        self.assertEqual(service["charge_amount"], Decimal("450.00"))
+        self.assertEqual(service["units"], Decimal("1"))
+
+    def test_dental_sv3_service(self):
+        from .recon_service import parse_837_rows
+
+        rows = parse_837_rows("CLM*D-1*210.00~~~SV3*AD:D0120*210.00***1*3~")
+
+        service = rows[0]["services"][0]
+        self.assertEqual(service["service_type"], "SV3")
+        self.assertEqual(service["procedure_code"], "D0120")
+        self.assertEqual(service["charge_amount"], Decimal("210.00"))
+        self.assertEqual(service["units"], Decimal("3"))
+
+    def test_claim_without_supported_service_segment_is_rejected(self):
+        from .recon_service import parse_837_rows
+
+        with self.assertRaisesRegex(ValueError, "no supported SV1, SV2, or SV3"):
+            parse_837_rows("CLM*EMPTY-1*999.00~")
+
+
 class MIRPersistenceTestCase(TestCase):
     def test_result_amount_uses_position_429_for_every_service(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
@@ -241,7 +285,6 @@ class MIRPersistenceTestCase(TestCase):
         self.assertEqual(claim.claim_control_number, "86520261762674200QZL067")
         self.assertEqual(claim.service_lines.get().charge_amount, Decimal("75.00"))
         self.assertEqual(claim.service_lines.get().paid_amount, Decimal("60.00"))
-
     def test_reference_mir_fixed_width_recon_uses_exact_positions(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
