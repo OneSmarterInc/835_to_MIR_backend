@@ -270,6 +270,7 @@ from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-file-name",
+    "x-admin-screen",
 ]
 # Django CSRF Trusted Origins for CORS POST requests
 
