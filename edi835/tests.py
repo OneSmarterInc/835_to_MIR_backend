@@ -370,7 +370,7 @@ class DurableBatchJobTestCase(TestCase):
             self.assertIn("safe retry", recovered["result"]["error"])
 
 
-@override_settings(RECON_PROCESS_SYNCHRONOUS=True)
+@override_settings(RECON_PROCESS_SYNCHRONOUS=True, SECURE_SSL_REDIRECT=False)
 class RECONResultAPITestCase(TestCase):
     def setUp(self):
         self.tenant = AccountClient.objects.create(
