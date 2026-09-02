@@ -30,8 +30,8 @@ db.sqlite3
 db.sqlite3-journal
 media/
 
-# Settings (sensitive - do not commit)
-project835/settings.py
+# Runtime secrets belong in .env. The Django settings loader is tracked so
+# every deployment uses the same environment-based configuration.
 
 # Static files (collected by collectstatic on server)
 staticfiles/
