@@ -414,10 +414,12 @@ class RECONResultAPITestCase(TestCase):
         from openpyxl import load_workbook
         workbook = load_workbook(BytesIO(export.content), data_only=False)
         sheet = workbook["Reconciliation Results"]
-        self.assertEqual(sheet["B11"].value, 1)
-        self.assertEqual(sheet["A17"].value, "CLAIM100")
-        self.assertEqual(sheet["H17"].value, "-")
-        self.assertEqual(sheet["I17"].value, "Not In Mir")
+        self.assertEqual(sheet["A1"].value, "MIR / RECON Reconciliation Results")
+        self.assertEqual(sheet._images, [])
+        self.assertEqual(sheet["B5"].value, 1)
+        self.assertEqual(sheet["A11"].value, "CLAIM100")
+        self.assertEqual(sheet["H11"].value, "-")
+        self.assertEqual(sheet["I11"].value, "Not In Mir")
 
     def test_binary_recon_is_rejected_before_database_write(self):
         from django.core.files.uploadedfile import SimpleUploadedFile

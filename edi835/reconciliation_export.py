@@ -4,11 +4,9 @@ from collections import Counter
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
-from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from openpyxl import Workbook
-from openpyxl.drawing.image import Image
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.table import Table, TableStyleInfo
@@ -35,28 +33,16 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
     sheet = workbook.active
     sheet.title = "Reconciliation Results"
     sheet.sheet_view.showGridLines = False
-    sheet.freeze_panes = "A17"
+    sheet.freeze_panes = "A11"
 
     for column, width in enumerate((20, 24, 20, 28, 28, 18, 18, 18, 22), start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
 
-    sheet.merge_cells("A1:I5")
-    sheet.row_dimensions[1].height = 24
-    letterhead = Path(__file__).resolve().parent / "assets" / "onesmarter-letterhead.png"
-    if letterhead.exists():
-        logo = Image(str(letterhead))
-        logo.width = 818
-        logo.height = 110
-        sheet.add_image(logo, "A1")
-    else:
-        sheet["A1"] = "One Smarter, Inc."
-        sheet["A1"].font = Font(size=24, bold=True, color=WHITE)
-        sheet["A1"].fill = PatternFill("solid", fgColor=NAVY)
-
-    sheet.merge_cells("A7:I7")
-    sheet["A7"] = "MIR / RECON Reconciliation Results"
-    sheet["A7"].font = Font(size=18, bold=True, color=NAVY)
-    sheet["A7"].alignment = Alignment(horizontal="left")
+    sheet.merge_cells("A1:I1")
+    sheet["A1"] = "MIR / RECON Reconciliation Results"
+    sheet["A1"].font = Font(size=18, bold=True, color=NAVY)
+    sheet["A1"].alignment = Alignment(horizontal="left", vertical="center")
+    sheet.row_dimensions[1].height = 28
 
     generated = datetime.now(ZoneInfo("America/New_York")).strftime("%B %d, %Y at %I:%M:%S %p %Z")
     filter_text = search.strip() or "None"
@@ -81,7 +67,7 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
         ("Total MIR amount", total_mir, "Total RECON amount", total_recon),
         ("Net difference (matched)", matched_difference, "Export scope", "All filtered entries"),
     ]
-    for row_index, values in enumerate(summary, start=9):
+    for row_index, values in enumerate(summary, start=3):
         for offset, value in ((1, values[0]), (2, values[1]), (5, values[2]), (6, values[3])):
             cell = sheet.cell(row=row_index, column=offset, value=value)
             cell.border = Border(bottom=THIN_GRAY)
@@ -99,14 +85,14 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
             sheet.cell(row_index, column).border = Border(bottom=THIN_GRAY)
 
     currency_format = '$#,##0.00;[Red]-$#,##0.00'
-    for cell in (sheet["B13"], sheet["F13"], sheet["B14"]):
+    for cell in (sheet["B7"], sheet["F7"], sheet["B8"]):
         cell.number_format = currency_format
 
     headers = (
         "Claim ID", "Patient Name", "Member ID", "MIR File", "RECON File",
         "Amount in MIR", "Amount in RECON", "Difference", "Status",
     )
-    header_row = 16
+    header_row = 10
     for column, header in enumerate(headers, start=1):
         cell = sheet.cell(header_row, column, header)
         cell.fill = PatternFill("solid", fgColor=NAVY)
