@@ -1,6 +1,7 @@
 [Unit]
 Description=MIR isolated batch conversion worker
-After=network.target
+Wants=network-online.target
+After=network-online.target mir.service
 
 [Service]
 Type=simple
@@ -8,6 +9,7 @@ User=ubuntu
 Group=www-data
 WorkingDirectory=/var/www/835_to_MIR_backend
 EnvironmentFile=-/etc/default/mir
+EnvironmentFile=-/var/www/835_to_MIR_backend/.env
 ExecStart=/var/www/835_to_MIR_backend/venv/bin/python manage.py run_batch_worker
 Restart=always
 RestartSec=3
