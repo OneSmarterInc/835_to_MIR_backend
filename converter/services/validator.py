@@ -152,7 +152,33 @@ class PyX12Validator:
             except Exception as json_parse_err:
                 logger.error("Failed to parse PyX12 JSON output: %s", json_parse_err)
 
-        overall_valid = is_valid_doc and (len(errors) == 0)
+        # PyX12 can return a truthy/None result depending on version while
+        # still reporting structural issues. Treat the explicit result as valid
+        # only when it is strictly True, and never let a missing ST/SE envelope
+        # silently pass.
+        has_835 = any(t == '835' for t in st_types)
+        required_segments = {'ISA', 'IEA', 'GS', 'GE', 'ST', 'SE'}
+        missing_segments = sorted(required_segments - set(segment_summary))
+        if missing_segments:
+            errors.append({
+                "line": 0,
+                "segment": "X12",
+                "element": None,
+                "severity": "error",
+                "code": "MISSING_REQUIRED_SEGMENTS",
+                "message": "Missing required X12 envelope segment(s): " + ", ".join(missing_segments),
+            })
+        if not st_types or not has_835:
+            errors.append({
+                "line": 0,
+                "segment": "ST",
+                "element": "ST01",
+                "severity": "error",
+                "code": "MISSING_835_TRANSACTION",
+                "message": "No valid 835 transaction set was found.",
+            })
+
+        overall_valid = (is_valid_doc is True) and (len(errors) == 0)
 
         return {
             "valid": overall_valid,
