@@ -7,6 +7,7 @@ import uuid
 from django.conf import settings
 from django.db import IntegrityError
 from django.http import HttpResponse, JsonResponse
+from django.utils.text import slugify
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -16,6 +17,7 @@ from project835.decorators import authenticated_api_required, json_api_errors
 from .models import MIRClaim, RECONClaim, RECONFile
 from .recon_service import process_recon_file
 from .reconciliation_service import reconciliation_rows
+from .reconciliation_export import build_reconciliation_workbook
 
 
 def _request_client(request, supplied_client_id=None):
@@ -286,6 +288,50 @@ def reconciliation_results(request):
         "page_size": page_size,
         "total_pages": max(1, (total + page_size - 1) // page_size),
     })
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def reconciliation_export(request):
+    """Download every row matching the Result screen's active filters."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    client = None if is_global else _request_client(request, request.GET.get("client_id"))
+    if not client and not is_global:
+        return JsonResponse({"success": False, "error": "Select a client."}, status=400)
+
+    sort_by = request.GET.get("sort_by", "")
+    sort_direction = request.GET.get("sort_direction", "asc")
+    status_filter = request.GET.get("status", "")
+    allowed_sorts = {
+        "", "claim_id", "patient_name", "mir_filename", "recon_filename",
+        "amount_to_pay", "recon_paid_amount", "difference_amount", "status",
+    }
+    allowed_statuses = {
+        "", "NOT_IN_MIR", "NOT_IN_RECON", "SIGNATURE_MISMATCH", "CLEAR",
+        "PARTIALLY_PAID", "OVERPAID", "UNPAID", "AMOUNT_MISMATCH",
+    }
+    if sort_by not in allowed_sorts or sort_direction not in {"asc", "desc"} or status_filter not in allowed_statuses:
+        return JsonResponse({"success": False, "error": "Invalid filter or sort parameters."}, status=400)
+
+    files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
+    search = request.GET.get("search", "")
+    rows, total = reconciliation_rows(
+        client, files, search=search, sort_by=sort_by,
+        sort_direction=sort_direction, status_filter=status_filter,
+    )
+    workbook = build_reconciliation_workbook(
+        client=client, rows=rows, total=total, search=search, status=status_filter,
+    )
+    response = HttpResponse(
+        workbook.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    client_part = slugify(getattr(client, "name", "global")) or "global"
+    response["Content-Disposition"] = f'attachment; filename="onesmarter-reconciliation-{client_part}.xlsx"'
+    return response
 
 
 @csrf_exempt

@@ -17,7 +17,7 @@ from .views import (
 from converter.views import api_download_archive_zip
 from .recon_views import (
     recon_detail, recon_download, recon_files, recon_process, recon_upload,
-    reconciliation_claim_detail, reconciliation_results, sftp_837_files, sftp_837_ingest,
+    reconciliation_claim_detail, reconciliation_export, reconciliation_results, sftp_837_files, sftp_837_ingest,
 )
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
@@ -41,6 +41,7 @@ recon_upload = authenticated_api(recon_upload)
 recon_process = authenticated_api(recon_process)
 recon_detail = authenticated_api(recon_detail)
 reconciliation_results = authenticated_api(reconciliation_results)
+reconciliation_export = authenticated_api(reconciliation_export)
 reconciliation_claim_detail = authenticated_api(reconciliation_claim_detail)
 sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
@@ -68,6 +69,7 @@ urlpatterns = [
     path("api/recon/files/<uuid:file_id>/process/", recon_process, name="recon_process"),
     path("api/recon/files/<uuid:file_id>/", recon_detail, name="recon_detail"),
     path("api/reconciliation/", reconciliation_results, name="reconciliation_results"),
+    path("api/reconciliation/export/", reconciliation_export, name="reconciliation_export"),
     path("api/sftp/837-files/", sftp_837_files, name="sftp_837_files"),
     path("api/sftp/837-ingest/", sftp_837_ingest, name="sftp_837_ingest"),
     path("api/reconciliation/claims/<int:claim_id>/", reconciliation_claim_detail, name="reconciliation_claim_detail"),

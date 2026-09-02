@@ -356,6 +356,23 @@ class RECONResultAPITestCase(TestCase):
             {"CLAIM100", "CLAIM200"},
         )
 
+        export = self.client.get(
+            "/edi835/api/reconciliation/export/?search=CLAIM-100&status=NOT_IN_MIR"
+        )
+        self.assertEqual(export.status_code, 200)
+        self.assertEqual(
+            export["Content-Type"],
+            "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )
+        from io import BytesIO
+        from openpyxl import load_workbook
+        workbook = load_workbook(BytesIO(export.content), data_only=False)
+        sheet = workbook["Reconciliation Results"]
+        self.assertEqual(sheet["B11"].value, 1)
+        self.assertEqual(sheet["A17"].value, "CLAIM100")
+        self.assertEqual(sheet["H17"].value, "-")
+        self.assertEqual(sheet["I17"].value, "Not In Mir")
+
     def test_binary_recon_is_rejected_before_database_write(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
