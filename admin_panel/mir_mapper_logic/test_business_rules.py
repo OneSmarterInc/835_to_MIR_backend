@@ -123,6 +123,19 @@ class MirBusinessRuleTests(unittest.TestCase):
         service = ServiceLine(adjustments=[adjustment("PR", "45", "12.79")])
         self.assertEqual(payment_reduction_slots(service), {3: ("PR119", Decimal("12.79"))})
 
+    def test_slot_3_rejects_mixed_pr3_and_pr45(self):
+        for adjustments in (
+            [adjustment("PR", "3", "10"), adjustment("PR", "45", "12.79")],
+            [adjustment("PR", "45", "12.79"), adjustment("PR", "3", "10")],
+        ):
+            with self.subTest(adjustments=adjustments):
+                service = ServiceLine(adjustments=adjustments)
+                with self.assertRaisesRegex(
+                    ValueError,
+                    r"MIR reduction slot 3 cannot contain both (PR3 and PR119|PR119 and PR3)",
+                ):
+                    payment_reduction_slots(service)
+
 
 if __name__ == "__main__":
     unittest.main()
