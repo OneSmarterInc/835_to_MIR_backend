@@ -806,31 +806,543 @@ def api_admin_users(request):
 
     if search_q:
         users_qs = users_qs.filter(
-     Û≠zÍ⁄$z{-ÆÈ‹j◊ùetch preview content exclusively from the persisted 835 and MIR tables.
+            models.Q(name__icontains=search_q) |
+            models.Q(email__icontains=search_q) |
+            models.Q(mobile__icontains=search_q)
+        )
 
-    Preview requests deliberately never read or parse physical files.
-    """
-    try:
-        db_rec = EDI835File.objects.select_related("mir_file").get(id=file_id)
-    except (EDI835File.DoesNotExist, ValueError):
-        return JsonResponse({"error": "File record not found."}, status=404)
-
-    if getattr(request.user, "client", None) != db_rec.client and not request.user.is_staff:
-        return JsonResponse({"error": "Unauthorized access to file."}, status=403)
-    if request.user.is_staff:
-        from admin_panel.access_control import has_active_client_grant
-        if not has_active_client_grant(request.user, db_rec.client_id):
-            return JsonResponse({"error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
-
-    edi_text = db_rec.input_file_content or ""
-    mir_record = getattr(db_rec, "mir_file", None)
-    mir_text = mir_record.file_content if mir_record else ""
+    users_data = []
+    for u in users_qs:
+        users_data.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "mobile": u.mobile,
+            "is_active": u.is_active,
+            "is_staff": u.is_staff,
+            "totp_enabled": u.totp_enabled,
+            "client_id": str(u.client.id) if u.client else None,
+            "client_name": u.client.name if u.client else None,
+            "client_code": u.client.client_code if u.client else None,
+            "created_at": u.created_at.isoformat() if u.created_at else "",
+        })
 
     return JsonResponse({
         "success": True,
-        "file_id": str(db_rec.id),
-        "filename": db_rec.original_filename,
-        "mir_filename": mir_record.mir_filename if mir_record else "",
-        "edi_text": edi_text,
-        "mir_text": mir_text,
+        "total_users": User.objects.count(),
+        "users": users_data
+    })
+
+
+@csrf_exempt
+def api_admin_create_user(request):
+    """
+    POST /accounts/api/admin/users/create/
+    Creates a new user account.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except Exception:
+        data = request.POST
+
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    mobile = (data.get("mobile") or "").strip()
+    password = data.get("password") or "Password@123"
+    is_staff = bool(data.get("is_staff", False))
+    client_id = data.get("client_id")
+
+    if not name:
+        return JsonResponse({"success": False, "error": "User Name is required."}, status=400)
+    if not email:
+        return JsonResponse({"success": False, "error": "User Email is required."}, status=400)
+    if not mobile:
+        return JsonResponse({"success": False, "error": "Mobile number is required."}, status=400)
+
+    try:
+        mobile = normalize_phone_number(mobile, data.get("country_code"))
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    if User.objects.filter(email=email).exists():
+        return JsonResponse({"success": False, "error": f"Email '{email}' is already registered."}, status=400)
+    if User.objects.filter(mobile=mobile).exists():
+        return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered."}, status=400)
+
+    client_obj = None
+    if client_id:
+        try:
+            client_obj = Client.objects.get(id=client_id)
+        except Exception:
+            client_obj = None
+
+    user = User.objects.create_user(
+        email=email,
+        name=name,
+        mobile=mobile,
+        password=password,
+        is_staff=is_staff,
+        client=client_obj
+    )
+
+    return JsonResponse({
+        "success": True,
+        "message": f"User '{user.email}' created successfully.",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "mobile": user.mobile,
+            "is_staff": user.is_staff,
+            "client_name": client_obj.name if client_obj else None,
+        }
+    })
+
+
+@csrf_exempt
+def api_admin_update_user(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/update/
+    Updates user details or toggles active / staff status.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        user_obj = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+
+    try:
+        data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except Exception:
+        data = request.POST
+
+    if "name" in data and data["name"].strip():
+        user_obj.name = data["name"].strip()
+    if "mobile" in data and data["mobile"].strip():
+        try:
+            user_obj.mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    if "password" in data and data["password"].strip():
+        user_obj.set_password(data["password"].strip())
+    if "is_active" in data:
+        user_obj.is_active = bool(data["is_active"])
+    if "is_staff" in data:
+        user_obj.is_staff = bool(data["is_staff"])
+    if "client_id" in data:
+        cid = data["client_id"]
+        if cid:
+            try:
+                user_obj.client = Client.objects.get(id=cid)
+            except Exception:
+                user_obj.client = None
+        else:
+            user_obj.client = None
+
+    user_obj.save()
+
+    return JsonResponse({
+        "success": True,
+        "message": f"User '{user_obj.email}' updated successfully."
+    })
+
+
+@csrf_exempt
+def api_admin_delete_user(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/delete/
+    Deletes a user account.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        user_obj = User.objects.get(id=user_id)
+        email = user_obj.email
+        user_obj.delete()
+        return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+
+
+@csrf_exempt
+def api_admin_stats(request):
+    """
+    GET /accounts/api/admin/stats/
+    Returns admin overview counters.
+    """
+    total_clients = Client.objects.count()
+    active_clients = Client.objects.filter(status="ACTIVE").count()
+    inactive_clients = Client.objects.filter(status="INACTIVE").count()
+    total_users = User.objects.count()
+    total_conversions = EDI835File.objects.count()
+
+    return JsonResponse({
+        "success": True,
+        "total_clients": total_clients,
+        "active_clients": active_clients,
+        "inactive_clients": inactive_clients,
+        "total_users": total_users,
+        "total_conversions": total_conversions,
+        "system_status": "OPERATIONAL"
+    })
+
+
+# ==========================================
+# ADMIN USER MANAGEMENT API ENDPOINTS
+# ==========================================
+
+@csrf_exempt
+def api_admin_users(request):
+    """
+    GET /accounts/api/admin/users/
+    Returns list of all user accounts.
+    """
+    search_q = request.GET.get("search", "").strip()
+    users_qs = User.objects.select_related("client").all().order_by("-created_at")
+
+    if search_q:
+        users_qs = users_qs.filter(
+            models.Q(name__icontains=search_q) |
+            models.Q(email__icontains=search_q) |
+            models.Q(mobile__icontains=search_q)
+        )
+
+    users_data = []
+    for u in users_qs:
+        client_name = "None"
+        if u.is_superuser:
+            client_name = "OneSmarter"
+        elif u.is_staff:
+            client_name = "OneSmarter"
+        elif u.client:
+            client_name = u.client.name
+
+        users_data.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "mobile": u.mobile,
+            "is_active": u.is_active,
+            "is_staff": u.is_staff,
+            "is_superuser": u.is_superuser,
+            "role": "Super Admin" if u.is_superuser else ("Admin" if u.is_staff else "User"),
+            "totp_enabled": u.totp_enabled,
+            "client_id": str(u.client.id) if u.client else None,
+            "client_name": client_name,
+            "client_code": u.client.client_code if u.client else None,
+            "created_at": u.created_at.isoformat() if u.created_at else "",
+            "clients": [client_name],
+            "person": u.name,
+            "mfa": "Enabled" if u.totp_enabled else "Disabled",
+            "last_login": u.last_login.isoformat() if u.last_login else None,
+            "status": "Active" if u.is_active else "Inactive",
+        })
+
+    return JsonResponse({
+        "success": True,
+        "total_users": User.objects.count(),
+        "users": users_data
+    })
+
+
+@csrf_exempt
+def api_admin_create_user(request):
+    """
+    POST /accounts/api/admin/users/create/
+    Creates a new user account.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except Exception:
+        data = request.POST
+
+    name = (data.get("name") or "").strip()
+    email = (data.get("email") or "").strip().lower()
+    mobile = (data.get("mobile") or "").strip()
+    password = data.get("password") or "Password@123"
+    
+    role = data.get("role", "User")
+    is_staff = bool(data.get("is_staff", False) or role in ["Admin", "Super Admin"])
+    is_superuser = bool(data.get("is_superuser", False) or role == "Super Admin")
+    client_id = data.get("client_id")
+
+    if not name:
+        return JsonResponse({"success": False, "error": "User Name is required."}, status=400)
+    if not email:
+        return JsonResponse({"success": False, "error": "User Email is required."}, status=400)
+    if not mobile:
+        return JsonResponse({"success": False, "error": "Mobile number is required."}, status=400)
+
+    try:
+        mobile = normalize_phone_number(mobile, data.get("country_code"))
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    if User.objects.filter(email=email).exists():
+        return JsonResponse({"success": False, "error": f"Email '{email}' is already registered."}, status=400)
+    if User.objects.filter(mobile=mobile).exists():
+        return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered."}, status=400)
+
+    # Permission check: Only superusers can create staff or superusers
+    if (is_staff or is_superuser) and not request.user.is_superuser:
+        return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can create Admin or Super Admin accounts."}, status=403)
+
+    client_obj = None
+    if not is_staff:
+        if client_id:
+            try:
+                client_obj = Client.objects.get(id=client_id)
+            except Exception:
+                client_obj = None
+        if not client_obj:
+            return JsonResponse({"success": False, "error": "Client assignment is required for standard Users."}, status=400)
+
+    user = User.objects.create_user(
+        email=email,
+        name=name,
+        mobile=mobile,
+        password=password,
+        is_staff=is_staff,
+        is_superuser=is_superuser,
+        client=client_obj
+    )
+
+    return JsonResponse({
+        "success": True,
+        "message": f"User '{user.email}' created successfully.",
+        "user": {
+            "id": user.id,
+            "name": user.name,
+            "email": user.email,
+            "mobile": user.mobile,
+            "is_staff": user.is_staff,
+            "is_superuser": user.is_superuser,
+            "role": "Super Admin" if user.is_superuser else ("Admin" if user.is_staff else "User"),
+            "client_name": client_obj.name if client_obj else ("OneSmarter" if is_staff else None),
+        }
+    })
+
+
+@csrf_exempt
+def api_admin_update_user(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/update/
+    Updates user details or toggles active / staff status.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        user_obj = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+
+    try:
+        data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except Exception:
+        data = request.POST
+
+    # Permission check: Only Super Admins can edit Admins or Super Admins
+    if (user_obj.is_staff or user_obj.is_superuser) and not request.user.is_superuser:
+        return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can update Admin or Super Admin accounts."}, status=403)
+
+    role = data.get("role")
+    new_is_staff = user_obj.is_staff
+    new_is_superuser = user_obj.is_superuser
+
+    if "is_staff" in data or role:
+        new_is_staff = bool(data.get("is_staff", False) or role in ["Admin", "Super Admin"])
+    if "is_superuser" in data or role:
+        new_is_superuser = bool(data.get("is_superuser", False) or role == "Super Admin")
+
+    # If role settings changed, requester must be superuser
+    if (new_is_staff != user_obj.is_staff or new_is_superuser != user_obj.is_superuser) and not request.user.is_superuser:
+        return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can change administrative roles."}, status=403)
+
+    if "email" in data and data["email"].strip().lower():
+        email = data["email"].strip().lower()
+        if email != user_obj.email:
+            if User.objects.filter(email=email).exists():
+                return JsonResponse({"success": False, "error": f"Email '{email}' is already registered in the system."}, status=400)
+            user_obj.email = email
+
+    if "name" in data and data["name"].strip():
+        user_obj.name = data["name"].strip()
+    if "mobile" in data and data["mobile"].strip():
+        try:
+            mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
+        except ValueError as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+        if mobile != user_obj.mobile:
+            if User.objects.filter(mobile=mobile).exists():
+                return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)
+            user_obj.mobile = mobile
+    if "password" in data and data["password"].strip():
+        user_obj.set_password(data["password"].strip())
+    if "is_active" in data:
+        user_obj.is_active = bool(data["is_active"])
+    
+    user_obj.is_staff = new_is_staff
+    user_obj.is_superuser = new_is_superuser
+
+    if user_obj.is_staff:
+        user_obj.client = None
+    else:
+        if "client_id" in data:
+            cid = data["client_id"]
+            if not cid:
+                return JsonResponse({"success": False, "error": "Client assignment is required for standard Users."}, status=400)
+            try:
+                user_obj.client = Client.objects.get(id=cid)
+            except Exception:
+                return JsonResponse({"success": False, "error": "Invalid client assigned."}, status=400)
+        elif not user_obj.client:
+            return JsonResponse({"success": False, "error": "Client assignment is required for standard Users."}, status=400)
+
+    user_obj.save()
+
+    return JsonResponse({
+        "success": True,
+        "message": f"User '{user_obj.email}' updated successfully."
+    })
+
+
+@csrf_exempt
+def api_admin_delete_user(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/delete/
+    Deletes a user account.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST method is allowed."}, status=405)
+
+    try:
+        user_obj = User.objects.get(id=user_id)
+        # Permission check: Only Super Admins can delete Admins or Super Admins
+        if (user_obj.is_staff or user_obj.is_superuser) and not request.user.is_superuser:
+            return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can delete Admin or Super Admin accounts."}, status=403)
+        email = user_obj.email
+        user_obj.delete()
+        return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+
+
+@csrf_exempt
+def api_client_contacts(request):
+    """ GET /accounts/api/contacts/ """
+    if not request.user.is_authenticated:
+        return JsonResponse({"success": False, "error": "Not authenticated"}, status=401)
+    
+    if not request.user.client:
+        return JsonResponse({"success": False, "error": "User has no associated client"}, status=400)
+        
+    try:
+        from accounts.models import ClientContact
+        contacts = ClientContact.objects.filter(client=request.user.client).order_by('-created_at').values(
+            "id", "role_name", "name", "email", "phone", "created_at"
+        )
+        return JsonResponse({"success": True, "contacts": list(contacts)})
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+
+
+@csrf_exempt
+def api_change_password(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"success": False, "error": "Authentication required."}, status=401)
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed."}, status=405)
+    try:
+        data = json.loads(request.body.decode("utf-8")) if request.body else request.POST
+    except Exception:
+        data = request.POST
+
+    new_password = data.get("password", "").strip()
+    if not new_password:
+        return JsonResponse({"success": False, "error": "Password cannot be empty."}, status=400)
+
+    user = request.user
+    user.set_password(new_password)
+    user.first_login = False
+    user.save()
+    
+    from django.contrib.auth import update_session_auth_hash
+    update_session_auth_hash(request, user)
+
+    return JsonResponse({"success": True, "message": "Password changed successfully."})
+
+
+@csrf_exempt
+def api_admin_reset_password(request, user_id):
+    """
+    POST /accounts/api/admin/users/<user_id>/reset-password/
+    Resets the user's password, generates a temporary password, sets first_login to True,
+    and sends an email with the temporary password.
+    """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+        
+    try:
+        user_obj = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return JsonResponse({"success": False, "error": "User not found."}, status=404)
+        
+    # Generate temporary password
+    import random
+    import string
+    chars = string.ascii_letters + string.digits
+    temp_pass = "Temp@" + "".join(random.choice(chars) for _ in range(8))
+    
+    user_obj.set_password(temp_pass)
+    user_obj.first_login = True
+    user_obj.save()
+    
+    # Send email
+    from admin_panel.email_service import send_client_email
+    subject = "OneSmarter Inc: Account Password Reset"
+    html = f"""
+    <p>Dear {user_obj.name or 'User'},</p>
+    <p>Your password for the OneSmarter portal has been reset by the administrator.</p>
+    <p>Your temporary password is: <b>{temp_pass}</b></p>
+    <p>Please note that you will be required to change this password upon your next login.</p>
+    <p>Sincerely,<br/>OneSmarter Inc, USA</p>
+    """
+    
+    success = False
+    if user_obj.client:
+        success = send_client_email(user_obj.client, subject, html, to_emails=[user_obj.email])
+    else:
+        # Fall back to default SMTP
+        from admin_panel.models import ClientSmtpConfig
+        default_config = ClientSmtpConfig.objects.filter(client__isnull=True).first()
+        if default_config:
+            try:
+                from admin_panel.email_service import get_client_email_backend
+                backend = get_client_email_backend(default_config)
+                from_email = f"{default_config.sender_name} <{default_config.sender_email}>" if default_config.sender_name else default_config.sender_email
+                from django.core.mail import EmailMultiAlternatives
+                from django.utils.html import strip_tags
+                text_content = strip_tags(html)
+                msg = EmailMultiAlternatives(subject, text_content, from_email, [user_obj.email], connection=backend)
+                msg.attach_alternative(html, "text/html")
+                msg.send()
+                success = True
+            except Exception as e:
+                import logging
+                logging.getLogger(__name__).error(f"Failed to send default reset email: {e}")
+                
+    return JsonResponse({
+        "success": True,
+        "message": f"Password reset successfully for {user_obj.email}. Email status: {'Sent' if success else 'Failed to send'}"
     })
