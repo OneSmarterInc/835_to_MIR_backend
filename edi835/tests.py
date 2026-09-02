@@ -254,6 +254,8 @@ class MIRPersistenceTestCase(TestCase):
         paid_values = [Decimal("124.89"), Decimal("19.61"), Decimal("19.61")] + [Decimal("0.00")] * 9
         mir_text, _ = generate_mir_text([Claim(
             claim_number="AMOUNT-POSITION-01",
+            status="1",
+            group_number="TESTGRP",
             services=[ServiceLine(charge=value, paid=value) for value in paid_values],
         )])
         line = mir_text.splitlines()[0]
@@ -277,6 +279,7 @@ class MIRPersistenceTestCase(TestCase):
 
         mir_text, _ = generate_mir_text([Claim(
             claim_number="86520261762674200", claim_reference="QZL067",
+            status="1", group_number="TESTGRP",
             services=[ServiceLine(charge=Decimal("75.00"), paid=Decimal("60.00"))],
         )])
         source = EDI835File.objects.create(original_filename="id.835", stored_filename="id.835")
@@ -342,7 +345,12 @@ class MIRPersistenceTestCase(TestCase):
             for _ in range(51)
         ]
         mir_text, summary = generate_mir_text([
-            Claim(claim_number="CONTINUATION00001", services=services)
+            Claim(
+                claim_number="CONTINUATION00001",
+                status="1",
+                group_number="TESTGRP",
+                services=services,
+            )
         ])
         source = EDI835File.objects.create(
             original_filename="split.835",
