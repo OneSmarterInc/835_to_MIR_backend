@@ -79,17 +79,12 @@ def api_process_tracked_file(request):
         # Send failure email notification
         if client:
             try:
-                from admin_panel.email_service import send_client_email
+                from admin_panel.email_service import send_conversion_notice
                 err_msg = res.get("error", "Unknown error")
-                subject = f"OneSmarter: 835 File Validation Failed - {original_filename}"
-                html = (
-                    f"<h3>835 File Validation Failed</h3>"
-                    f"<p>Your EDI 835 file <b>{original_filename}</b> could not be processed.</p>"
-                    f"<p><b>Error:</b> {err_msg}</p>"
-                    f"<p>Please review the file and re-upload a corrected version.</p>"
+                send_conversion_notice(
+                    client, request, success=False, input_files=[original_filename],
+                    error=err_msg, operation="835 Validation",
                 )
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as email_err:
                 import logging
                 logging.getLogger(__name__).error(f"Failed to send validation failure email: {email_err}")
@@ -104,11 +99,16 @@ def api_process_tracked_file(request):
 
     if client:
         try:
-            from admin_panel.email_service import send_client_email
-            subject = f"OneSmarter: 835 File Processed - {original_filename}"
-            html = f"<h3>File Processed Successfully</h3><p>Your EDI 835 file <b>{original_filename}</b> was successfully processed.</p><p>Claims: {res['claims_count']}</p>"
-            to_emails = [request.user.email] if request.user and request.user.email else None
-            send_client_email(client, subject, html, to_emails=to_emails)
+            from admin_panel.email_service import send_conversion_notice
+            mir_record = getattr(db_rec, "mir_file", None)
+            send_conversion_notice(
+                client, request, success=True,
+                input_files=[original_filename],
+                output_files=[getattr(mir_record, "mir_filename", "")],
+                claims=res.get("claims_count", 0),
+                services=res.get("services_count", 0),
+                records=res.get("records_count", 0),
+            )
         except Exception as e:
             import logging
             logging.getLogger(__name__).error(f"Failed to send email on process: {e}")

@@ -139,6 +139,42 @@ def send_automation_run_notice(run):
     )
     return send_client_email(run.client, subject, html)
 
+
+def send_conversion_notice(client, request, *, success, input_files, output_files=None,
+                           claims=0, services=0, records=0, error="", batch=False,
+                           operation=""):
+    """Send a complete, consistently themed 835 conversion result."""
+    from zoneinfo import ZoneInfo
+
+    input_files = [str(name) for name in (input_files or []) if name]
+    output_files = [str(name) for name in (output_files or []) if name]
+    outcome = "Successful" if success else "Failed"
+    scope = operation or ("Batch 835 Conversion" if batch else "835 Conversion")
+    subject = f"OneSmarter: {scope} {outcome}"
+    if not batch and len(input_files) == 1:
+        subject += f" - {input_files[0]}"
+    completed_at = timezone.now().astimezone(ZoneInfo("America/New_York")).strftime(
+        "%B %d, %Y at %I:%M:%S %p %Z"
+    )
+    html = (
+        f'<h3>{escape(scope)} {escape(outcome)}</h3>'
+        f'<p>{"The supplied 835 file set was converted to MIR successfully." if success else "The supplied 835 file set could not be converted to MIR."}</p>'
+        + _detail_table([
+            ("Status", outcome),
+            ("Completed at (EST)", completed_at),
+            ("Input file count", len(input_files)),
+            ("Claims processed", claims),
+            ("Services processed", services),
+            ("Records generated", records),
+            ("Error detail", error or ("None" if success else "Conversion failed.")),
+        ])
+        + _file_list("835 input files", input_files)
+        + _file_list("MIR output files", output_files)
+        + ('<p>No action is required.</p>' if success else '<p><strong>Action required:</strong> Correct the reported issue and upload the file again.</p>')
+    )
+    recipient = getattr(getattr(request, "user", None), "email", "")
+    return send_client_email(client, subject, html, to_emails=[recipient] if recipient else None)
+
 def get_client_users(client):
     """Return a list of user emails belonging to the client."""
     users = User.objects.filter(client=client, is_active=True)

@@ -218,17 +218,13 @@ def api_convert(request):
         if not batch_res.get("success"):
             if client:
                 try:
-                    from admin_panel.email_service import send_client_email
+                    from admin_panel.email_service import send_conversion_notice
                     err_msg = batch_res.get("error", "Multi-file conversion failed.")
-                    subject = f"OneSmarter: Batch 835 Conversion Failed"
-                    html = (
-                        f"<h3>Batch 835 Conversion Failed</h3>"
-                        f"<p>Your batch of EDI 835 files could not be converted to MIR.</p>"
-                        f"<p><b>Error:</b> {err_msg}</p>"
-                        f"<p>Please review the files and try again.</p>"
+                    send_conversion_notice(
+                        client, request, success=False, batch=True,
+                        input_files=[item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
+                        error=err_msg,
                     )
-                    to_emails = [request.user.email] if request.user and request.user.email else None
-                    send_client_email(client, subject, html, to_emails=to_emails)
                 except Exception as email_err:
                     logging.getLogger(__name__).error(f"Failed to send batch failure email: {email_err}")
             return JsonResponse({'error': batch_res.get("error", "Multi-file conversion failed.")}, status=400)
@@ -238,11 +234,15 @@ def api_convert(request):
 
         if client:
             try:
-                from admin_panel.email_service import send_client_email
-                subject = f"OneSmarter: Batch 835 Conversion Successful"
-                html = f"<h3>Batch File Conversion Successful</h3><p>Your batch of {batch_res['files_count']} EDI 835 files was successfully converted to MIR.</p><p>Total claims processed: {batch_res['claims_count']}</p>"
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
+                from admin_panel.email_service import send_conversion_notice
+                send_conversion_notice(
+                    client, request, success=True, batch=True,
+                    input_files=[item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
+                    output_files=[canonical_mir_filename or batch_res.get('combined_filename')],
+                    claims=batch_res.get('claims_count', 0),
+                    services=batch_res.get('services_count', 0),
+                    records=batch_res.get('records_count', 0),
+                )
             except Exception as e:
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
@@ -310,17 +310,12 @@ def api_convert(request):
     if not res.get("success"):
         if client:
             try:
-                from admin_panel.email_service import send_client_email
+                from admin_panel.email_service import send_conversion_notice
                 err_msg = res.get("error", "Unknown error")
-                subject = f"OneSmarter: 835 File Conversion Failed - {original_filename}"
-                html = (
-                    f"<h3>835 File Conversion Failed</h3>"
-                    f"<p>Your EDI 835 file <b>{original_filename}</b> could not be converted to MIR.</p>"
-                    f"<p><b>Error:</b> {err_msg}</p>"
-                    f"<p>Please review the file and re-upload a corrected version.</p>"
+                send_conversion_notice(
+                    client, request, success=False,
+                    input_files=[original_filename], error=err_msg,
                 )
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
             except Exception as email_err:
                 logging.getLogger(__name__).error(f"Failed to send conversion failure email: {email_err}")
         return JsonResponse({
@@ -330,11 +325,15 @@ def api_convert(request):
 
     if client:
         try:
-            from admin_panel.email_service import send_client_email
-            subject = f"OneSmarter: 835 Conversion Successful - {original_filename}"
-            html = f"<h3>File Conversion Successful</h3><p>Your EDI 835 file <b>{original_filename}</b> was successfully converted to MIR.</p><p>Claims processed: {res['claims_count']}</p>"
-            to_emails = [request.user.email] if request.user and request.user.email else None
-            send_client_email(client, subject, html, to_emails=to_emails)
+            from admin_panel.email_service import send_conversion_notice
+            send_conversion_notice(
+                client, request, success=True,
+                input_files=[original_filename],
+                output_files=[_canonical_mir_filename(res.get('db_record'))],
+                claims=res.get('claims_count', 0),
+                services=res.get('services_count', 0),
+                records=res.get('records_count', 0),
+            )
         except Exception as e:
             logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
