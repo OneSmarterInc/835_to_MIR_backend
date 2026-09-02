@@ -7,7 +7,7 @@ from pathlib import Path
 from django.test import TestCase, Client, override_settings
 from unittest.mock import patch
 from accounts.models import Client as AccountClient, User
-from .models import EDI835File, MIRServiceLine, RECONFile
+from .models import EDI835File, MIRFile, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
 from .services import (
     get_edi835_storage_dirs,
@@ -443,6 +443,36 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(response.content, b"xlsx")
         self.assertEqual(build.call_args.kwargs["rows"], rows)
         self.assertEqual(build.call_args.kwargs["total"], 3)
+
+    def test_file_dashboard_is_scoped_to_the_opened_database_record(self):
+        source = EDI835File.objects.create(
+            client=self.tenant, original_filename="cycle.835", stored_filename="cycle.835",
+        )
+        MIRFile.objects.create(
+            source_835=source, client=self.tenant, mir_filename="cycle.MIR",
+            file_content="MIR", file_hash="d" * 64, file_size=3,
+        )
+        RECONFile.objects.create(
+            client=self.tenant, original_filename="cycle.csv", stored_filename="cycle.csv",
+            file_content="RECON", file_hash="e" * 64, file_size=5, status="PROCESSED",
+        )
+        rows = [{
+            "claim_id": "CLAIM1", "amount_to_pay": "100.00", "recon_paid_amount": "118.00",
+            "recon_fees": {"MIR904": "5.00", "MIR905": "10.00", "MPL920": "3.00"},
+            "difference_amount": "0.00", "status": "CLEAR", "match_step": "MPL920",
+            "affected_by_interim_policy": True, "policy_flags": [],
+        }]
+
+        with patch("edi835.recon_views.reconciliation_rows", return_value=rows) as reconcile:
+            response = self.client.get(f"/edi835/api/reconciliation/files/{source.id}/")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["source"]["filename"], "cycle.835")
+        self.assertEqual(payload["cash"]["unexplained"], "0.00")
+        self.assertEqual(payload["tallies"]["matched_with_caveat"], 1)
+        self.assertEqual(payload["records"][0]["mpl920"], "3.00")
+        self.assertEqual(reconcile.call_args.kwargs["mir_file_id"], source.mir_file.id)
 
     def test_upload_process_and_tenant_scoped_listing(self):
         from django.core.files.uploadedfile import SimpleUploadedFile

@@ -14,9 +14,9 @@ from django.views.decorators.csrf import csrf_exempt
 from accounts.models import Client
 from project835.decorators import authenticated_api_required, json_api_errors
 
-from .models import MIRClaim, RECONClaim, RECONFile
+from .models import EDI835File, MIRClaim, RECONClaim, RECONFile
 from .recon_service import process_recon_file
-from .reconciliation_service import reconciliation_rows
+from .reconciliation_service import reconciliation_policy, reconciliation_rows, waterfall_summary
 from .reconciliation_export import build_reconciliation_workbook
 
 
@@ -313,6 +313,131 @@ def reconciliation_results(request):
         "waterfall_policy": reconciliation_policy(),
         "waterfall_summary": waterfall_counts,
     })
+
+
+def _visible_source_file(request, file_id):
+    queryset = EDI835File.objects.select_related("client", "mir_file")
+    if getattr(request.user, "client_id", None):
+        queryset = queryset.filter(client_id=request.user.client_id)
+    elif not request.user.is_staff:
+        return None
+    try:
+        return queryset.get(id=file_id)
+    except (EDI835File.DoesNotExist, ValueError):
+        return None
+
+
+def _file_reconciliation_rows(request, file_id):
+    source = _visible_source_file(request, file_id)
+    if not source:
+        return None, None, None
+    mir_file = getattr(source, "mir_file", None)
+    if not mir_file:
+        return source, None, []
+    files = RECONFile.objects.filter(
+        client=source.client, status__in=("PROCESSED", "PARTIAL")
+    ).order_by("-processed_at", "-uploaded_at")[:500]
+    rows = reconciliation_rows(source.client, files, mir_file_id=mir_file.id)
+    return source, files, rows
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def reconciliation_file_dashboard(request, file_id):
+    """Financial-only reconciliation summary for one persisted 835/MIR pair."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    source, files, rows = _file_reconciliation_rows(request, file_id)
+    if source is None:
+        return JsonResponse({"success": False, "error": "File record was not found."}, status=404)
+    if files is None:
+        return JsonResponse({
+            "success": True,
+            "source": {"id": str(source.id), "filename": source.original_filename, "mir_filename": ""},
+            "recon_files": [], "cash": {}, "tallies": {}, "waterfall": {}, "records": [],
+            "message": "This 835 file does not have a persisted MIR file yet.",
+        })
+
+    def amount(row, key):
+        from decimal import Decimal, InvalidOperation
+        try:
+            return Decimal(str(row.get(key) or "0"))
+        except InvalidOperation:
+            return Decimal("0")
+
+    from decimal import Decimal
+    approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
+    withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    fees = {
+        name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
+        for name in ("MIR904", "MIR905", "MPL920")
+    }
+    discrepancies = [row for row in rows if row.get("status") != "CLEAR"]
+    caveats = [row for row in rows if row.get("status") == "CLEAR" and row.get("affected_by_interim_policy")]
+    waterfall = waterfall_summary(rows)
+    records = []
+    for row in rows:
+        records.append({
+            "claim_id": row.get("claim_id"),
+            "mir901": row.get("amount_to_pay"),
+            "mir904": (row.get("recon_fees") or {}).get("MIR904", "0.00"),
+            "mir905": (row.get("recon_fees") or {}).get("MIR905", "0.00"),
+            "mpl920": (row.get("recon_fees") or {}).get("MPL920", "0.00"),
+            "recon_mir907": row.get("recon_paid_amount"),
+            "difference": row.get("difference_amount"),
+            "status": row.get("status"),
+            "match_step": row.get("match_step"),
+            "affected_by_interim_policy": row.get("affected_by_interim_policy", False),
+        })
+    latest = files[0] if files else None
+    return JsonResponse({
+        "success": True,
+        "source": {
+            "id": str(source.id), "filename": source.original_filename,
+            "mir_filename": source.mir_file.mir_filename,
+            "client_name": source.client.name if source.client else "Global System Default",
+        },
+        "recon_files": [_serialize_file(item) for item in files],
+        "cycle": {
+            "filename": latest.original_filename if latest else "",
+            "processed_at": latest.processed_at.isoformat() if latest and latest.processed_at else None,
+        },
+        "cash": {
+            "approved": str(approved), "withdrawn": str(withdrawn),
+            "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
+            "mpl920": str(fees["MPL920"]),
+            "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
+        },
+        "tallies": {
+            "records": len(rows), "matched_cleanly": len(rows) - len(discrepancies) - len(caveats),
+            "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
+        },
+        "waterfall": waterfall,
+        "policy": reconciliation_policy(),
+        "records": records,
+        "message": "" if latest else "No processed RECON file is available for this client yet.",
+    })
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def reconciliation_file_export(request, file_id):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    source, files, rows = _file_reconciliation_rows(request, file_id)
+    if source is None:
+        return JsonResponse({"success": False, "error": "File record was not found."}, status=404)
+    if files is None:
+        return JsonResponse({"success": False, "error": "This file has no persisted MIR output."}, status=409)
+    workbook = build_reconciliation_workbook(client=source.client, rows=rows, total=len(rows))
+    response = HttpResponse(
+        workbook.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="reconciliation-{source.id}.xlsx"'
+    return response
 
 
 @csrf_exempt

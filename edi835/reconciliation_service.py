@@ -147,7 +147,7 @@ SORT_FIELDS = {
 
 def reconciliation_rows(
     client, recon_files=None, page=None, page_size=200, claim_id=None, search="",
-    sort_by="", sort_direction="asc", status_filter="",
+    sort_by="", sort_direction="asc", status_filter="", mir_file_id=None,
 ):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
@@ -166,6 +166,8 @@ def reconciliation_rows(
     )
     if claim_id is not None:
         claims = claims.filter(id=claim_id)
+    if mir_file_id is not None:
+        claims = claims.filter(mir_file_id=mir_file_id)
     claims = list(claims)
 
     # Keep only claim-level aggregates in memory. The previous implementation
@@ -264,7 +266,7 @@ def reconciliation_rows(
     # RECON claims without a corresponding MIR record remain visible. Their
     # RECON occurrences are aggregated exactly like matched claims, while MIR
     # values remain empty and the status explains the missing side.
-    if claim_id is None:
+    if claim_id is None and mir_file_id is None:
         for claim_number, recon in recon_by_claim.items():
             if claim_number in mir_claim_ids:
                 continue
