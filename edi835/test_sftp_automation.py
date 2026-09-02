@@ -11,6 +11,7 @@ from accounts.models import Client, User
 from .models import RECONFile, SFTPAutomationRun, SFTPAutomationSchedule
 from .sftp_automation import enqueue_due_automations, finish_automation_run, next_daily_run
 from .views import _execute_batch_conversion
+from admin_panel.email_service import send_automation_run_notice
 
 
 class SFTPAutomationTestCase(TestCase):
@@ -138,6 +139,43 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(run.mir_output_files, ["output.MIR"])
         run_email.assert_called_once()
         self.assertEqual(run_email.call_args.args[0].id, run.id)
+
+    @patch("admin_panel.email_service.send_client_email", return_value=True)
+    def test_run_email_lists_every_processed_input_and_output(self, send_email):
+        run = SFTPAutomationRun.objects.create(
+            client=self.client_record,
+            automation_type="835",
+            scheduled_for=datetime.now(dt_timezone.utc),
+            finished_at=datetime.now(dt_timezone.utc),
+            status="SUCCESS",
+            input_835_files=["first.835", "second.x12"],
+            mir_output_files=["combined.MIR"],
+            processed_835_count=2,
+        )
+        self.assertTrue(send_automation_run_notice(run))
+        html = send_email.call_args.args[2]
+        self.assertIn("first.835", html)
+        self.assertIn("second.x12", html)
+        self.assertIn("combined.MIR", html)
+
+    @patch("admin_panel.email_service.send_client_email", return_value=True)
+    def test_failed_automation_validation_email_is_not_labeled_completed(self, send_email):
+        run = SFTPAutomationRun.objects.create(
+            client=self.client_record,
+            automation_type="835",
+            scheduled_for=datetime.now(dt_timezone.utc),
+            finished_at=datetime.now(dt_timezone.utc),
+            status="FAILED",
+            input_835_files=["invalid.835"],
+            error_message="EDI validation failed: transaction is malformed",
+        )
+        send_automation_run_notice(run)
+        subject = send_email.call_args.args[1]
+        html = send_email.call_args.args[2]
+        self.assertIn("Automation Validation Failed", subject)
+        self.assertNotIn("Validation Completed", subject)
+        self.assertIn("835 input files involved", html)
+        self.assertIn("invalid.835", html)
 
     @patch("edi835.views.write_job")
     @patch("edi835.views.active_job_for", return_value=None)

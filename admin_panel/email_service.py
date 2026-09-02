@@ -65,6 +65,20 @@ def _detail_table(rows):
     return '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;margin:18px 0">' + ''.join(cells) + '</table>'
 
 
+def _file_list(title, names):
+    names = [str(name) for name in (names or []) if name]
+    if not names:
+        return f'<p style="margin:16px 0"><strong>{escape(title)}:</strong> None</p>'
+    items = ''.join(
+        f'<li style="margin:4px 0;overflow-wrap:anywhere">{escape(name)}</li>'
+        for name in names
+    )
+    return (
+        f'<div style="margin:16px 0"><strong>{escape(title)} ({len(names)}):</strong>'
+        f'<ul style="margin:8px 0 0;padding-left:22px">{items}</ul></div>'
+    )
+
+
 def _format_schedule_datetime(value, timezone_name):
     if not value:
         return "Not scheduled"
@@ -99,10 +113,15 @@ def send_automation_run_notice(run):
     """Send a formal terminal summary for a scheduled automation run."""
     status_colors = {"SUCCESS": ("#0f766e", "#e7f7f3"), "FAILED": ("#b42318", "#fff0ed"), "SKIPPED": ("#9a6700", "#fff7d6")}
     foreground, background = status_colors.get(run.status, ("#34445a", "#eef3f8"))
-    subject = f"Automation Run {run.status.title()} – {run.get_automation_type_display()}"
+    validation_failed = run.status == "FAILED" and "validat" in str(run.error_message or run.result or "").lower()
+    outcome = "Validation Failed" if validation_failed else f"Run {run.status.title()}"
+    subject = f"Automation {outcome} – {run.get_automation_type_display()}"
     status_badge = f'<span style="display:inline-block;padding:5px 10px;border-radius:999px;background:{background};color:{foreground};font-size:12px;font-weight:700;letter-spacing:.4px">{escape(run.status)}</span>'
-    file_names = list(run.input_835_files or []) + list(run.input_recon_files or [])
+    input_835_names = list(run.input_835_files or [])
+    reference_names = list(run.input_recon_files or [])
     output_names = list(run.mir_output_files or [])
+    reference_label = "837 reference files imported" if run.automation_type == "837" else "RECON files imported"
+    input_835_label = "835 input files processed" if run.status == "SUCCESS" else "835 input files involved"
     html = (
         f'<p>Dear {escape(run.client.name)} Team,</p>'
         f'<p>The scheduled <strong>{escape(run.get_automation_type_display())}</strong> operation has reached a final status: {status_badge}</p>'
@@ -111,10 +130,11 @@ def send_automation_run_notice(run):
             ("Finished at", _format_schedule_datetime(run.finished_at, getattr(run.schedule, "timezone", "UTC"))),
             ("835 files processed", run.processed_835_count),
             ("837 / RECON files imported", run.recon_file_count),
-            ("Input files", ", ".join(str(item) for item in file_names[:10]) or "None"),
-            ("MIR output", ", ".join(str(item) for item in output_names[:10]) or "None"),
             ("Result detail", run.error_message or "Completed without a reported error."),
         ])
+        + (_file_list(input_835_label, input_835_names) if run.automation_type == "835" else "")
+        + (_file_list(reference_label, reference_names) if run.automation_type in {"837", "RECON"} else "")
+        + (_file_list("MIR output files generated", output_names) if run.automation_type == "835" else "")
         + ('<p><strong>Action recommended:</strong> Review the automation run summary and correct the reported condition before the next scheduled run.</p>' if run.status in {"FAILED", "SKIPPED"} else '<p>No action is required. The next run will occur according to the saved schedule.</p>')
     )
     return send_client_email(run.client, subject, html)

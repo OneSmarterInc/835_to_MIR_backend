@@ -4,6 +4,7 @@ import logging
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
 from django.views.decorators.csrf import csrf_exempt
+from django.utils.html import escape
 
 logger = logging.getLogger("converter")
 
@@ -98,6 +99,37 @@ def _canonical_mir_filename(record):
     if mir_record and mir_record.mir_filename:
         return os.path.basename(mir_record.mir_filename)
     return ""
+
+
+def _send_validation_notice(client, request, filenames, is_valid, claims_found, errors=None):
+    """Send an unambiguous validation result with the affected file names."""
+    if not client:
+        return False
+    from admin_panel.email_service import send_client_email
+
+    names = [str(name) for name in (filenames or []) if name]
+    title = "835 Validation Successful" if is_valid else "835 Validation Failed"
+    subject = f"OneSmarter: {title}"
+    if len(names) == 1:
+        subject += f" - {names[0]}"
+    files_html = "".join(f"<li>{escape(name)}</li>" for name in names) or "<li>Not provided</li>"
+    errors_html = ""
+    if not is_valid:
+        details = [str(error) for error in (errors or []) if error]
+        errors_html = (
+            "<p><strong>Validation errors:</strong></p><ul>"
+            + ("".join(f"<li>{escape(detail)}</li>" for detail in details) or "<li>The file did not pass 835 validation.</li>")
+            + "</ul><p>Please correct the file and upload it again.</p>"
+        )
+    html = (
+        f"<h3>{title}</h3>"
+        f"<p>{'All supplied files passed validation.' if is_valid else 'The supplied file set did not pass validation.'}</p>"
+        f"<p><strong>Files checked ({len(names)}):</strong></p><ul>{files_html}</ul>"
+        f"<p><strong>Claims found:</strong> {int(claims_found or 0)}</p>"
+        f"{errors_html}"
+    )
+    to_emails = [request.user.email] if request.user and request.user.email else None
+    return send_client_email(client, subject, html, to_emails=to_emails)
 
 
 def _safe_mir_filename(value, fallback="output.mir"):
@@ -434,12 +466,14 @@ def api_validate(request):
 
         if client:
             try:
-                from admin_panel.email_service import send_client_email
-                subject = f"OneSmarter: Batch 835 Validation Completed"
-                status_str = "Valid" if len(total_errors) == 0 else "Invalid (errors found)"
-                html = f"<h3>Batch File Validation Completed</h3><p>Your batch of {len(files_list)} EDI 835 files validation result: <b>{status_str}</b>.</p><p>Total claims: {total_claims}</p>"
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
+                _send_validation_notice(
+                    client,
+                    request,
+                    [item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
+                    not total_errors,
+                    total_claims,
+                    total_errors,
+                )
             except Exception as e:
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
@@ -502,12 +536,14 @@ def api_validate(request):
 
         if client:
             try:
-                from admin_panel.email_service import send_client_email
-                subject = f"OneSmarter: 835 Validation Completed - {original_filename}"
-                status_str = "Valid" if is_valid else "Invalid"
-                html = f"<h3>File Validation Completed</h3><p>Your EDI 835 file <b>{original_filename}</b> validation result: <b>{status_str}</b>.</p><p>Claims found: {claims_found}</p>"
-                to_emails = [request.user.email] if request.user and request.user.email else None
-                send_client_email(client, subject, html, to_emails=to_emails)
+                _send_validation_notice(
+                    client,
+                    request,
+                    [original_filename],
+                    is_valid,
+                    claims_found,
+                    report.get('errors', []),
+                )
             except Exception as e:
                 logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
@@ -526,6 +562,10 @@ def api_validate(request):
             error_message=str(err),
             client=client,
         )
+        try:
+            _send_validation_notice(client, request, [original_filename], False, 0, [str(err)])
+        except Exception as email_err:
+            logger.error("Failed to send validation failure email: %s", email_err)
         return JsonResponse({
             'error': f'Local validation error: {str(err)}',
             'file_id': str(db_rec.id)

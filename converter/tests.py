@@ -2,9 +2,12 @@ import io
 import os
 import zipfile
 import json
+from types import SimpleNamespace
+from unittest.mock import patch
 from django.test import TestCase, Client
 from converter.services.parser import parse_835_to_mir
 from converter.services.validator import PyX12Validator
+from converter.views import _send_validation_notice
 
 SAMPLE_ONE_LINE = "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260813*1200*U*00501*000000001*0*P*:~GS*HP*SENDER*RECEIVER*20260813*1200*1*X*005010X221A1~ST*835*0001~BPR*I*150.00*C*CHK************20260813~TRN*1*123456789*1999999999~N1*PR*PAYER NAME~N1*PE*PROVIDER NAME*XX*1234567890~LX*1~CLP*CLAIM1001*1*200.00*150.00*50.00*MC*REF12345~NM1*QC*1*SMITH*JOHN*M~NM1*IL*1*SMITH*JOHN****MI*SUB123456~REF*1L*GRP999~DTM*036*19850101~DTM*050*20260801~SVC*HC:99213*200.00*150.00**1~DTM*472*20260805~CAS*CO*45*50.00~SE*16*0001~GE*1*1~IEA*1*000000001~"
 
@@ -60,6 +63,23 @@ class ViewsTestCase(TestCase):
         data = response.json()
         self.assertTrue(data['success'])
         self.assertEqual(data['report']['total_segments'], 20)
+
+    @patch("admin_panel.email_service.send_client_email", return_value=True)
+    def test_invalid_validation_email_is_labeled_failed_and_lists_file(self, send_email):
+        from accounts.models import Client as AccountClient
+        tenant = AccountClient.objects.create(
+            name="Validation Tenant", client_code="VALIDATION", email="tenant@example.com"
+        )
+        request = SimpleNamespace(user=self.user)
+        self.assertTrue(_send_validation_notice(
+            tenant, request, ["bad-claim.835"], False, 0, ["Invalid transaction structure"]
+        ))
+        subject = send_email.call_args.args[1]
+        html = send_email.call_args.args[2]
+        self.assertIn("Validation Failed", subject)
+        self.assertNotIn("Validation Completed", subject)
+        self.assertIn("bad-claim.835", html)
+        self.assertIn("Invalid transaction structure", html)
 
     def test_wrong_835_extension_is_rejected_before_processing(self):
         response = self.client.post(
