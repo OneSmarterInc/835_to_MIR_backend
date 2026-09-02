@@ -297,7 +297,16 @@ def api_convert(request):
                     )
                 except Exception as email_err:
                     logging.getLogger(__name__).error(f"Failed to send batch failure email: {email_err}")
-            return JsonResponse({'error': batch_res.get("error", "Multi-file conversion failed.")}, status=400)
+            failed_record = batch_res.get("db_record")
+            return JsonResponse({
+                'error': batch_res.get("error", "Multi-file conversion failed."),
+                'partial': batch_res.get("partial", False),
+                'file_id': str(failed_record.id) if failed_record else None,
+                'output_path': getattr(failed_record, "output_path", "") if failed_record else "",
+                'delivered_claims_count': getattr(failed_record, "delivered_claims_count", 0) if failed_record else 0,
+                'held_claims_count': getattr(failed_record, "held_claims_count", 0) if failed_record else 0,
+                'findings': batch_res.get("findings", []),
+            }, status=400)
 
         primary_rec = batch_res.get("db_record")
         canonical_mir_filename = _canonical_mir_filename(primary_rec)
@@ -340,6 +349,11 @@ def api_convert(request):
             'mir_filename': canonical_mir_filename or batch_res.get('combined_filename'),
             'sftp_uploaded': batch_res.get('sftp_uploaded', False),
             'errors': batch_res.get('errors', []),
+            'partial': batch_res.get('partial', False),
+            'delivered_claims_count': getattr(primary_rec, 'delivered_claims_count', 0),
+            'held_claims_count': getattr(primary_rec, 'held_claims_count', 0),
+            'findings': batch_res.get('findings', []),
+            'output_path': getattr(primary_rec, 'output_path', ''),
         })
 
     edi_text = edi_text.strip()
@@ -390,7 +404,12 @@ def api_convert(request):
                 logging.getLogger(__name__).error(f"Failed to send conversion failure email: {email_err}")
         return JsonResponse({
             'error': f'Failed to convert EDI file: {res.get("error")}',
-            'file_id': str(res["db_record"].id) if res.get("db_record") else None
+            'partial': res.get('partial', False),
+            'file_id': str(res["db_record"].id) if res.get("db_record") else None,
+            'output_path': getattr(res.get("db_record"), "output_path", ""),
+            'delivered_claims_count': getattr(res.get("db_record"), "delivered_claims_count", 0),
+            'held_claims_count': getattr(res.get("db_record"), "held_claims_count", 0),
+            'findings': res.get('findings', []),
         }, status=400)
 
     if client:
@@ -432,6 +451,10 @@ def api_convert(request):
         'archive_path': res['db_record'].archive_path,
         'mir_filename': mir_filename,
         'filename': mir_filename,
+        'partial': res.get('partial', False),
+        'delivered_claims_count': res['db_record'].delivered_claims_count,
+        'held_claims_count': res['db_record'].held_claims_count,
+        'findings': res.get('findings', []),
     })
 
 
