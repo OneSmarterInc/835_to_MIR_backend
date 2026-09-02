@@ -17,28 +17,56 @@ from validation import validate_x12_835_content
 
 
 
+def _is_known_pyx12_false_positive(issue, content):
+    """Ignore only the observed CLP01 false-positive when CLP01 is actually populated."""
+    message = str(issue.get("message") or "")
+    element = str(issue.get("element") or "")
+    segment = str(issue.get("segment") or "")
+    mentions_clp01 = "Patient Control Number" in message or "CLP01" in message or element == "CLP01"
+    if not mentions_clp01:
+        return False
+    for raw_segment in (content or "").replace("\r", "\n").split("~"):
+        segment_text = raw_segment.strip()
+        if segment_text.startswith("CLP*"):
+            parts = segment_text.split("*")
+            if len(parts) > 1 and parts[1].strip():
+                return True
+    return False
+
+
 def _validate_835_for_conversion(content):
-    """Validate an 835 using the application's multi-transaction-aware rules."""
-    is_valid, checks = validate_x12_835_content(content)
-    errors = [str(check.get("detail", "Validation failed")) for check in checks if not check.get("ok")]
-    warnings = [
-        str(check.get("detail", ""))
-        for check in checks
-        if check.get("ok") and str(check.get("detail", "")).lower().startswith("warning:")
+    """Use PyX12 as primary validation plus strict structural checks."""
+    pyx12_report = EDI835Validator().validate(content)
+    structural_valid, checks = validate_x12_835_content(content)
+
+    filtered_pyx12_errors = []
+    ignored_pyx12_warnings = []
+    for issue in pyx12_report.get("errors", []):
+        if _is_known_pyx12_false_positive(issue, content):
+            ignored_pyx12_warnings.append({
+                **issue,
+                "severity": "warning",
+                "message": str(issue.get("message") or "") + " (ignored after CLP01 content verification)"
+            })
+        else:
+            filtered_pyx12_errors.append(issue)
+
+    structural_errors = [check for check in checks if not check.get("ok")]
+    errors = filtered_pyx12_errors + [
+        {
+            "segment": "STRUCTURE",
+            "message": str(check.get("detail") or "Structural validation failed."),
+            "code": str(check.get("label") or "835_STRUCTURAL_ERROR"),
+            "severity": "error",
+        }
+        for check in structural_errors
     ]
-    claims = sum(
-        1
-        for segment in (content or "").lstrip("\ufeff").replace("\r", "\n").split("~")
-        if segment.strip().lstrip("\n").startswith("CLP*")
-    )
-    total_segments = len([
-        segment for segment in (content or "").replace("\r", "\n").split("~")
-        if segment.strip()
-    ])
+
     rule_map = {
         "Interchange Envelope Balance": ("ENV-001", "ISA/IEA", "X12 005010"),
         "Functional Group Envelope (GS/GE)": ("ENV-002", "GS/GE", "X12 005010"),
         "Transaction Set Envelope (ST/SE)": ("ENV-004", "ST/SE", "X12 005010"),
+        "ST/SE Control Number Match": ("ENV-007", "ST02/SE02", "X12 005010"),
         "ISA/IEA Control Number Match": ("ENV-005", "ISA13/IEA02", "X12 005010"),
         "835 Transaction Identifier": ("SEG-001", "ST01", "X12 005010"),
         "SE Segment Count Validation": ("ENV-006", "SE01", "X12 005010"),
@@ -47,10 +75,19 @@ def _validate_835_for_conversion(content):
         "Payer / Payee Entities (N1)": ("SEG-012", "N1", "X12 005010"),
         "Claim Level Payment (CLP)": ("SEG-013", "CLP", "X12 005010"),
     }
+
     findings = []
-    for check in checks:
-        if check.get("ok"):
-            continue
+    for issue in filtered_pyx12_errors:
+        findings.append({
+            "rule_code": issue.get("code") or "PYX12",
+            "gate": "PyX12",
+            "segment": issue.get("segment") or "X12",
+            "rule": "PyX12 validation",
+            "what_found": issue.get("message") or "PyX12 validation failed.",
+            "source": "PyX12",
+            "severity": "Hold",
+        })
+    for check in structural_errors:
         label = str(check.get("label") or "Validation rule")
         rule_code, segment, source = rule_map.get(label, ("835-STRUCT", "Unknown", "OneSmarter 835 structural validation"))
         findings.append({
@@ -63,20 +100,24 @@ def _validate_835_for_conversion(content):
             "severity": "Hold",
         })
 
+    total_segments = pyx12_report.get("total_segments", 0)
+    claims = pyx12_report.get("claims", 0)
+    is_valid = not errors and structural_valid
+
     return {
         "valid": is_valid,
         "is_valid": is_valid,
-        "validator_engine": "Validated using OneSmarter 835 structural validation",
+        "validator_engine": "Validated using PyX12 + OneSmarter structural validation",
         "status_message": (
-            "Validated using OneSmarter 835 structural validation: File is valid."
+            "Validated using PyX12 + structural validation: File is valid."
             if is_valid
-            else "Validated using OneSmarter 835 structural validation: Errors found."
+            else "Validated using PyX12 + structural validation: Errors found."
         ),
         "total_segments": total_segments,
         "claims": claims,
         "claims_found": claims,
         "errors": errors,
-        "warnings": warnings,
+        "warnings": list(pyx12_report.get("warnings", [])) + ignored_pyx12_warnings,
         "checks": checks,
         "findings": findings,
     }
