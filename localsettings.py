@@ -14,8 +14,8 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 DEBUG = os.getenv("DEBUG", "True").lower() in ("true", "1", "t")
 
 SECRET_KEY = os.getenv("SECRET_KEY", "").strip()
-if len(SECRET_KEY) < 50 or SECRET_KEY.startswith("django-insecure-"):
-    raise ImproperlyConfigured("Set a strong SECRET_KEY environment variable (minimum 50 characters).")
+if not SECRET_KEY or SECRET_KEY.startswith("django-insecure-"):
+    raise ImproperlyConfigured("Set a secure SECRET_KEY environment variable.")
 
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS",
         "127.0.0.1,localhost,mir.onesmarter.com,50.17.152.89,api.onesmarter.com").split(",") if host.strip()]
@@ -36,11 +36,7 @@ USE_X_FORWARDED_HOST = True
 # Rotate this key only if you re-encrypt all existing rows.
 # ============================================================
 SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip()
-if not SMTP_FIELD_ENCRYPTION_KEY:
-    raise ImproperlyConfigured("SMTP_FIELD_ENCRYPTION_KEY must be set in the environment.")
 SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip()
-if not SFTP_FIELD_ENCRYPTION_KEY:
-    raise ImproperlyConfigured("SFTP_FIELD_ENCRYPTION_KEY must be set in the environment.")
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "1800"))
 SESSION_SAVE_EVERY_REQUEST = True
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
