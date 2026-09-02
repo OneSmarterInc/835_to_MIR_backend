@@ -584,7 +584,8 @@ class RECONResultAPITestCase(TestCase):
         services = [ServiceLine(charge=Decimal("10.00"), paid=Decimal("8.00")) for _ in range(75)]
         mir_text, _ = generate_mir_text([Claim(
             claim_number="CLAIM-75", subscriber_id="MEMBER-75",
-            patient_first_name="Jane", patient_last_name="Doe", services=services,
+            patient_first_name="Jane", patient_last_name="Doe",
+            group_number="TESTGRP", services=services,
         )])
         source = EDI835File.objects.create(
             client=self.tenant, original_filename="source.835", stored_filename="source.835",
@@ -666,7 +667,11 @@ class RECONResultAPITestCase(TestCase):
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
 
         mir_text, _ = generate_mir_text([
-            Claim(claim_number="MIR-ONLY-1", services=[ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00"))])
+            Claim(
+                claim_number="MIR-ONLY-1",
+                group_number="TESTGRP",
+                services=[ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00"))],
+            )
         ])
         source = EDI835File.objects.create(
             client=self.tenant, original_filename="mir-only.835", stored_filename="mir-only.835",
