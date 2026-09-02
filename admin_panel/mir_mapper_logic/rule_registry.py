@@ -223,7 +223,9 @@ RULE_REGISTRY.register(RuleDefinition(
     code="DUPLICATE_ICN",
     name="Duplicate ICN",
     source="OneSmarter preventive intake control",
-    severity=RuleSeverity.REFUSE,
+    # Deterministic regeneration of a previously processed source must remain
+    # possible. Keep duplicate detection visible without holding the claim.
+    severity=RuleSeverity.WARN,
     scope="claim",
     description="The full claim control number (CLP01 + CLP07) must not already have been processed or repeated in the batch.",
     evaluator=_duplicate_icn,
