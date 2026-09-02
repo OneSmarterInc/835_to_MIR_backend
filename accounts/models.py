@@ -134,7 +134,6 @@ class Client(models.Model):
     def __str__(self):
         return f"{self.name} ({self.client_code})"
 
-
 class UserManager(BaseUserManager):
 
     def create_user(
@@ -230,12 +229,21 @@ class User(AbstractBaseUser, PermissionsMixin):
         blank=True,
     )
 
+    last_totp_counter = models.BigIntegerField(null=True, blank=True)
+
     is_active = models.BooleanField(
         default=True,
     )
 
     is_staff = models.BooleanField(
         default=False,
+    )
+
+    admin_screens = models.JSONField(
+        null=True,
+        blank=True,
+        default=None,
+        help_text="Administrative navigation screens explicitly assigned to this administrator.",
     )
 
     first_login = models.BooleanField(

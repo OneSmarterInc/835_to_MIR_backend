@@ -29,7 +29,9 @@ def _request_client(request, supplied_client_id=None):
     if not supplied_client_id:
         return None
     try:
-        return Client.objects.get(id=supplied_client_id)
+        client = Client.objects.get(id=supplied_client_id)
+        from admin_panel.access_control import has_active_client_grant
+        return client if has_active_client_grant(user, client.id) else None
     except (Client.DoesNotExist, ValueError):
         return None
 
@@ -40,6 +42,11 @@ def _visible_file(request, file_id):
         queryset = queryset.filter(client_id=request.user.client_id)
     elif not request.user.is_staff:
         return None
+    else:
+        visible_ids = request.user.client_access_grants.filter(
+            revoked_at__isnull=True, expires_at__gt=timezone.now()
+        ).values_list("client_id", flat=True)
+        queryset = queryset.filter(client_id__in=visible_ids)
     try:
         return queryset.get(id=file_id)
     except (RECONFile.DoesNotExist, ValueError):

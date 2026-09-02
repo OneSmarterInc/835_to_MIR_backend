@@ -84,9 +84,8 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
             )
         linked_users.delete()
 
-        # Audit logs intentionally use SET_NULL; remove the tenant's historical
-        # records before the client cascade so no client data is orphaned.
-        client.audit_logs.all().delete()
+        # Audit history is retained. The FK's SET_NULL operation removes only
+        # the live tenant reference while preserving the immutable event.
         client.delete()
 
         def cleanup_storage():

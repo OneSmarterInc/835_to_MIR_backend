@@ -29,6 +29,7 @@ class UserSerializer(serializers.ModelSerializer):
         fields = (
             "id", "email", "name", "mobile", "client_id", "client_name",
             "is_active", "is_staff", "first_login", "totp_enabled",
+            "admin_screens",
             "last_login", "created_at", "updated_at",
         )
         read_only_fields = fields
