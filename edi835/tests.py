@@ -712,6 +712,39 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual([item["id"] for item in response.json()["files"]], [str(global_recon.id)])
         self.assertEqual(response.json()["files"][0]["client_name"], "Global System Default")
 
+    def test_super_admin_can_view_selected_client_results_without_temporary_grant(self):
+        admin = User.objects.create_superuser(
+            email="super-results@example.com",
+            name="Super Results",
+            mobile="3333333333",
+            password="test-password",
+        )
+        self.client.force_login(admin)
+
+        response = self.client.get(
+            f"/edi835/api/reconciliation/?client_id={self.tenant.id}"
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["success"])
+
+    def test_regular_admin_still_needs_temporary_grant_for_client_results(self):
+        admin = User.objects.create_user(
+            email="regular-results@example.com",
+            name="Regular Results",
+            mobile="4444444444",
+            password="test-password",
+            is_staff=True,
+        )
+        self.client.force_login(admin)
+
+        response = self.client.get(
+            f"/edi835/api/reconciliation/?client_id={self.tenant.id}"
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "Select a client.")
+
     def test_mir_claims_are_returned_without_any_recon_file(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
         from admin_panel.mir_mapper_logic.models import Claim, ServiceLine

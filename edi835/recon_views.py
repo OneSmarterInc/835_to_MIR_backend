@@ -42,6 +42,8 @@ def _visible_file(request, file_id):
         queryset = queryset.filter(client_id=request.user.client_id)
     elif not request.user.is_staff:
         return None
+    elif request.user.is_superuser:
+        pass
     else:
         visible_ids = request.user.client_access_grants.filter(
             revoked_at__isnull=True, expires_at__gt=timezone.now()
