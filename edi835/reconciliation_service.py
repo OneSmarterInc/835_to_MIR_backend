@@ -158,7 +158,9 @@ def reconciliation_rows(
         )
         .annotate(
             mir_charge=Coalesce(Sum("service_lines__charge_amount"), ZERO),
+            mir_allowed=Coalesce(Sum("service_lines__allowed_amount"), ZERO),
             mir_payable=Coalesce(Sum("service_lines__paid_amount"), ZERO),
+            mir_patient_liability=Coalesce(Sum("service_lines__patient_liability"), ZERO),
         )
         .order_by("-mir_file__converted_at", "claim_sequence")
     )
@@ -230,6 +232,12 @@ def reconciliation_rows(
             "mir_date": claim["mir_file__converted_at"].isoformat(),
             "mir_service_count": claim["service_count"],
             "mir_charge_amount": str(claim["mir_charge"]),
+            "mir_allowed_amount": str(claim["mir_allowed"]),
+            "mir_patient_liability": str(claim["mir_patient_liability"]),
+            "mp003_cross_foot_valid": (
+                claim["mir_allowed"]
+                == claim["mir_payable"] + claim["mir_patient_liability"]
+            ),
             "amount_to_pay": str(claim["mir_payable"]),
             "recon_claim_id": None,
             "recon_filename": recon["first_filename"] if recon else "",
@@ -271,6 +279,9 @@ def reconciliation_rows(
                 "mir_date": None,
                 "mir_service_count": 0,
                 "mir_charge_amount": str(ZERO),
+                "mir_allowed_amount": str(ZERO),
+                "mir_patient_liability": str(ZERO),
+                "mp003_cross_foot_valid": None,
                 "amount_to_pay": str(ZERO),
                 "recon_claim_id": None,
                 "recon_filename": recon["first_filename"],

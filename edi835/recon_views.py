@@ -384,8 +384,10 @@ def reconciliation_claim_detail(request, claim_id):
     mir_services = [{
         "sequence": item.service_sequence, "procedure_code": item.procedure_code,
         "service_date": item.service_date, "units": str(item.units),
-        "charge_amount": str(item.charge_amount), "paid_amount": str(item.paid_amount),
-        "patient_liability": str(item.patient_liability), "reason_code": item.reason_code,
+        "charge_amount": str(item.charge_amount), "allowed_amount": str(item.allowed_amount),
+        "paid_amount": str(item.paid_amount), "patient_liability": str(item.patient_liability),
+        "mp003_cross_foot_valid": item.allowed_amount == item.paid_amount + item.patient_liability,
+        "reason_code": item.reason_code,
     } for item in claim.service_lines.all()]
     recon_services = [{
         "sequence": item.service_sequence, "procedure_code": item.procedure_code,

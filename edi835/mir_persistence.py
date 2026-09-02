@@ -171,6 +171,7 @@ def store_mir_file(
                 # service block. Saved mapping labels must not alter financial
                 # reconciliation values.
                 charge_amount=_signed_implied_decimal(raw_service[50:61]),
+                allowed_amount=_signed_implied_decimal(raw_service[83:94]),
                 paid_amount=_signed_implied_decimal(raw_paid),
                 patient_liability=_signed_implied_decimal(raw_service[105:116]),
                 reason_code=segment_data.get("service_primary_reason", ""),

@@ -156,6 +156,7 @@ def _mir_fixed_width_rows(raw: str, row_number: int, data: dict) -> list[dict]:
         service_data.update({
             "service_line_number": str(index + 1),
             "charge_amount": block[50:61],
+            "allowed_amount": block[83:94],
             "paid_amount": block[94:105],
             "patient_responsibility": block[105:116],
         })
@@ -169,6 +170,9 @@ def _mir_fixed_width_rows(raw: str, row_number: int, data: dict) -> list[dict]:
 
 
 def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
+    # Production files may end with the DOS EOF marker (SUB/0x1A). It is file
+    # framing, not a financial record, and Python's str.strip() does not remove it.
+    text = text.replace("\x1a", "")
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         raise ValueError("The RECON file is empty.")

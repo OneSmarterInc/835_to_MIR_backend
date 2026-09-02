@@ -37,6 +37,7 @@ class Command(BaseCommand):
             if len(raw) < 116:
                 continue
             service.charge_amount = signed_amount(raw[50:61])
+            service.allowed_amount = signed_amount(raw[83:94])
             # service_raw begins at MIR position 335, therefore the absolute
             # position formula 429 + ((N-1) * 303) becomes 95-105 here.
             service.paid_amount = signed_amount(raw[94:105])
@@ -44,13 +45,17 @@ class Command(BaseCommand):
             pending.append(service)
             if len(pending) >= 2000:
                 MIRServiceLine.objects.bulk_update(
-                    pending, ["charge_amount", "paid_amount", "patient_liability"], batch_size=2000
+                    pending,
+                    ["charge_amount", "allowed_amount", "paid_amount", "patient_liability"],
+                    batch_size=2000,
                 )
                 updated += len(pending)
                 pending = []
         if pending:
             MIRServiceLine.objects.bulk_update(
-                pending, ["charge_amount", "paid_amount", "patient_liability"], batch_size=2000
+                pending,
+                ["charge_amount", "allowed_amount", "paid_amount", "patient_liability"],
+                batch_size=2000,
             )
             updated += len(pending)
         self.stdout.write(self.style.SUCCESS(

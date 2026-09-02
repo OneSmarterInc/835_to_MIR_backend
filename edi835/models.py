@@ -296,6 +296,7 @@ class MIRServiceLine(models.Model):
     service_date = models.CharField(max_length=8, blank=True, default="")
     units = models.DecimalField(max_digits=12, decimal_places=2, default=0)
     charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    allowed_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     patient_liability = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     reason_code = models.CharField(max_length=10, blank=True, default="")

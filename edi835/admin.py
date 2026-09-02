@@ -51,7 +51,10 @@ class MIRClaimChunkAdmin(admin.ModelAdmin):
 
 @admin.register(MIRServiceLine)
 class MIRServiceLineAdmin(admin.ModelAdmin):
-    list_display = ("mir_claim", "service_sequence", "charge_amount", "paid_amount", "reason_code")
+    list_display = (
+        "mir_claim", "service_sequence", "charge_amount", "allowed_amount",
+        "paid_amount", "patient_liability", "reason_code",
+    )
     search_fields = ("mir_claim__claim_control_number", "reason_code")
 
 

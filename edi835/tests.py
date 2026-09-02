@@ -292,6 +292,7 @@ class MIRPersistenceTestCase(TestCase):
 
         mir_text, _ = generate_mir_text([Claim(
             claim_number="37620261920034300", claim_reference="QXW615",
+            status="1", group_number="TESTGRP",
             services=[
                 ServiceLine(charge=Decimal("50.00"), paid=Decimal("40.00")),
                 ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00")),
@@ -301,10 +302,36 @@ class MIRPersistenceTestCase(TestCase):
         self.assertEqual(len(rows), 2)
         self.assertTrue(all(row["data"]["claim_control_number"] == "37620261920034300QXW615" for row in rows))
         self.assertEqual([row["data"]["paid_amount"] for row in rows], ["0000004000+", "0000002000+"])
+        self.assertEqual([row["data"]["allowed_amount"] for row in rows], ["0000005000+", "0000002500+"])
         self.assertEqual(
             sum((_money_decimal(row["data"]["paid_amount"]) for row in rows), Decimal("0")),
             Decimal("60.00"),
         )
+
+    def test_mir_persistence_carries_allowed_amount_and_mp003_inputs(self):
+        from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+        from admin_panel.mir_mapper_logic.models import Adjustment, Claim, ServiceLine
+
+        service = ServiceLine(
+            charge=Decimal("100.00"),
+            paid=Decimal("70.00"),
+            adjustments=[
+                Adjustment(group="CO", reason="45", amount=Decimal("20.00")),
+                Adjustment(group="PR", reason="1", amount=Decimal("10.00")),
+            ],
+        )
+        mir_text, summary = generate_mir_text([
+            Claim(claim_number="ALLOWED-1", status="1", group_number="TESTGRP", services=[service])
+        ])
+        self.assertEqual(summary["findings"], [])
+        source = EDI835File.objects.create(
+            original_filename="allowed.835", stored_filename="allowed.835"
+        )
+        stored = store_mir_file(source_835=source, mir_filename="allowed.MIR", mir_text=mir_text)
+        line = stored.claims.get().service_lines.get()
+
+        self.assertEqual(line.allowed_amount, Decimal("80.00"))
+        self.assertEqual(line.allowed_amount, line.paid_amount + line.patient_liability)
 
     def test_claim_over_50_services_is_stored_as_continuation_chunks(self):
         from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
@@ -541,6 +568,18 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(findings[0]["error_code"], "UNRECOGNIZED_RECON_LAYOUT")
         self.assertNotIn("paid_amount", findings[0])
 
+    def test_dos_eof_marker_is_not_parsed_as_a_recon_record(self):
+        from .recon_service import parse_recon_rows
+
+        rows, findings = parse_recon_rows(
+            "Claim ID,Paid Amount\r\nCLAIM-1,10.00\r\n\x1a\r\n",
+            include_findings=True,
+        )
+
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["data"]["claim_control_number"], "CLAIM-1")
+        self.assertEqual(findings, [])
+
     @override_settings(
         MPL_RECON_MIR907_SOURCE="computed",
         MPL_RECON_MIR908_SOURCE="computed",
@@ -609,7 +648,10 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(row["claim_id"], "CLAIM75")
         self.assertEqual(row["mir_service_count"], 75)
         self.assertEqual(Decimal(row["mir_charge_amount"]), Decimal("750.00"))
+        self.assertEqual(Decimal(row["mir_allowed_amount"]), Decimal("750.00"))
         self.assertEqual(Decimal(row["amount_to_pay"]), Decimal("600.00"))
+        self.assertEqual(Decimal(row["mir_patient_liability"]), Decimal("150.00"))
+        self.assertTrue(row["mp003_cross_foot_valid"])
         self.assertEqual(Decimal(row["recon_paid_amount"]), Decimal("600.00"))
         self.assertEqual(row["recon_filename"], "latest.csv")
         self.assertEqual(len(row["recon_matches"]), 1)
