@@ -452,23 +452,26 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         delivered_claims = res.get("delivered_claims_count", res["claims_count"])
         findings = res.get("conversion_findings", [])
 
-        if not delivered_claims:
+        if held_claims:
             archived_835_path = dirs["archive"] / stored_filename
             if os.path.exists(processing_file_path):
                 shutil.move(processing_file_path, archived_835_path)
-            db_record.status = "PARTIAL"
+            db_record.status = "ERROR"
             db_record.archive_path = (Path("media") / "edi835" / "archive" / stored_filename).as_posix()
             db_record.claims_count = res["claims_count"]
             db_record.services_count = res["services_count"]
             db_record.delivered_claims_count = 0
             db_record.held_claims_count = held_claims
             db_record.conversion_findings = findings
-            db_record.error_message = "All claims were held for review; no MIR file was delivered."
+            db_record.error_message = (
+                f"Conversion stopped: {held_claims} of {res['claims_count']} claim(s) "
+                "require review. No partial MIR file was created."
+            )
             db_record.present_in_archive_folder = True
             db_record.processing_completed_at = timezone.now()
             db_record.save()
             return {
-                "success": False, "partial": True, "code": "ALL_CLAIMS_HELD",
+                "success": False, "partial": False, "code": "CLAIMS_HELD",
                 "error": db_record.error_message, "findings": findings, "db_record": db_record,
             }
 
@@ -498,7 +501,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
             shutil.move(processing_file_path, archived_835_path)
         rel_archive_path = (Path("media") / "edi835" / "archive" / stored_filename).as_posix()
 
-        db_record.status = "PARTIAL" if held_claims else "ARCHIVED"
+        db_record.status = "ARCHIVED"
         db_record.output_path = rel_output_path
         db_record.archive_path = rel_archive_path
         db_record.claims_count = res["claims_count"]
@@ -515,7 +518,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         return {
             "success": True,
-            "partial": bool(held_claims),
+            "partial": False,
             "findings": findings,
             "db_record": db_record,
             "mir_text": mir_text,
@@ -699,22 +702,25 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     held_claims_count = mir_res.get("held_claims", 0)
     conversion_findings = mir_res.get("findings", [])
 
-    if not delivered_claims_count:
+    if held_claims_count:
         db_rec = EDI835File.objects.create(
             id=file_uuid, client=client, original_filename=", ".join(file_names),
             stored_filename=file_names[0] if file_names else "batch.835",
-            input_file_content="\n\n".join(input_contents), status="PARTIAL",
+            input_file_content="\n\n".join(input_contents), status="ERROR",
             claims_count=claims_count, services_count=services_count,
             delivered_claims_count=0, held_claims_count=held_claims_count,
             conversion_findings=conversion_findings,
             archive_path=first_archive_rel_path, present_in_archive_folder=True,
             ingestion_source=ingestion_source,
             processing_started_at=batch_started_at,
-            error_message="All claims were held for review; no MIR file was delivered.",
+            error_message=(
+                f"Conversion stopped: {held_claims_count} of {claims_count} claim(s) "
+                "require review. No partial MIR file was created."
+            ),
             processing_completed_at=timezone.now(),
         )
         return {
-            "success": False, "partial": True, "code": "ALL_CLAIMS_HELD",
+            "success": False, "partial": False, "code": "CLAIMS_HELD",
             "error": db_rec.error_message, "findings": conversion_findings, "db_record": db_rec,
         }
 
@@ -729,7 +735,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         original_filename=combined_inputs_str,
         stored_filename=file_names[0] if file_names else "batch.835",
         input_file_content="\n\n".join(input_contents),
-        status="PARTIAL" if held_claims_count else "ARCHIVED",
+        status="ARCHIVED",
         claims_count=claims_count,
         services_count=services_count,
         records_count=records_count,
@@ -762,7 +768,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
 
     return {
         "success": True,
-        "partial": bool(held_claims_count),
+        "partial": False,
         "findings": conversion_findings,
         "mir_text": mir_text,
         "combined_filename": delivery_mir_filename,
