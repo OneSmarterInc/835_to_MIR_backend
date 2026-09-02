@@ -45,6 +45,17 @@ SESSION_COOKIE_SECURE = not DEBUG
 SESSION_COOKIE_SAMESITE = "Lax"
 MFA_ENFORCEMENT_ENABLED = "test" not in sys.argv
 
+# Interim MPL reconciliation policy. Keep each disputed V7/V5 interpretation
+# explicit until MPL confirms the authoritative waterfall.
+MPL_RECON_MIR907_SOURCE = os.getenv("MPL_RECON_MIR907_SOURCE", "computed").strip().lower()
+MPL_RECON_MIR908_SOURCE = os.getenv("MPL_RECON_MIR908_SOURCE", "computed").strip().lower()
+MPL_RECON_INCLUDE_MPL920 = os.getenv("MPL_RECON_INCLUDE_MPL920", "true").lower() in ("true", "1", "yes")
+MPL_RECON_WATERFALL_STEPS = tuple(
+    value.strip().upper()
+    for value in os.getenv("MPL_RECON_WATERFALL_STEPS", "MIR901,MIR907,MIR908,MPL920").split(",")
+    if value.strip()
+)
+
 
 # ============================================================
 # APPLICATIONS

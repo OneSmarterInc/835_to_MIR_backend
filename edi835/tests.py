@@ -503,6 +503,67 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(sheet["H11"].value, "-")
         self.assertEqual(sheet["I11"].value, "Not In Mir")
 
+    def test_invalid_recon_row_is_held_without_inventing_financial_data(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+
+        content = (
+            "Claim ID,Member ID,Paid Amount,MIR904,MIR905,MPL920\n"
+            "CLAIM-VALID,MEMBER-1,98.00,5.00,10.00,3.00\n"
+            ",MEMBER-2,999.00,0.00,0.00,0.00\n"
+        )
+        upload = self.client.post("/edi835/api/recon/upload/", {
+            "recon_file": SimpleUploadedFile("partial.csv", content.encode("utf-8"))
+        }).json()
+
+        response = self.client.post(f"/edi835/api/recon/files/{upload['file']['id']}/process/")
+
+        self.assertEqual(response.status_code, 200)
+        recon = RECONFile.objects.get(id=upload["file"]["id"])
+        self.assertEqual(recon.status, "PARTIAL")
+        self.assertEqual(recon.claim_count, 1)
+        self.assertEqual(recon.held_record_count, 1)
+        claim = recon.claims.get()
+        self.assertEqual(claim.claim_control_number, "CLAIM-VALID")
+        self.assertEqual(claim.mir904_bluecard_fee, Decimal("5.00"))
+        self.assertEqual(claim.mir905_aea, Decimal("10.00"))
+        self.assertEqual(claim.mpl920_pca_fee, Decimal("3.00"))
+        self.assertFalse(recon.claims.filter(claim_control_number__startswith="ROW-").exists())
+        self.assertEqual(recon.processing_errors.get().error_code, "MISSING_CLAIM_IDENTIFIER")
+
+    def test_unrecognized_fixed_width_row_does_not_guess_last_money_token(self):
+        from .recon_service import parse_recon_rows
+
+        rows, findings = parse_recon_rows(
+            "CLAIM-FAKE arbitrary values 10.00 999.99", include_findings=True
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(findings[0]["error_code"], "UNRECOGNIZED_RECON_LAYOUT")
+        self.assertNotIn("paid_amount", findings[0])
+
+    @override_settings(
+        MPL_RECON_MIR907_SOURCE="computed",
+        MPL_RECON_MIR908_SOURCE="computed",
+        MPL_RECON_INCLUDE_MPL920=True,
+        MPL_RECON_WATERFALL_STEPS=("MIR901", "MIR907", "MIR908", "MPL920"),
+    )
+    def test_fee_waterfall_records_the_step_that_clears_the_claim(self):
+        from .reconciliation_service import reconciliation_waterfall
+
+        match = reconciliation_waterfall(
+            Decimal("100.00"), Decimal("118.00"), True,
+            {"mir904": Decimal("5.00"), "mir905": Decimal("10.00"),
+             "mpl920": Decimal("3.00")},
+        )
+
+        self.assertEqual(match["status"], "CLEAR")
+        self.assertEqual(match["match_step"], "MPL920")
+        self.assertEqual(match["candidates"], {
+            "MIR901": "100.00", "MIR907": "105.00",
+            "MIR908": "115.00", "MPL920": "118.00",
+        })
+        self.assertTrue(match["affected_by_interim_policy"])
+
     def test_binary_recon_is_rejected_before_database_write(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 

@@ -38,6 +38,11 @@ ALIASES = {
     "charge_amount": {"chargeamount", "chargedamount", "billedamount", "totalcharge"},
     "allowed_amount": {"allowedamount", "approvedamount"},
     "paid_amount": {"paidamount", "paymentamount", "totalpaid", "claimpaidamount", "netpaidamount", "checkamount", "amountinrecon", "reconamount"},
+    "mir904_bluecard_fee": {"mir904", "bluecardaccessfee", "bluecardfee"},
+    "mir905_aea": {"mir905", "administrativeexpenseallowance", "aea"},
+    "mir907_amount": {"mir907"},
+    "mir908_amount": {"mir908"},
+    "mpl920_pca_fee": {"mpl920", "pcafee"},
     "patient_responsibility": {"patientresponsibility", "patientamount", "patientliability"},
     "adjustment_amount": {"adjustmentamount", "adjustedamount"},
     "reason_code": {"reasoncode", "adjustmentreason", "remarkcode"},
@@ -75,6 +80,22 @@ def _money_decimal(value: str) -> Decimal:
     return _decimal(raw)
 
 
+def _valid_money(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return True
+    if re.fullmatch(r"\d+[+-]", raw):
+        return True
+    normalized = raw.replace("$", "").replace(",", "")
+    if normalized.startswith("(") and normalized.endswith(")"):
+        normalized = "-" + normalized[1:-1]
+    try:
+        Decimal(normalized)
+        return True
+    except InvalidOperation:
+        return False
+
+
 def _detect_delimiter(text: str) -> str | None:
     sample = "\n".join(text.splitlines()[:10])
     for delimiter in (",", "\t", "|", ";"):
@@ -91,7 +112,7 @@ def _claim_key(value: str) -> str:
     return re.sub(r"[^A-Za-z0-9]", "", str(value or "")).upper()
 
 
-def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict:
+def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict | None:
     # A reference MIR/RECON physical row uses the same 334-byte header and
     # 303-byte service blocks as MIR. Its complete reconciliation key occupies
     # positions 3-25 (MIR100 plus the cross-reference).
@@ -107,18 +128,9 @@ def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict:
                 "fixed_width_mir": "1",
             }
 
-    # For a client-specific fixed-width row, recognize an explicit full MIR
-    # key. Never replace it with a partial known MIR identifier.
-    compact_raw = _claim_key(raw)
-    candidates = re.findall(r"(?<![A-Za-z0-9])\d{17}[A-Za-z0-9]{6}(?![A-Za-z0-9])", raw)
-    claim_id = candidates[0] if candidates else ""
-    if not claim_id:
-        known = sorted((_claim_key(value) for value in (known_claim_ids or []) if value), key=len, reverse=True)
-        claim_id = next((value for value in known if len(value) >= 23 and value in compact_raw), "")
-    if not claim_id:
-        claim_id = f"ROW-{row_number}"
-    amounts = re.findall(r"(?<![A-Za-z0-9])(?:\(?[-+]?\$?\d[\d,]*\.\d{2}\)?)(?!\d)", raw)
-    return {"claim_control_number": claim_id, "paid_amount": amounts[-1] if amounts else ""}
+    # Do not infer identifiers or paid amounts from arbitrary text. A row that
+    # does not satisfy the documented layout is retained as a parsing finding.
+    return None
 
 
 def _integer(value: str, default: int = 0) -> int:
@@ -156,7 +168,7 @@ def _mir_fixed_width_rows(raw: str, row_number: int, data: dict) -> list[dict]:
     return output
 
 
-def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
+def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
     lines = [line for line in text.splitlines() if line.strip()]
     if not lines:
         raise ValueError("The RECON file is empty.")
@@ -164,10 +176,20 @@ def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
     delimiter = _detect_delimiter(text)
     if not delimiter:
         output = []
+        findings = []
         for number, raw in enumerate(lines, start=1):
             data = _fixed_width_data(raw, number, known_claim_ids)
+            if data is None:
+                findings.append({
+                    "row_number": number,
+                    "claim_control_number": "",
+                    "error_code": "UNRECOGNIZED_RECON_LAYOUT",
+                    "error_message": "Row does not match the supported fixed-width RECON layout; no values were inferred.",
+                    "raw_record": raw,
+                })
+                continue
             output.extend(_mir_fixed_width_rows(raw, number, data))
-        return output
+        return (output, findings) if include_findings else output
 
     reader = csv.reader(io.StringIO(text), delimiter=delimiter)
     parsed = list(reader)
@@ -182,6 +204,7 @@ def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
         header = [f"column_{index + 1}" for index in range(max(len(row) for row in data_rows))]
 
     output = []
+    findings = []
     starting_row = 2 if has_header else 1
     for row_number, values in enumerate(data_rows, start=starting_row):
         if not any(str(value).strip() for value in values):
@@ -190,14 +213,39 @@ def parse_recon_rows(text: str, known_claim_ids=None) -> list[dict]:
         mapped = {header[index]: values[index] if index < len(values) else "" for index in range(len(header))}
         canonical = _canonical_row(mapped)
         if not canonical["claim_control_number"]:
-            canonical["claim_control_number"] = f"ROW-{row_number}"
+            findings.append({
+                "row_number": row_number,
+                "claim_control_number": "",
+                "error_code": "MISSING_CLAIM_IDENTIFIER",
+                "error_message": "RECON row has no claim identifier; no synthetic identifier was created.",
+                "raw_record": original,
+            })
+            continue
+        invalid_money = next((
+            field for field in (
+                "charge_amount", "allowed_amount", "paid_amount",
+                "patient_responsibility", "adjustment_amount",
+                "mir904_bluecard_fee", "mir905_aea", "mir907_amount",
+                "mir908_amount", "mpl920_pca_fee",
+            )
+            if not _valid_money(canonical.get(field))
+        ), None)
+        if invalid_money:
+            findings.append({
+                "row_number": row_number,
+                "claim_control_number": canonical["claim_control_number"],
+                "error_code": "INVALID_MONEY_VALUE",
+                "error_message": f"RECON field {invalid_money} is not a valid monetary value; the row was held.",
+                "raw_record": original,
+            })
+            continue
         output.append({
             "row_number": row_number,
             "raw": original,
             "data": canonical,
             "segment_data": mapped,
         })
-    return output
+    return (output, findings) if include_findings else output
 
 
 @transaction.atomic
@@ -218,7 +266,9 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
             .exclude(claim_control_number="")
             .values_list("claim_control_number", flat=True)
         )
-        rows = parse_recon_rows(recon_file.file_content, known_claim_ids)
+        rows, parsing_findings = parse_recon_rows(
+            recon_file.file_content, known_claim_ids, include_findings=True
+        )
         recon_file.claims.all().delete()
         grouped: OrderedDict[str, list[dict]] = OrderedDict()
         for row in rows:
@@ -229,9 +279,24 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         service_total = 0
         for claim_sequence, (claim_number, claim_rows) in enumerate(grouped.items(), start=1):
             first = claim_rows[0]["data"]
+            def first_money(field):
+                value = next((
+                    row["data"].get(field) for row in claim_rows
+                    if str(row["data"].get(field) or "").strip()
+                ), "")
+                return _money_decimal(value)
+
             charge = sum((_money_decimal(row["data"].get("charge_amount")) for row in claim_rows), Decimal("0"))
             allowed = sum((_money_decimal(row["data"].get("allowed_amount")) for row in claim_rows), Decimal("0"))
             paid = sum((_money_decimal(row["data"].get("paid_amount")) for row in claim_rows), Decimal("0"))
+            # MPL fee fields are claim-level values and may be repeated on
+            # service rows. Take the first populated value, rather than
+            # multiplying a fee by the number of services.
+            mir904 = first_money("mir904_bluecard_fee")
+            mir905 = first_money("mir905_aea")
+            mir907 = first_money("mir907_amount")
+            mir908 = first_money("mir908_amount")
+            mpl920 = first_money("mpl920_pca_fee")
             patient = sum((_money_decimal(row["data"].get("patient_responsibility")) for row in claim_rows), Decimal("0"))
             adjustment = sum((_money_decimal(row["data"].get("adjustment_amount")) for row in claim_rows), Decimal("0"))
             claim = RECONClaim.objects.create(
@@ -247,6 +312,11 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
                 charge_amount=charge,
                 allowed_amount=allowed,
                 paid_amount=paid,
+                mir904_bluecard_fee=mir904,
+                mir905_aea=mir905,
+                mir907_amount=mir907,
+                mir908_amount=mir908,
+                mpl920_pca_fee=mpl920,
                 patient_responsibility=patient,
                 adjustment_amount=adjustment,
                 service_from_date=first.get("service_from_date", "")[:10],
@@ -283,19 +353,38 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
             total_paid += paid
 
         now = timezone.now()
-        recon_file.status = "PROCESSED"
+        recon_file.status = (
+            "FAILED" if parsing_findings and not rows
+            else "PARTIAL" if parsing_findings
+            else "PROCESSED"
+        )
         recon_file.record_count = len(rows)
         recon_file.claim_count = len(grouped)
         recon_file.service_count = service_total
+        recon_file.held_record_count = len(parsing_findings)
+        recon_file.parsing_findings = parsing_findings
+        recon_file.processing_error = (
+            f"{len(parsing_findings)} RECON record(s) held for review."
+            if parsing_findings else ""
+        )
         recon_file.total_charge_amount = total_charge
         recon_file.total_paid_amount = total_paid
         recon_file.processed_at = now
         recon_file.save()
-        run.status = "COMPLETED"
+        run.status = (
+            "FAILED" if parsing_findings and not rows
+            else "PARTIAL" if parsing_findings
+            else "COMPLETED"
+        )
         run.claims_created = len(grouped)
         run.services_created = service_total
+        run.invalid_records = len(parsing_findings)
         run.completed_at = now
         run.save()
+        RECONProcessingError.objects.bulk_create([
+            RECONProcessingError(processing_run=run, recon_file=recon_file, **finding)
+            for finding in parsing_findings
+        ])
         return run
     except Exception as exc:
         now = timezone.now()

@@ -318,6 +318,7 @@ class RECONFile(models.Model):
         ("UPLOADED", "Uploaded"),
         ("PROCESSING", "Processing"),
         ("PROCESSED", "Processed"),
+        ("PARTIAL", "Partially processed"),
         ("FAILED", "Failed"),
     ]
 
@@ -332,6 +333,8 @@ class RECONFile(models.Model):
     record_count = models.PositiveIntegerField(default=0)
     claim_count = models.PositiveIntegerField(default=0)
     service_count = models.PositiveIntegerField(default=0)
+    held_record_count = models.PositiveIntegerField(default=0)
+    parsing_findings = models.JSONField(default=list, blank=True)
     total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     total_paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     IMPORT_MODE_CHOICES = [
@@ -374,6 +377,11 @@ class RECONClaim(models.Model):
     charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     allowed_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    mir904_bluecard_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    mir905_aea = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    mir907_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    mir908_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    mpl920_pca_fee = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     adjustment_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     service_from_date = models.CharField(max_length=10, blank=True, default="")
@@ -420,6 +428,7 @@ class RECONProcessingRun(models.Model):
     STATUS_CHOICES = [
         ("PROCESSING", "Processing"),
         ("COMPLETED", "Completed"),
+        ("PARTIAL", "Partially completed"),
         ("FAILED", "Failed"),
     ]
 

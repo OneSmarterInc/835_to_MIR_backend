@@ -65,6 +65,8 @@ def _serialize_file(item):
         "record_count": item.record_count,
         "claim_count": item.claim_count,
         "service_count": item.service_count,
+        "held_record_count": item.held_record_count,
+        "parsing_findings": item.parsing_findings,
         "total_charge_amount": str(item.total_charge_amount),
         "total_paid_amount": str(item.total_paid_amount),
         "import_mode": item.import_mode or "MANUAL",
@@ -198,6 +200,12 @@ def recon_process(request, file_id):
         except Exception as exc:
             return JsonResponse({"success": False, "error": str(exc), "file": _serialize_file(recon)}, status=400)
         recon.refresh_from_db()
+        if recon.status == "FAILED":
+            return JsonResponse({
+                "success": False,
+                "error": recon.processing_error or "All RECON records were held for review.",
+                "file": _serialize_file(recon),
+            }, status=400)
         return JsonResponse({"success": True, "file": _serialize_file(recon), "background": False})
     try:
         recon.status = "PROCESSING"
@@ -240,6 +248,11 @@ def recon_detail(request, file_id):
         "charge_amount": str(claim.charge_amount),
         "allowed_amount": str(claim.allowed_amount),
         "paid_amount": str(claim.paid_amount),
+        "mir904_bluecard_fee": str(claim.mir904_bluecard_fee),
+        "mir905_aea": str(claim.mir905_aea),
+        "mir907_amount": str(claim.mir907_amount),
+        "mir908_amount": str(claim.mir908_amount),
+        "mpl920_pca_fee": str(claim.mpl920_pca_fee),
     } for claim in recon.claims.all()[:500]]
     errors = [{
         "row_number": error.row_number,
@@ -259,7 +272,7 @@ def reconciliation_results(request):
     client = None if is_global else _request_client(request, request.GET.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
-    files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
+    files = RECONFile.objects.filter(client=client, status__in=("PROCESSED", "PARTIAL")).order_by("-processed_at", "-uploaded_at")[:500]
     try:
         page = max(1, int(request.GET.get("page", "1")))
         page_size = min(250, max(25, int(request.GET.get("page_size", "100"))))
@@ -282,10 +295,11 @@ def reconciliation_results(request):
         or status_filter not in allowed_statuses
     ):
         return JsonResponse({"success": False, "error": "Invalid filter or sort parameters."}, status=400)
-    claims, total = reconciliation_rows(
+    claims, total, waterfall_counts = reconciliation_rows(
         client, files, page=page, page_size=page_size, search=request.GET.get("search", ""),
         sort_by=sort_by, sort_direction=sort_direction, status_filter=status_filter,
     )
+    from .reconciliation_service import reconciliation_policy
     return JsonResponse({
         "success": True,
         "recon_files": [_serialize_file(item) for item in files],
@@ -294,6 +308,8 @@ def reconciliation_results(request):
         "page": page,
         "page_size": page_size,
         "total_pages": max(1, (total + page_size - 1) // page_size),
+        "waterfall_policy": reconciliation_policy(),
+        "waterfall_summary": waterfall_counts,
     })
 
 
@@ -323,7 +339,7 @@ def reconciliation_export(request):
     if sort_by not in allowed_sorts or sort_direction not in {"asc", "desc"} or status_filter not in allowed_statuses:
         return JsonResponse({"success": False, "error": "Invalid filter or sort parameters."}, status=400)
 
-    files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
+    files = RECONFile.objects.filter(client=client, status__in=("PROCESSED", "PARTIAL")).order_by("-processed_at", "-uploaded_at")[:500]
     search = request.GET.get("search", "")
     rows = reconciliation_rows(
         client, files, search=search, sort_by=sort_by,
@@ -359,7 +375,7 @@ def reconciliation_claim_detail(request, claim_id):
         claim = queryset.get(id=claim_id)
     except (MIRClaim.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "MIR claim was not found."}, status=404)
-    recon_files = RECONFile.objects.filter(client=claim.mir_file.client, status="PROCESSED")
+    recon_files = RECONFile.objects.filter(client=claim.mir_file.client, status__in=("PROCESSED", "PARTIAL"))
     row = reconciliation_rows(claim.mir_file.client, recon_files, claim_id=claim.id)
     summary = next((item for item in row if item["mir_claim_id"] == claim.id), None)
     recon_claims = list(RECONClaim.objects.filter(recon_file__in=recon_files).select_related("recon_file").filter(

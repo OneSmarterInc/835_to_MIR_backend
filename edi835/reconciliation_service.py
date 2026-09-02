@@ -6,8 +6,10 @@ the 50-service physical-row limit.
 """
 
 from decimal import Decimal
+from collections import Counter
 import re
 
+from django.conf import settings
 from django.db.models import Max, Min, Q, Sum
 from django.db.models.functions import Coalesce
 
@@ -22,7 +24,7 @@ def normalize_claim_id(value):
 
 
 def latest_recon_file(client, recon_file_id=None):
-    files = RECONFile.objects.filter(client=client, status="PROCESSED")
+    files = RECONFile.objects.filter(client=client, status__in=("PROCESSED", "PARTIAL"))
     if recon_file_id:
         return files.filter(id=recon_file_id).first()
     return files.order_by("-processed_at", "-uploaded_at").first()
@@ -48,6 +50,87 @@ def reconciliation_status(amount_to_pay, recon_paid, matched):
     if abs(recon_paid) > abs(amount_to_pay):
         return "OVERPAID", remaining
     return "AMOUNT_MISMATCH", remaining
+
+
+def reconciliation_policy():
+    """Expose the interim MPL interpretation until V7/V5 contradictions are resolved."""
+    mir907_source = str(getattr(settings, "MPL_RECON_MIR907_SOURCE", "computed")).lower()
+    mir908_source = str(getattr(settings, "MPL_RECON_MIR908_SOURCE", "computed")).lower()
+    steps = tuple(getattr(
+        settings, "MPL_RECON_WATERFALL_STEPS",
+        ("MIR901", "MIR907", "MIR908", "MPL920"),
+    ))
+    return {
+        "steps": list(steps),
+        "mir907_source": mir907_source if mir907_source in {"computed", "supplied"} else "computed",
+        "mir908_source": mir908_source if mir908_source in {"computed", "supplied"} else "computed",
+        "include_mpl920": bool(getattr(settings, "MPL_RECON_INCLUDE_MPL920", True)),
+        "interim": True,
+    }
+
+
+def reconciliation_waterfall(amount_to_pay, recon_paid, matched, fees=None, policy=None):
+    """Run named, ordered MPL matching candidates and report the winning step."""
+    base, recon_paid = _money(amount_to_pay), _money(recon_paid)
+    fees = fees or {}
+    values = {name: _money(fees.get(name)) for name in (
+        "mir904", "mir905", "mir907", "mir908", "mpl920"
+    )}
+    policy = policy or reconciliation_policy()
+    computed_907 = base + values["mir904"]
+    amount_907 = values["mir907"] if policy["mir907_source"] == "supplied" else computed_907
+    computed_908 = amount_907 + values["mir905"]
+    amount_908 = values["mir908"] if policy["mir908_source"] == "supplied" else computed_908
+    candidates = {
+        "MIR901": base,
+        "MIR907": amount_907,
+        "MIR908": amount_908,
+        "MPL920": amount_908 + values["mpl920"],
+    }
+    ordered = [
+        (name, candidates[name]) for name in policy["steps"]
+        if name in candidates and (name != "MPL920" or policy["include_mpl920"])
+    ] or [("MIR901", base)]
+    affected = any(value != ZERO for value in values.values())
+    result = {
+        "match_step": None,
+        "matched_amount": ordered[-1][1],
+        "candidates": {name: str(value) for name, value in ordered},
+        "affected_by_interim_policy": affected,
+        "policy_flags": ([
+            f"MIR907_{policy['mir907_source'].upper()}",
+            f"MIR908_{policy['mir908_source'].upper()}",
+            "MPL920_INCLUDED" if policy["include_mpl920"] else "MPL920_EXCLUDED",
+        ] if affected else []),
+    }
+    if not matched:
+        result.update(status="NOT_IN_RECON", remaining=base)
+        return result
+    if base and recon_paid and ((base < 0) != (recon_paid < 0)):
+        result.update(status="SIGNATURE_MISMATCH", remaining=base - recon_paid)
+        return result
+    for name, candidate in ordered:
+        if candidate == recon_paid:
+            result.update(
+                status="CLEAR", remaining=ZERO, match_step=name, matched_amount=candidate
+            )
+            return result
+    expected = ordered[-1][1]
+    status, remaining = reconciliation_status(expected, recon_paid, True)
+    result.update(status=status, remaining=remaining)
+    return result
+
+
+def waterfall_summary(rows):
+    step_counts = Counter(row.get("match_step") or "NO_MATCH" for row in rows)
+    flag_counts = Counter(flag for row in rows for flag in row.get("policy_flags", []))
+    return {
+        "match_step_counts": dict(step_counts),
+        "interim_policy_affected_records": sum(
+            1 for row in rows if row.get("affected_by_interim_policy")
+        ),
+        "policy_flag_counts": dict(flag_counts),
+    }
 
 
 SORT_FIELDS = {
@@ -87,7 +170,7 @@ def reconciliation_rows(
     # retained every RECONClaim model (and all MIRClaim model fields) until the
     # very end of the request, which allowed one Results request to exceed 2GB.
     recon_base = RECONClaim.objects.filter(
-        recon_file__in=(recon_files or []), recon_file__status="PROCESSED"
+        recon_file__in=(recon_files or []), recon_file__status__in=("PROCESSED", "PARTIAL")
     )
     recon_by_claim = {}
     recon_summaries = recon_base.values("claim_control_number").annotate(
@@ -98,6 +181,11 @@ def reconciliation_rows(
         patient_control_number=Max("patient_control_number"),
         latest_date=Max("recon_file__processed_at"),
         first_filename=Min("recon_file__original_filename"),
+        mir904=Coalesce(Sum("mir904_bluecard_fee"), ZERO),
+        mir905=Coalesce(Sum("mir905_aea"), ZERO),
+        mir907=Coalesce(Sum("mir907_amount"), ZERO),
+        mir908=Coalesce(Sum("mir908_amount"), ZERO),
+        mpl920=Coalesce(Sum("mpl920_pca_fee"), ZERO),
     )
     for summary in recon_summaries.iterator(chunk_size=2000):
         normalized_id = normalize_claim_id(summary["claim_control_number"])
@@ -106,11 +194,15 @@ def reconciliation_rows(
                 "raw_ids": [], "paid_amount": ZERO, "charge_amount": ZERO,
                 "service_count": 0, "member_id": "", "patient_control_number": "",
                 "latest_date": None, "first_filename": "",
+                "mir904": ZERO, "mir905": ZERO, "mir907": ZERO,
+                "mir908": ZERO, "mpl920": ZERO,
             })
             aggregate["raw_ids"].append(summary["claim_control_number"])
             aggregate["paid_amount"] += _money(summary["paid_amount"])
             aggregate["charge_amount"] += _money(summary["charge_amount"])
             aggregate["service_count"] += summary["service_count"] or 0
+            for fee_name in ("mir904", "mir905", "mir907", "mir908", "mpl920"):
+                aggregate[fee_name] += _money(summary[fee_name])
             aggregate["member_id"] = aggregate["member_id"] or summary["member_id"]
             aggregate["patient_control_number"] = aggregate["patient_control_number"] or summary["patient_control_number"]
             if not aggregate["latest_date"] or (summary["latest_date"] and summary["latest_date"] > aggregate["latest_date"]):
@@ -127,7 +219,8 @@ def reconciliation_rows(
         recon_paid = recon["paid_amount"] if recon else ZERO
         recon_charge = recon["charge_amount"] if recon else ZERO
         recon_services = recon["service_count"] if recon else 0
-        status, remaining = reconciliation_status(claim["mir_payable"], recon_paid, bool(recon))
+        match = reconciliation_waterfall(claim["mir_payable"], recon_paid, bool(recon), recon)
+        status, remaining = match["status"], match["remaining"]
         output.append({
             "mir_claim_id": claim["id"],
             "claim_id": claim_number,
@@ -144,11 +237,20 @@ def reconciliation_rows(
             "recon_service_count": recon_services,
             "recon_charge_amount": str(recon_charge),
             "recon_paid_amount": str(recon_paid),
+            "recon_fees": {
+                name.upper(): str(recon[name]) if recon else str(ZERO)
+                for name in ("mir904", "mir905", "mir907", "mir908", "mpl920")
+            },
             "recon_matches": [],
             "_recon_raw_ids": recon["raw_ids"] if recon else [],
             "remaining_amount": str(remaining),
-            "difference_amount": str(recon_paid - claim["mir_payable"]),
+            "difference_amount": str(recon_paid - match["matched_amount"]),
             "status": status,
+            "match_step": match["match_step"],
+            "matched_amount": str(match["matched_amount"]),
+            "waterfall_candidates": match["candidates"],
+            "affected_by_interim_policy": match["affected_by_interim_policy"],
+            "policy_flags": match["policy_flags"],
         })
 
     # RECON claims without a corresponding MIR record remain visible. Their
@@ -176,11 +278,20 @@ def reconciliation_rows(
                 "recon_service_count": recon["service_count"],
                 "recon_charge_amount": str(recon_charge),
                 "recon_paid_amount": str(recon_paid),
+                "recon_fees": {
+                    name.upper(): str(recon[name])
+                    for name in ("mir904", "mir905", "mir907", "mir908", "mpl920")
+                },
                 "recon_matches": [],
                 "_recon_raw_ids": recon["raw_ids"],
                 "remaining_amount": str(-recon_paid),
                 "difference_amount": str(recon_paid),
                 "status": "NOT_IN_MIR",
+                "match_step": None,
+                "matched_amount": str(ZERO),
+                "waterfall_candidates": {},
+                "affected_by_interim_policy": False,
+                "policy_flags": [],
             })
 
     search_terms = [value.strip().casefold() for value in str(search or "").split(",") if value.strip()]
@@ -214,6 +325,7 @@ def reconciliation_rows(
     if status_filter:
         output = [row for row in output if row["status"] == status_filter]
     total = len(output)
+    summary = waterfall_summary(output)
     if sort_by in SORT_FIELDS:
         key = SORT_FIELDS[sort_by]
         output.sort(key=key, reverse=sort_direction == "desc")
@@ -227,6 +339,8 @@ def reconciliation_rows(
     if raw_ids:
         page_matches = recon_base.filter(claim_control_number__in=raw_ids).values(
             "id", "claim_control_number", "paid_amount", "charge_amount", "service_count",
+            "mir904_bluecard_fee", "mir905_aea", "mir907_amount", "mir908_amount",
+            "mpl920_pca_fee",
             "recon_file__original_filename", "recon_file__processed_at",
         ).order_by("recon_file__processed_at", "recon_file__uploaded_at", "claim_sequence")
         for match in page_matches.iterator(chunk_size=500):
@@ -237,6 +351,13 @@ def reconciliation_rows(
                 "paid_amount": str(_money(match["paid_amount"])),
                 "charge_amount": str(_money(match["charge_amount"])),
                 "service_count": match["service_count"],
+                "fees": {
+                    "MIR904": str(_money(match["mir904_bluecard_fee"])),
+                    "MIR905": str(_money(match["mir905_aea"])),
+                    "MIR907": str(_money(match["mir907_amount"])),
+                    "MIR908": str(_money(match["mir908_amount"])),
+                    "MPL920": str(_money(match["mpl920_pca_fee"])),
+                },
             })
     for row in output:
         row["recon_matches"] = matches_by_claim.get(row["claim_id"], [])
@@ -245,4 +366,4 @@ def reconciliation_rows(
             row["recon_filename"] = ", ".join(dict.fromkeys(
                 match["filename"] for match in row["recon_matches"]
             ))
-    return (output, total) if page is not None else output
+    return (output, total, summary) if page is not None else output
