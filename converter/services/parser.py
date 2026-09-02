@@ -191,17 +191,15 @@ def get_co_adjustment_total(service):
     for adj in service.get("adjustments", []):
         if adj.get("group") == "CO":
             total += adj.get("amount", 0.0)
-    if total > service.get("charge", 0.0):
-        total = service.get("charge", 0.0)
     return total
 
 def get_covered_charge(service):
     val = service.get("charge", 0.0) - get_co_adjustment_total(service)
-    return max(0.0, val)
+    return val
 
 def get_patient_liability(service):
     val = get_covered_charge(service) - service.get("paid", 0.0)
-    return max(0.0, val)
+    return val
 
 def get_first_adjustment_code(service, filter_group=None):
     for adj in service.get("adjustments", []):
@@ -378,5 +376,9 @@ def parse_835_to_mir(text, filename=None, client=None):
         "text": mir_text,
         "claims_count": summary["claims"],
         "services_count": summary["services"],
-        "records_count": summary["mir_records"]
+        "records_count": summary["mir_records"],
+        "delivered_claims_count": summary.get("delivered_claims", summary["claims"]),
+        "delivered_services_count": summary.get("delivered_services", summary["services"]),
+        "held_claims_count": summary.get("held_claims", 0),
+        "conversion_findings": summary.get("findings", []),
     }

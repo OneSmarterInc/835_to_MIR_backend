@@ -22,6 +22,7 @@ class EDI835FileSerializer(serializers.ModelSerializer):
         fields = (
             "id", "client", "original_filename", "stored_filename", "mir_filename",
             "status", "claims_count", "services_count", "records_count", "uploaded_at",
+            "delivered_claims_count", "held_claims_count", "conversion_findings",
             "processing_started_at", "processing_completed_at", "error_message",
             "present_in_sftp", "present_in_archive_folder", "ingestion_source",
         )

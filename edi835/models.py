@@ -9,6 +9,7 @@ class EDI835File(models.Model):
         ("PROCESSING", "Processing"),
         ("COMPLETED", "Completed"),
         ("ARCHIVED", "Archived"),
+        ("PARTIAL", "Partially delivered"),
         ("ERROR", "Error"),
     ]
 
@@ -26,6 +27,9 @@ class EDI835File(models.Model):
     claims_count = models.IntegerField(default=0, help_text="Number of claims in file.")
     services_count = models.IntegerField(default=0, help_text="Number of service lines in file.")
     records_count = models.IntegerField(default=0, help_text="Number of MIR records in file.")
+    delivered_claims_count = models.IntegerField(default=0, help_text="Claims delivered in the MIR output.")
+    held_claims_count = models.IntegerField(default=0, help_text="Claims retained because conversion findings require review.")
+    conversion_findings = models.JSONField(default=list, blank=True, help_text="Claim-level conversion findings and hold reasons.")
     uploaded_at = models.DateTimeField(auto_now_add=True, help_text="Upload timestamp.")
     processing_started_at = models.DateTimeField(null=True, blank=True, help_text="Processing start timestamp.")
     processing_completed_at = models.DateTimeField(null=True, blank=True, help_text="Processing completion timestamp.")

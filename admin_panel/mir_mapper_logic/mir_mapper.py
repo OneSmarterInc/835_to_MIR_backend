@@ -41,27 +41,15 @@ def signed_count(value: Decimal, digits: int) -> str:
 
 def co_adjustment_total(service: ServiceLine) -> Decimal:
     total = sum((a.amount for a in service.adjustments if a.group == config.X12_CONTRACTUAL_GROUP), Decimal("0"))
-    # Some supplied CAS segments repeat a positive adjustment.  The real MIR
-    # never lets a positive contractual reduction drive covered charge below
-    # zero, so cap only the positive side.  Negative CO adjustments are valid
-    # reversals/increases and must remain negative.
-    if total > service.charge:
-        total = service.charge
     return total
 
 
 def covered_charge(service: ServiceLine) -> Decimal:
-    value = service.charge - co_adjustment_total(service)
-    if not config.ALLOW_NEGATIVE_DERIVED_AMOUNTS:
-        value = max(value, Decimal("0"))
-    return value
+    return service.charge - co_adjustment_total(service)
 
 
 def patient_liability(service: ServiceLine) -> Decimal:
-    value = covered_charge(service) - service.paid
-    if not config.ALLOW_NEGATIVE_DERIVED_AMOUNTS:
-        value = max(value, Decimal("0"))
-    return value
+    return covered_charge(service) - service.paid
 
 
 def first_adjustment_code(service: ServiceLine, group: str | None = None) -> str:
@@ -275,7 +263,9 @@ def payment_reduction_slots(service: ServiceLine) -> Dict[int, Tuple[str, Decima
             slot = 3
             code = "PR119"
         else:
-            continue
+            raise ValueError(
+                f"Patient-responsibility reason PR{adjustment.reason} has no MIR reduction slot"
+            )
         existing = result.get(slot)
         amount = adjustment.amount + (existing[1] if existing else Decimal("0"))
         result[slot] = (code, amount)
