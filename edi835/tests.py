@@ -7,12 +7,41 @@ from django.test import TestCase, Client, override_settings
 from accounts.models import Client as AccountClient, User
 from .models import EDI835File, MIRServiceLine, RECONFile
 from .mir_persistence import store_mir_file
-from .services import process_edi835_file_content, get_edi835_storage_dirs, unique_mir_filename
+from .services import (
+    get_edi835_storage_dirs,
+    normalize_mir_generation_result,
+    process_edi835_file_content,
+    unique_mir_filename,
+)
 from .file_types import has_valid_file_extension
 
 SAMPLE_835_VALID = "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260813*1200*U*00501*000000001*0*P*:~GS*HP*SENDER*RECEIVER*20260813*1200*1*X*005010X221A1~ST*835*0001~BPR*I*150.00*C*CHK************20260813~TRN*1*123456789*1999999999~N1*PR*PAYER NAME~N1*PE*PROVIDER NAME*XX*1234567890~LX*1~CLP*CLM_PAYP_20260807*1*200.00*150.00*50.00*MC*REF12345~NM1*QC*1*SMITH*JOHN*M~NM1*IL*1*SMITH*JOHN****MI*SUB123456~REF*1L*GRP999~DTM*036*19850101~DTM*050*20260801~SVC*HC:99213*200.00*150.00**1~DTM*472*20260805~CAS*CO*45*50.00~SE*16*0001~GE*1*1~IEA*1*000000001~"
 
 SAMPLE_835_INVALID = "INVALID_CONTENT_NO_CLP_HEADER"
+
+
+class MIRGenerationResultContractTestCase(TestCase):
+    def test_plain_text_result_is_not_unpacked_character_by_character(self):
+        from admin_panel.mir_mapper_logic.models import Claim, ServiceLine
+
+        claims = [Claim(claim_number="CLAIM-1", services=[ServiceLine(), ServiceLine()])]
+        text = "A" * 8238
+
+        mir_text, summary = normalize_mir_generation_result(text, claims)
+
+        self.assertEqual(mir_text, text)
+        self.assertEqual(summary["claims"], 1)
+        self.assertEqual(summary["services"], 2)
+        self.assertEqual(summary["mir_records"], 1)
+
+    def test_dictionary_result_uses_generator_counts(self):
+        mir_text, summary = normalize_mir_generation_result(
+            {"text": "ROW\n", "claims_count": 3, "services_count": 4, "records_count": 1},
+            [],
+        )
+
+        self.assertEqual(mir_text, "ROW\n")
+        self.assertEqual(summary, {"claims": 3, "services": 4, "mir_records": 1})
 
 
 class EDI835PipelineLifecycleTestCase(TestCase):

@@ -20,6 +20,38 @@ from .mir_exporter import export_mir_file
 logger = logging.getLogger("edi835")
 
 
+def normalize_mir_generation_result(generated, claims):
+    """Normalize supported MIR generator contracts without unpacking text."""
+    claims = list(claims or [])
+    fallback_summary = {
+        "claims": len(claims),
+        "services": sum(len(getattr(claim, "services", None) or []) for claim in claims),
+    }
+
+    if isinstance(generated, tuple) and len(generated) == 2:
+        mir_text, summary = generated
+    elif isinstance(generated, dict):
+        mir_text = generated.get("text", "")
+        summary = {
+            "claims": generated.get("claims", generated.get("claims_count", fallback_summary["claims"])),
+            "services": generated.get("services", generated.get("services_count", fallback_summary["services"])),
+            "mir_records": generated.get("mir_records", generated.get("records_count")),
+        }
+    elif isinstance(generated, str):
+        mir_text = generated
+        summary = fallback_summary
+    else:
+        raise TypeError("MIR generator returned an unsupported result format.")
+
+    if not isinstance(mir_text, str):
+        raise TypeError("MIR generator output text must be a string.")
+    summary = summary if isinstance(summary, dict) else fallback_summary
+    summary.setdefault("claims", fallback_summary["claims"])
+    summary.setdefault("services", fallback_summary["services"])
+    summary.setdefault("mir_records", len([line for line in mir_text.splitlines() if line.strip()]))
+    return mir_text, summary
+
+
 def resolve_mir_filename(client=None, fallback_base="MIR", now=None):
     """Resolve the client-facing MIR filename and supported date/time tokens."""
     now = now or timezone.localtime()
@@ -513,7 +545,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         }
 
     # Generate ONE single combined MIR file from all claims across all input 835 files
-    mir_text, mir_res = generate_mir_text(all_claims, client=client)
+    generated = generate_mir_text(all_claims, client=client)
+    mir_text, mir_res = normalize_mir_generation_result(generated, all_claims)
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
