@@ -77,7 +77,9 @@ class AdminAccessMiddleware:
                 verified_at = int(request.session.get("totp_verified_at", 0) or 0)
                 if int(time.time()) - verified_at > 300:
                     return JsonResponse({"success": False, "error": "Recent MFA verification is required for this privileged action.", "code": "REAUTH_REQUIRED"}, status=403)
-            if request.user.is_staff and (
+            # Super Admins retain system-wide oversight. Temporary client
+            # grants constrain delegated staff administrators only.
+            if request.user.is_staff and not request.user.is_superuser and (
                 normalized_path.startswith("/edi835/api/tracked-files")
                 or normalized_path.startswith("/edi835/api/reconciliation")
                 or "/edi-files" in normalized_path
