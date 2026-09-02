@@ -137,8 +137,7 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
         )
         sheet.add_table(table)
 
-    sheet.auto_filter.ref = f"A{header_row}:I{last_row}"
-    sheet.sheet_properties.pageSetUpPr.fitToPage = True
+    # The table already owns the AutoFilter for populated exports. Adding a\n    # worksheet AutoFilter over the same range creates overlapping OOXML that\n    # desktop Excel reports as damaged and attempts to repair on open.\n    sheet.sheet_properties.pageSetUpPr.fitToPage = True
     sheet.page_setup.orientation = "landscape"
     sheet.page_setup.fitToWidth = 1
     sheet.page_setup.fitToHeight = 0
