@@ -1524,15 +1524,22 @@ def api_admin_step_validate_835(request, client_id):
             return JsonResponse({"success": False, "error": "No file uploaded"}, status=400)
 
         raw_text = file_bytes.decode('utf-8', errors='replace')
-        from converter.services.validator import EDI835Validator
-        validator = EDI835Validator()
-        report = validator.validate(raw_text)
-        is_valid = report.get('valid', report.get('is_valid', True))
+
+        # Step 7 onboarding validation intentionally uses the application's
+        # multi-transaction-aware 835 validator. PyX12 remains available for
+        # conversion/pipeline validation, but its schema engine can reject
+        # real-world batched remittances that pass the structural checks used
+        # by this onboarding workflow.
+        is_valid, checks = validate_x12_835_content(raw_text)
 
         if not is_valid:
-            errors = report.get('errors', [])
-            err_msg = "EDI Validation Failed. " + (errors[0] if errors else "Errors found.")
-            checks = [{"ok": False, "label": "Structure", "detail": e} for e in errors]
+            failed_checks = [check for check in checks if not check.get("ok")]
+            first_failure = (
+                failed_checks[0].get("detail")
+                if failed_checks
+                else "Errors found."
+            )
+            err_msg = "EDI Validation Failed. " + str(first_failure)
 
             # Send failure email
             try:
