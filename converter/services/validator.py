@@ -7,13 +7,26 @@ Runs entirely locally using open-source PyX12 library.
 import io
 import json
 import logging
+import re
 import pyx12.params
 import pyx12.x12file
 import pyx12.x12n_document
 
 logger = logging.getLogger(__name__)
 
+
 class PyX12Validator:
+
+    @staticmethod
+    def _professional_rule_code(segment, raw_code):
+        """Convert PyX12's numeric error ids into stable, readable rule codes."""
+        raw = str(raw_code or "PYX12_ERR").strip().upper()
+        if raw and not raw.isdigit():
+            return raw
+
+        segment_code = re.sub(r"[^A-Z0-9]+", "-", str(segment or "X12").strip().upper()).strip("-") or "X12"
+        numeric_code = raw.zfill(3) if raw.isdigit() else "ERR"
+        return f"PYX12-{segment_code}-{numeric_code}"
 
     def validate(self, edi_text):
         """
@@ -201,7 +214,8 @@ class PyX12Validator:
 
             for err in node.get("errors", []):
                 if isinstance(err, dict):
-                    code = str(err.get("err_cde") or "PYX12_ERR")
+                    raw_code = str(err.get("err_cde") or "PYX12_ERR")
+                    code = self._professional_rule_code(seg_id, raw_code)
                     msg = str(err.get("err_str") or "PyX12 validation error")
                     val = err.get("err_val")
                     if val:
@@ -212,6 +226,7 @@ class PyX12Validator:
                         "element": None,
                         "severity": "error",
                         "code": code,
+                        "pyx12_code": raw_code,
                         "message": msg
                     })
 
