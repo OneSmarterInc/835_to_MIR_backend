@@ -35,6 +35,34 @@ def _validate_835_for_conversion(content):
         segment for segment in (content or "").replace("\r", "\n").split("~")
         if segment.strip()
     ])
+    rule_map = {
+        "Interchange Envelope Balance": ("ENV-001", "ISA/IEA", "X12 005010"),
+        "Functional Group Envelope (GS/GE)": ("ENV-002", "GS/GE", "X12 005010"),
+        "Transaction Set Envelope (ST/SE)": ("ENV-004", "ST/SE", "X12 005010"),
+        "ISA/IEA Control Number Match": ("ENV-005", "ISA13/IEA02", "X12 005010"),
+        "835 Transaction Identifier": ("SEG-001", "ST01", "X12 005010"),
+        "SE Segment Count Validation": ("ENV-006", "SE01", "X12 005010"),
+        "Financial Payment Info (BPR)": ("SEG-010", "BPR", "X12 005010"),
+        "Reconciliation Trace (TRN)": ("SEG-011", "TRN", "X12 005010"),
+        "Payer / Payee Entities (N1)": ("SEG-012", "N1", "X12 005010"),
+        "Claim Level Payment (CLP)": ("SEG-013", "CLP", "X12 005010"),
+    }
+    findings = []
+    for check in checks:
+        if check.get("ok"):
+            continue
+        label = str(check.get("label") or "Validation rule")
+        rule_code, segment, source = rule_map.get(label, ("835-STRUCT", "Unknown", "OneSmarter 835 structural validation"))
+        findings.append({
+            "rule_code": rule_code,
+            "gate": "835",
+            "segment": segment,
+            "rule": label,
+            "what_found": str(check.get("detail") or "Validation failed."),
+            "source": source,
+            "severity": "Hold",
+        })
+
     return {
         "valid": is_valid,
         "is_valid": is_valid,
@@ -50,6 +78,7 @@ def _validate_835_for_conversion(content):
         "errors": errors,
         "warnings": warnings,
         "checks": checks,
+        "findings": findings,
     }
 
 def _invalid_835_response(filename):
@@ -519,7 +548,12 @@ def api_validate(request):
                 client=client,
             )
         else:
-            err_msg = json.dumps(report.get("errors", ["Validation errors found"]))
+            err_msg = json.dumps({
+                "message": "835 validation failed",
+                "errors": report.get("errors", ["Validation errors found"]),
+                "findings": report.get("findings", []),
+                "validator_engine": report.get("validator_engine", "OneSmarter 835 structural validation"),
+            })
             db_rec = EDI835File.objects.create(
                 original_filename=original_filename,
                 stored_filename=original_filename,
