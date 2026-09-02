@@ -150,9 +150,14 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
 
         max_sequence = len(chunks)
         if max_sequence > config.MAX_RECORD_SEQUENCE:
+            maximum_services = (
+                config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE
+            )
             findings.append(_finding(
-                claim, "MIR_RECORD_LIMIT",
+                claim, "RECORD_SEQUENCE_LIMIT_EXCEEDED",
                 "Claim requires more MIR records than the configured sequence limit.",
+                service_count=len(services),
+                maximum_services=maximum_services,
                 required_records=max_sequence,
                 maximum_records=config.MAX_RECORD_SEQUENCE,
             ))

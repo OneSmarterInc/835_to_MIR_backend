@@ -75,15 +75,26 @@ class HeldClaimGenerationTests(unittest.TestCase):
         self.assertEqual(summary["held_claims"], 1)
         self.assertEqual(summary["findings"][0]["rule_code"], "MIR_FIELD_OVERFLOW")
 
-    def test_record_sequence_overflow_holds_claim(self):
+    def test_record_sequence_overflow_holds_only_oversized_claim(self):
         count = config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE + 1
         oversized = Claim(claim_number="LARGE", services=[service()] * count)
+        valid = Claim(claim_number="GOOD", status="1", services=[service()])
 
-        records, summary = generate_mir_records([oversized])
+        records, summary = generate_mir_records([oversized, valid])
 
-        self.assertEqual(records, [])
+        self.assertEqual(len(records), 1)
+        self.assertEqual(summary["delivered_claims"], 1)
         self.assertEqual(summary["held_claims"], 1)
-        self.assertEqual(summary["findings"][0]["rule_code"], "MIR_RECORD_LIMIT")
+        finding = summary["findings"][0]
+        self.assertEqual(finding["rule_code"], "RECORD_SEQUENCE_LIMIT_EXCEEDED")
+        self.assertEqual(finding["claim_number"], "LARGE")
+        self.assertEqual(finding["service_count"], str(count))
+        self.assertEqual(
+            finding["maximum_services"],
+            str(config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE),
+        )
+        self.assertEqual(finding["required_records"], "100")
+        self.assertEqual(finding["maximum_records"], "99")
 
 
 if __name__ == "__main__":
