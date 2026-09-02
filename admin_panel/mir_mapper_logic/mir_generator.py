@@ -122,6 +122,9 @@ def _claim_findings(claim: Claim) -> list[dict]:
                 adjustment.group == config.X12_PATIENT_RESP_GROUP
                 and adjustment.reason not in config.ORDINARY_PATIENT_RESPONSIBILITY_REASONS
                 and adjustment.reason != "45"
+                # PRB11 is an established MIR denial reason.  It is carried in
+                # the line status/reason fields, not in a numeric reduction slot.
+                and adjustment.reason != "B11"
             ):
                 findings.append(_finding(
                     claim, "UNMAPPED_PR_REASON",

@@ -19,7 +19,7 @@ def service(charge="100", paid="0", adjustments=None):
 
 class HeldClaimGenerationTests(unittest.TestCase):
     def test_stored_process_date_makes_regeneration_byte_identical(self):
-        claim = Claim(claim_number="REPEAT", status="1", services=[service("100", "80")])
+        claim = Claim(claim_number="REPEAT", status="1", group_number="GROUP1", services=[service("100", "80")])
         stored_date = date(2026, 8, 31)
 
         first, _ = generate_mir_text([claim], process_date=stored_date)
@@ -37,9 +37,10 @@ class HeldClaimGenerationTests(unittest.TestCase):
     def test_bad_claim_is_held_while_valid_claim_is_delivered(self):
         bad = Claim(
             claim_number="BAD",
+            group_number="GROUP1",
             services=[service("100", "25", [Adjustment("CO", "45", Decimal("125"))])],
         )
-        good = Claim(claim_number="GOOD", status="1", services=[service("100", "80")])
+        good = Claim(claim_number="GOOD", status="1", group_number="GROUP1", services=[service("100", "80")])
 
         records, summary = generate_mir_records([bad, good])
 
@@ -65,9 +66,24 @@ class HeldClaimGenerationTests(unittest.TestCase):
         self.assertEqual(summary["findings"][0]["rule_code"], "UNMAPPED_PR_REASON")
         self.assertEqual(summary["findings"][0]["adjustment_amount"], "100")
 
+    def test_pr_b11_denial_is_delivered_without_an_unmapped_reason_finding(self):
+        claim = Claim(
+            claim_number="B11-DENIAL",
+            status="2",
+            group_number="10670170",
+            services=[service("31", "0", [Adjustment("PR", "B11", Decimal("31"))])],
+        )
+
+        records, summary = generate_mir_records([claim])
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(summary["delivered_claims"], 1)
+        self.assertEqual(summary["held_claims"], 0)
+        self.assertEqual(summary["findings"], [])
+
     def test_field_overflow_holds_only_the_affected_claim(self):
-        bad = Claim(claim_number="BAD", services=[service("100000000")])
-        good = Claim(claim_number="GOOD", status="1", services=[service()])
+        bad = Claim(claim_number="BAD", group_number="GROUP1", services=[service("100000000")])
+        good = Claim(claim_number="GOOD", status="1", group_number="GROUP1", services=[service()])
 
         records, summary = generate_mir_records([bad, good])
 
@@ -77,8 +93,8 @@ class HeldClaimGenerationTests(unittest.TestCase):
 
     def test_record_sequence_overflow_holds_only_oversized_claim(self):
         count = config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE + 1
-        oversized = Claim(claim_number="LARGE", services=[service()] * count)
-        valid = Claim(claim_number="GOOD", status="1", services=[service()])
+        oversized = Claim(claim_number="LARGE", group_number="GROUP1", services=[service()] * count)
+        valid = Claim(claim_number="GOOD", status="1", group_number="GROUP1", services=[service()])
 
         records, summary = generate_mir_records([oversized, valid])
 
