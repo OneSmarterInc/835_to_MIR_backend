@@ -1,4 +1,5 @@
 import os
+import json
 import shutil
 import uuid
 import logging
@@ -407,7 +408,26 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     db_record.save()
 
     try:
-        # Step 3: Perform 835 parsing and MIR conversion during processing
+        # Step 3: Validate before parsing/conversion. Every ingestion path that
+        # reaches this pipeline (manual upload, admin processing, and SFTP)
+        # must be subject to the same authoritative 835 validation gate.
+        validation_report = EDI835Validator().validate(edi_text)
+        if not validation_report.get("valid", validation_report.get("is_valid", False)):
+            errors = validation_report.get("errors") or ["835 validation failed."]
+            raise ValueError(
+                json.dumps(
+                    {
+                        "message": "835 validation failed",
+                        "errors": errors,
+                        "findings": validation_report.get("findings", []),
+                        "validator_engine": validation_report.get(
+                            "validator_engine", "Validated using PyX12"
+                        ),
+                    }
+                )
+            )
+
+        # Only validated files may enter parsing and MIR conversion.
         client = db_record.client if db_record else None
         res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
         mir_text = res["text"]
