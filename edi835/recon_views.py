@@ -315,6 +315,70 @@ def reconciliation_results(request):
     })
 
 
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def reconciliation_dashboard(request):
+    """Aggregate the live Results scope for the reconciliation popup."""
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    client = None if is_global else _request_client(request, request.GET.get("client_id"))
+    if not client and not is_global:
+        return JsonResponse({"success": False, "error": "Select a client."}, status=400)
+    files = RECONFile.objects.filter(
+        client=client, status__in=("PROCESSED", "PARTIAL")
+    ).order_by("-processed_at", "-uploaded_at")[:500]
+    rows = reconciliation_rows(client, files)
+
+    from decimal import Decimal, InvalidOperation
+    def amount(row, key):
+        try:
+            return Decimal(str(row.get(key) or "0"))
+        except InvalidOperation:
+            return Decimal("0")
+
+    approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
+    withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    fees = {
+        name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
+        for name in ("MIR904", "MIR905", "MPL920")
+    }
+    discrepancies = [row for row in rows if row.get("status") != "CLEAR"]
+    caveats = [row for row in rows if row.get("status") == "CLEAR" and row.get("affected_by_interim_policy")]
+    latest = files[0] if files else None
+    return JsonResponse({
+        "success": True,
+        "source": {"client_name": client.name if client else "Global System Default"},
+        "cycle": {
+            "filename": latest.original_filename if latest else "",
+            "processed_at": latest.processed_at.isoformat() if latest and latest.processed_at else None,
+        },
+        "cash": {
+            "approved": str(approved), "withdrawn": str(withdrawn),
+            "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
+            "mpl920": str(fees["MPL920"]),
+            "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
+        },
+        "tallies": {
+            "records": len(rows), "matched_cleanly": len(rows) - len(discrepancies) - len(caveats),
+            "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
+        },
+        "waterfall": waterfall_summary(rows),
+        "policy": reconciliation_policy(),
+        "records": [{
+            "claim_id": row.get("claim_id"), "mir901": row.get("amount_to_pay"),
+            "mir904": (row.get("recon_fees") or {}).get("MIR904", "0.00"),
+            "mir905": (row.get("recon_fees") or {}).get("MIR905", "0.00"),
+            "mpl920": (row.get("recon_fees") or {}).get("MPL920", "0.00"),
+            "recon_mir907": row.get("recon_paid_amount"), "difference": row.get("difference_amount"),
+            "status": row.get("status"), "match_step": row.get("match_step"),
+            "affected_by_interim_policy": row.get("affected_by_interim_policy", False),
+        } for row in rows],
+        "message": "" if latest else "No processed RECON file is available in this scope yet.",
+    })
+
+
 def _visible_source_file(request, file_id):
     queryset = EDI835File.objects.select_related("client", "mir_file")
     if getattr(request.user, "client_id", None):
