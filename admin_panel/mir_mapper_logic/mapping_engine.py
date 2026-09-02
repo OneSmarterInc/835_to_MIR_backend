@@ -14,7 +14,6 @@ from .mir_mapper import (
     covered_charge,
     mir_patient_liability,
     patient_liability,
-    payment_reductions,
     payment_reduction_slots,
     prepriced_amount,
     process_code_indicator,
@@ -102,8 +101,10 @@ def _formula_env(claim: Claim, service: ServiceLine | None, inherited_reason: st
         "MIR_PATIENT_LIABILITY": lambda: mir_patient_liability(svc, claim.status, inherited_reason),
         "REDUCTION_REASON": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[0],
         "REDUCTION_AMOUNT": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[1],
-        "PR_REASON": lambda slot: f"{config.PAYMENT_REDUCTION_CODE_PREFIX}{int(slot)}" if int(slot) in payment_reductions(svc) else "",
-        "PR_AMOUNT": lambda slot: payment_reductions(svc).get(int(slot), Decimal("0")),
+        # Legacy aliases intentionally delegate to the authoritative MIR positional
+        # reduction resolver so PR_* and REDUCTION_* can never disagree.
+        "PR_REASON": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[0],
+        "PR_AMOUNT": lambda slot: payment_reduction_slots(svc).get(int(slot), ("", Decimal("0")))[1],
         "MAX": max,
         "MIN": min,
         "ABS": abs,
