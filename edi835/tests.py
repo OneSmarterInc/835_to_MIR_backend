@@ -583,7 +583,7 @@ class RECONResultAPITestCase(TestCase):
 
         services = [ServiceLine(charge=Decimal("10.00"), paid=Decimal("8.00")) for _ in range(75)]
         mir_text, _ = generate_mir_text([Claim(
-            claim_number="CLAIM-75", subscriber_id="MEMBER-75",
+            claim_number="CLAIM-75", status="1", subscriber_id="MEMBER-75",
             patient_first_name="Jane", patient_last_name="Doe",
             group_number="TESTGRP", services=services,
         )])
@@ -669,6 +669,7 @@ class RECONResultAPITestCase(TestCase):
         mir_text, _ = generate_mir_text([
             Claim(
                 claim_number="MIR-ONLY-1",
+                status="1",
                 group_number="TESTGRP",
                 services=[ServiceLine(charge=Decimal("25.00"), paid=Decimal("20.00"))],
             )
