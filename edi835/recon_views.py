@@ -318,10 +318,11 @@ def reconciliation_export(request):
 
     files = RECONFile.objects.filter(client=client, status="PROCESSED").order_by("-processed_at", "-uploaded_at")[:500]
     search = request.GET.get("search", "")
-    rows, total = reconciliation_rows(
+    rows = reconciliation_rows(
         client, files, search=search, sort_by=sort_by,
         sort_direction=sort_direction, status_filter=status_filter,
     )
+    total = len(rows)
     workbook = build_reconciliation_workbook(
         client=client, rows=rows, total=total, search=search, status=status_filter,
     )

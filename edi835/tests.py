@@ -310,6 +310,23 @@ class RECONResultAPITestCase(TestCase):
         )
         self.client.force_login(self.user)
 
+    def test_excel_export_handles_three_filtered_rows_without_unpacking_them(self):
+        from io import BytesIO
+        from unittest.mock import patch
+
+        rows = [{"claim_id": f"CLAIM-{index}"} for index in range(1, 4)]
+        workbook = BytesIO(b"xlsx")
+        with (
+            patch("edi835.recon_views.reconciliation_rows", return_value=rows),
+            patch("edi835.recon_views.build_reconciliation_workbook", return_value=workbook) as build,
+        ):
+            response = self.client.get("/edi835/api/reconciliation/export/?status=PARTIALLY_PAID")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content, b"xlsx")
+        self.assertEqual(build.call_args.kwargs["rows"], rows)
+        self.assertEqual(build.call_args.kwargs["total"], 3)
+
     def test_upload_process_and_tenant_scoped_listing(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
