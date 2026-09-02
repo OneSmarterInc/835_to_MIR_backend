@@ -146,20 +146,85 @@ def validate_x12_835_content(raw_text: str) -> Tuple[bool, List[dict]]:
     if not st_835_found:
         checks.append({"ok": False, "label": "835 Transaction Identifier", "detail": "ST segment is missing or does not contain 835 transaction set code."})
 
-    # 3. SE Segment Count Validation
-    se_seg = next((s for s in reversed(segments) if s.split(elem_sep)[0].strip() == "SE"), None)
-    if se_seg:
-        se_parts = se_seg.split(elem_sep)
-        if len(se_parts) >= 2 and se_parts[1].strip().isdigit():
-            declared_count = int(se_parts[1].strip())
-            st_idx = next((i for i, s in enumerate(segments) if s.split(elem_sep)[0].strip() == "ST"), None)
-            se_idx = next((i for i, s in enumerate(segments) if s.split(elem_sep)[0].strip() == "SE"), None)
-            if st_idx is not None and se_idx is not None:
-                actual_count = (se_idx - st_idx) + 1
-                if declared_count != actual_count:
-                    checks.append({"ok": True, "label": "SE Segment Count Validation", "detail": f"Warning: SE declared segment count ({declared_count}) does not match actual segments in ST-SE loop ({actual_count}). Allowing to proceed."})
-                else:
-                    checks.append({"ok": True, "label": "SE Segment Count Validation", "detail": f"Declared SE segment count ({declared_count}) matches actual segment count."})
+    # 3. Validate every ST/SE transaction envelope.
+    # Each transaction must have matching control numbers and an exact SE01
+    # segment count. These are structural errors, not warnings.
+    transaction_start = None
+    for idx, seg in enumerate(segments):
+        parts = seg.split(elem_sep)
+        tag = parts[0].strip() if parts else ""
+
+        if tag == "ST":
+            if transaction_start is not None:
+                checks.append({
+                    "ok": False,
+                    "label": "Transaction Set Envelope (ST/SE)",
+                    "detail": "Found a new ST segment before the previous transaction was closed by SE."
+                })
+            transaction_start = idx
+            continue
+
+        if tag == "SE":
+            if transaction_start is None:
+                checks.append({
+                    "ok": False,
+                    "label": "Transaction Set Envelope (ST/SE)",
+                    "detail": "Found an SE segment without a matching ST segment."
+                })
+                continue
+
+            st_parts = segments[transaction_start].split(elem_sep)
+            declared_count = parts[1].strip() if len(parts) > 1 else ""
+            st_control = st_parts[2].strip() if len(st_parts) > 2 else ""
+            se_control = parts[2].strip() if len(parts) > 2 else ""
+            actual_count = (idx - transaction_start) + 1
+
+            if not declared_count.isdigit():
+                checks.append({
+                    "ok": False,
+                    "label": "SE Segment Count Validation",
+                    "detail": f"SE01 must contain a numeric segment count for transaction {esc(st_control or 'unknown')}."
+                })
+            elif int(declared_count) != actual_count:
+                checks.append({
+                    "ok": False,
+                    "label": "SE Segment Count Validation",
+                    "detail": f"Transaction {esc(st_control or 'unknown')} declares {declared_count} segments in SE01 but contains {actual_count} segments from ST through SE."
+                })
+            else:
+                checks.append({
+                    "ok": True,
+                    "label": "SE Segment Count Validation",
+                    "detail": f"Transaction {esc(st_control or 'unknown')} SE01 count ({declared_count}) matches the actual {actual_count} segments."
+                })
+
+            if not st_control or not se_control:
+                checks.append({
+                    "ok": False,
+                    "label": "ST/SE Control Number Match",
+                    "detail": "ST02 and SE02 transaction control numbers are required."
+                })
+            elif st_control != se_control:
+                checks.append({
+                    "ok": False,
+                    "label": "ST/SE Control Number Match",
+                    "detail": f"Transaction control number mismatch: ST02 '{esc(st_control)}' does not match SE02 '{esc(se_control)}'."
+                })
+            else:
+                checks.append({
+                    "ok": True,
+                    "label": "ST/SE Control Number Match",
+                    "detail": f"Transaction control number verified ({esc(st_control)})."
+                })
+
+            transaction_start = None
+
+    if transaction_start is not None:
+        checks.append({
+            "ok": False,
+            "label": "Transaction Set Envelope (ST/SE)",
+            "detail": "Final ST transaction is missing its closing SE segment."
+        })
 
     # 4. Required Business Segments
     bpr_found = any(s.split(elem_sep)[0].strip() == "BPR" for s in segments)
