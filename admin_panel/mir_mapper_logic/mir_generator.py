@@ -11,6 +11,13 @@ from .mapping_store import get_mappings
 from .mir_mapper import claim_primary_reason
 from .mir_mapper import co_adjustment_total, covered_charge, patient_liability
 from .models import Claim, ServiceLine
+from .rule_registry import (
+    MPL_SOURCE,
+    RuleSeverity,
+    claim_control_number,
+    evaluate_preventive_rules,
+    is_blocking,
+)
 
 
 def _put(buffer: List[str], field: dict, value: str) -> None:
@@ -64,13 +71,23 @@ def _service_block(service: ServiceLine, claim: Claim, sequence: int, max_sequen
 
 
 def _finding(claim: Claim, code: str, reason: str, service_line: int | None = None,
-             **details: Any) -> dict:
+             severity: str = RuleSeverity.HOLD.value, **details: Any) -> dict:
+    source = MPL_SOURCE if code.startswith("MP") else "OneSmarter MIR generation control"
     finding = {
         "rule_code": code,
-        "severity": "HOLD",
+        "rule_name": code,
+        "source": source,
+        "severity": severity,
+        "scope": "service" if service_line is not None else "claim",
         "claim_number": claim.claim_number,
+        "claim_control_number": claim_control_number(claim),
         "service_line": service_line,
         "reason": reason,
+        "provenance": {
+            "rule_code": code,
+            "source": source,
+            "description": reason,
+        },
     }
     finding.update({key: str(value) for key, value in details.items() if value is not None})
     return finding
@@ -115,26 +132,69 @@ def _claim_findings(claim: Claim) -> list[dict]:
     return findings
 
 
+def _persisted_icns(claims: list[Claim], client=None) -> set[str]:
+    """Return previously generated full ICNs for this tenant without changing storage."""
+    if client is None:
+        return set()
+    incoming = {claim_control_number(claim) for claim in claims if claim_control_number(claim)}
+    if not incoming:
+        return set()
+    from edi835.models import MIRClaim
+
+    return set(
+        MIRClaim.objects.filter(
+            mir_file__client=client,
+            claim_control_number__in=incoming,
+        ).values_list("claim_control_number", flat=True)
+    )
+
+
 def generate_mir_records(claims: Iterable[Claim], client=None,
                          process_date: date | None = None) -> Tuple[List[str], Dict[str, Any]]:
     records: List[str] = []
+    claim_list = list(claims)
     total_claims = 0
     total_services = 0
     split_claims = 0
     delivered_claims = 0
     delivered_services = 0
+    refused_claims = 0
+    warning_findings = 0
     findings: list[dict] = []
     output_bytes = 0
     fields = get_mappings(client)
+    existing_icns = _persisted_icns(claim_list, client)
+    seen_icns: set[str] = set()
 
-    for claim in claims:
+    for claim in claim_list:
         total_claims += 1
         services = claim.services or []
         total_services += len(services)
 
-        claim_findings = _claim_findings(claim)
+        preventive_findings = evaluate_preventive_rules(
+            claim,
+            existing_icns=existing_icns,
+            seen_icns=seen_icns,
+        )
+        icn = claim_control_number(claim)
+        if icn:
+            seen_icns.add(icn)
+
+        warning_findings += sum(
+            1 for finding in preventive_findings
+            if str(finding.get("severity", "")).upper() == RuleSeverity.WARN.value
+        )
+        blocking_preventive = [finding for finding in preventive_findings if is_blocking(finding)]
+        if any(
+            str(finding.get("severity", "")).upper() == RuleSeverity.REFUSE.value
+            for finding in blocking_preventive
+        ):
+            refused_claims += 1
+
+        claim_findings = preventive_findings + _claim_findings(claim)
         if claim_findings:
             findings.extend(claim_findings)
+        if any(is_blocking(finding) for finding in claim_findings):
             continue
 
         if config.SERVICE_OVERFLOW_MODE == "truncate":
@@ -214,6 +274,8 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
         "delivered_claims": delivered_claims,
         "delivered_services": delivered_services,
         "held_claims": total_claims - delivered_claims,
+        "refused_claims": refused_claims,
+        "warning_findings": warning_findings,
         "findings": findings,
         "mir_records": len(records),
         "split_claims": split_claims,
