@@ -7,6 +7,7 @@ from .rule_registry import (
     RuleSeverity,
     claim_control_number,
     evaluate_preventive_rules,
+    is_blocking,
 )
 
 
@@ -25,7 +26,7 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
         self.assertEqual(definitions["MP003"].severity, RuleSeverity.HOLD)
         self.assertEqual(definitions["MP011"].severity, RuleSeverity.HOLD)
         self.assertEqual(definitions["MP013"].severity, RuleSeverity.HOLD)
-        self.assertEqual(definitions["DUPLICATE_ICN"].severity, RuleSeverity.REFUSE)
+        self.assertEqual(definitions["DUPLICATE_ICN"].severity, RuleSeverity.WARN)
         self.assertEqual({severity.value for severity in RuleSeverity}, {"REFUSE", "HOLD", "WARN"})
 
     def test_findings_include_rule_provenance(self):
@@ -80,7 +81,8 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
         self.assertEqual(claim_control_number(claim), icn)
         findings = evaluate_preventive_rules(claim, seen_icns={icn})
         duplicate = next(finding for finding in findings if finding["rule_code"] == "DUPLICATE_ICN")
-        self.assertEqual(duplicate["severity"], "REFUSE")
+        self.assertEqual(duplicate["severity"], "WARN")
+        self.assertFalse(is_blocking(duplicate))
         self.assertEqual(duplicate["evidence"]["icn"], icn)
         self.assertIn("current batch", duplicate["evidence"]["duplicate_sources"])
 
