@@ -5,6 +5,7 @@ import sys
 import uuid
 
 from django.conf import settings
+from django.core.cache import cache
 from django.db import IntegrityError
 from django.http import HttpResponse, JsonResponse
 from django.utils.text import slugify
@@ -331,6 +332,13 @@ def reconciliation_dashboard(request):
     files = RECONFile.objects.filter(
         client=client, status__in=("PROCESSED", "PARTIAL")
     ).order_by("-processed_at", "-uploaded_at")[:500]
+    latest = files[0] if files else None
+    cache_version = latest.updated_at.isoformat() if latest else "empty"
+    cache_scope = str(client.id) if client else "global"
+    cache_key = f"reconciliation-dashboard:{cache_scope}:{cache_version}"
+    cached_payload = cache.get(cache_key)
+    if cached_payload is not None:
+        return JsonResponse(cached_payload)
     rows = reconciliation_rows(client, files, include_match_history=False)
 
     from decimal import Decimal, InvalidOperation
@@ -348,8 +356,7 @@ def reconciliation_dashboard(request):
     }
     discrepancies = [row for row in rows if row.get("status") != "CLEAR"]
     caveats = [row for row in rows if row.get("status") == "CLEAR" and row.get("affected_by_interim_policy")]
-    latest = files[0] if files else None
-    return JsonResponse({
+    payload = {
         "success": True,
         "source": {"client_name": client.name if client else "Global System Default"},
         "cycle": {
@@ -378,7 +385,9 @@ def reconciliation_dashboard(request):
             "affected_by_interim_policy": row.get("affected_by_interim_policy", False),
         } for row in discrepancies + caveats],
         "message": "" if latest else "No processed RECON file is available in this scope yet.",
-    })
+    }
+    cache.set(cache_key, payload, timeout=300)
+    return JsonResponse(payload)
 
 
 def _visible_source_file(request, file_id):
