@@ -150,12 +150,29 @@ def finish_automation_run(job):
     if not run_id:
         return
     result = job.get("result") or {}
-    reference_items = (result.get("sftp_837_files") or []) + (result.get("sftp_recon_files") or [])
-    recon_names = [
-        item.get("filename") or (item.get("file") or {}).get("original_filename")
-        for item in reference_items if isinstance(item, dict)
-    ]
-    mir_name = result.get("mir_filename") or ""
+    automation_type = str(job.get("automation_type") or result.get("automation_type") or "835").upper()
+
+    def result_items(key):
+        return [item for item in (result.get(key) or []) if isinstance(item, dict)]
+
+    def result_names(key):
+        return [
+            item.get("filename") or (item.get("file") or {}).get("original_filename")
+            for item in result_items(key)
+        ]
+
+    def imported_count(key):
+        return sum(
+            1 for item in result_items(key)
+            if str((item.get("file") or {}).get("status") or "").upper() == "PROCESSED"
+        )
+
+    input_835_names = [str(value) for value in (result.get("files") or [])] if automation_type == "835" else []
+    input_837_names = [str(value) for value in result_names("sftp_837_files") if value] if automation_type == "837" else []
+    input_recon_names = [str(value) for value in result_names("sftp_recon_files") if value] if automation_type == "RECON" else []
+    reference_names = input_837_names or input_recon_names
+    reference_count = imported_count("sftp_837_files") if automation_type == "837" else imported_count("sftp_recon_files") if automation_type == "RECON" else 0
+    mir_name = (result.get("mir_filename") or "") if automation_type == "835" else ""
     success = job.get("state") == "COMPLETED" and result.get("success") is True
     errors = result.get("errors") or []
     error = result.get("error") or (errors[-1] if errors else "")
@@ -163,11 +180,13 @@ def finish_automation_run(job):
         status="SUCCESS" if success else "FAILED",
         started_at=job.get("worker_started_at") or timezone.now(),
         finished_at=job.get("finished_at") or timezone.now(),
-        input_835_files=[str(value) for value in (result.get("files") or [])],
-        input_recon_files=[str(value) for value in recon_names if value],
+        input_835_files=input_835_names,
+        # Kept in the existing column for database compatibility. The API
+        # exposes separate 837 and RECON fields based on automation_type.
+        input_recon_files=reference_names,
         mir_output_files=[mir_name] if mir_name else [],
-        processed_835_count=max(0, int(result.get("processed_count") or 0)),
-        recon_file_count=len([value for value in recon_names if value]),
+        processed_835_count=max(0, int(result.get("processed_count") or 0)) if automation_type == "835" else 0,
+        recon_file_count=reference_count,
         error_message=str(error or ""),
         result=result,
     )

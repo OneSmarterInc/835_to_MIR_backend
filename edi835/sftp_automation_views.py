@@ -38,22 +38,36 @@ def _schedule_data(schedule):
 
 
 def _run_data(run):
+    automation_type = str(run.automation_type or "835").upper()
+    input_837_files = run.input_recon_files if automation_type == "837" else []
+    input_recon_files = run.input_recon_files if automation_type == "RECON" else []
+    input_files = (
+        run.input_835_files if automation_type == "835"
+        else input_837_files if automation_type == "837"
+        else input_recon_files
+    )
+    processed_count = run.processed_835_count if automation_type == "835" else run.recon_file_count
     return {
         "id": str(run.id),
         "client_id": str(run.client_id),
         "client_name": run.client.name,
         "client_code": run.client.client_code,
-        "automation_type": run.automation_type,
+        "automation_type": automation_type,
+        "automation_label": run.get_automation_type_display(),
         "scheduled_for": run.scheduled_for.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
         "finished_at": run.finished_at.isoformat() if run.finished_at else None,
         "status": run.status,
         "job_id": str(run.job_id) if run.job_id else None,
         "input_835_files": run.input_835_files,
-        "input_recon_files": run.input_recon_files,
+        "input_837_files": input_837_files,
+        "input_recon_files": input_recon_files,
+        "input_files": input_files,
         "mir_output_files": run.mir_output_files,
         "processed_835_count": run.processed_835_count,
         "recon_file_count": run.recon_file_count,
+        "files_found_count": len(input_files),
+        "processed_count": processed_count,
         "error_message": run.error_message,
         "result": run.result,
     }

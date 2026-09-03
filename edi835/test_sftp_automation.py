@@ -128,6 +128,7 @@ class SFTPAutomationTestCase(TestCase):
         )
         finish_automation_run({
             "automation_run_id": str(run.id), "state": "COMPLETED",
+            "automation_type": "835",
             "worker_started_at": "2026-08-31T13:00:00+00:00", "finished_at": "2026-08-31T13:01:00+00:00",
             "result": {"success": True, "processed_count": 2, "files": ["a.835", "b.835"],
                        "mir_filename": "output.MIR", "sftp_837_files": [{"filename": "reference.837"}], "errors": []},
@@ -135,10 +136,47 @@ class SFTPAutomationTestCase(TestCase):
         run.refresh_from_db()
         self.assertEqual(run.status, "SUCCESS")
         self.assertEqual(run.input_835_files, ["a.835", "b.835"])
-        self.assertEqual(run.input_recon_files, ["reference.837"])
+        # An 835 run must never report a reference file, even if a malformed
+        # worker result accidentally contains one.
+        self.assertEqual(run.input_recon_files, [])
         self.assertEqual(run.mir_output_files, ["output.MIR"])
         run_email.assert_called_once()
         self.assertEqual(run_email.call_args.args[0].id, run.id)
+
+    @patch("edi835.sftp_automation.send_automation_run_notice", return_value=True)
+    def test_reference_run_persists_only_its_own_file_type(self, _run_email):
+        run = SFTPAutomationRun.objects.create(
+            client=self.client_record, automation_type="837",
+            scheduled_for=datetime.now(dt_timezone.utc),
+        )
+        finish_automation_run({
+            "automation_run_id": str(run.id), "automation_type": "837",
+            "state": "COMPLETED",
+            "result": {
+                "success": True,
+                "automation_type": "837",
+                "files": ["wrong.835"],
+                "sftp_837_files": [{"filename": "reference.837", "file": {"status": "PROCESSED"}}],
+                "sftp_recon_files": [{"filename": "wrong-recon.csv", "file": {"status": "PROCESSED"}}],
+            },
+        })
+        run.refresh_from_db()
+        self.assertEqual(run.input_835_files, [])
+        self.assertEqual(run.input_recon_files, ["reference.837"])
+        self.assertEqual(run.mir_output_files, [])
+        self.assertEqual(run.processed_835_count, 0)
+        self.assertEqual(run.recon_file_count, 1)
+
+        payload = self.client.get(
+            f"/edi835/api/admin/sftp-automation/?client_id={self.client_record.id}"
+        ).json()["runs"][0]
+        self.assertEqual(payload["automation_type"], "837")
+        self.assertEqual(payload["automation_label"], "837 Reference")
+        self.assertEqual(payload["input_files"], ["reference.837"])
+        self.assertEqual(payload["input_837_files"], ["reference.837"])
+        self.assertEqual(payload["input_recon_files"], [])
+        self.assertEqual(payload["files_found_count"], 1)
+        self.assertEqual(payload["processed_count"], 1)
 
     @patch("admin_panel.email_service.send_client_email", return_value=True)
     def test_run_email_lists_every_processed_input_and_output(self, send_email):
@@ -207,11 +245,13 @@ class SFTPAutomationTestCase(TestCase):
         class FakeSFTP:
             def __init__(self):
                 self.removed = []
+                self.listed = []
 
             def normalize(self, path):
                 return path
 
-            def listdir_attr(self, _path):
+            def listdir_attr(self, path):
+                self.listed.append(path)
                 return [SimpleNamespace(filename="daily-recon.csv", st_mode=stat.S_IFREG)]
 
             def open(self, _path, _mode):
@@ -251,6 +291,7 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(len(payload["sftp_recon_files"]), 1)
         self.assertTrue(payload["sftp_recon_files"][0]["remote_deleted"])
         self.assertEqual(fake_sftp.removed, ["/in/recon/daily-recon.csv"])
+        self.assertEqual(fake_sftp.listed, ["/in/recon"])
         recon = RECONFile.objects.get(client=self.client_record)
         self.assertEqual(recon.import_mode, "SFTP")
         self.assertEqual(recon.status, "PROCESSED")

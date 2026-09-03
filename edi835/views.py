@@ -2242,9 +2242,14 @@ def _execute_batch_conversion(request):
             logger.exception("Combined SFTP batch conversion failed")
             return JsonResponse({
                 "success": False,
+                "automation_type": automation_type,
                 "error": f"Combined MIR conversion failed: {batch_exc}",
                 "processed_count": 0,
                 "files": [item["filename"] for item in combined_items],
+                "processed_files": [],
+                "sftp_837_files": [],
+                "sftp_recon_files": [],
+                "mir_filename": "",
                 "errors": errors,
             }, status=500)
         if batch_res.get("success"):
@@ -2318,7 +2323,8 @@ def _execute_batch_conversion(request):
         msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
     batch_failed = bool(
-        (combined_items and not processed_files)
+        errors
+        or (combined_items and not processed_files)
         or (run_835 and validation_failed_835 and not processed_files)
     )
     # process_multiple_edi835_files persists the exact admin-configured
@@ -2336,7 +2342,10 @@ def _execute_batch_conversion(request):
     return JsonResponse({
         "success": not batch_failed,
         "processed_count": len(processed_files),
-        "files": processed_files,
+        # ``files`` is the complete set discovered for this run, even when
+        # conversion fails.  ``processed_files`` records the successful subset.
+        "files": [item["filename"] for item in combined_items] if run_835 else [],
+        "processed_files": processed_files,
         "sftp_837_files": sftp_837_results,
         "sftp_recon_files": sftp_recon_results,
         "automation_type": automation_type,
@@ -2376,4 +2385,3 @@ def api_start_batch_conversion(request):
             "success": False,
             "error": f"Batch pipeline failed: {exc}",
         }, status=500)
-
