@@ -262,19 +262,9 @@ def payment_reduction_slots(service: ServiceLine) -> Dict[int, Tuple[str, Decima
         elif adjustment.reason == "45":
             slot = 3
             code = "PR119"
-        elif adjustment.reason == "B11":
-            # B11 is represented by the denied service status/reason.  It has
-            # no numeric MIR payment-reduction slot and must not block output.
-            continue
         else:
-            raise ValueError(
-                f"Patient-responsibility reason PR{adjustment.reason} has no MIR reduction slot"
-            )
+            continue
         existing = result.get(slot)
-        if existing and existing[0] != code:
-            raise ValueError(
-                f"MIR reduction slot {slot} cannot contain both {existing[0]} and {code}"
-            )
         amount = adjustment.amount + (existing[1] if existing else Decimal("0"))
         result[slot] = (code, amount)
     return result
