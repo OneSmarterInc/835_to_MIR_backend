@@ -594,6 +594,12 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(claim.mpl920_pca_fee, Decimal("3.00"))
         self.assertFalse(recon.claims.filter(claim_control_number__startswith="ROW-").exists())
         self.assertEqual(recon.processing_errors.get().error_code, "MISSING_CLAIM_IDENTIFIER")
+        detail = self.client.get(f"/edi835/api/recon/files/{recon.id}/")
+        self.assertEqual(detail.status_code, 200)
+        held = detail.json()["errors"][0]
+        self.assertEqual(held["claim_control_number"], "")
+        self.assertEqual(held["error_code"], "MISSING_CLAIM_IDENTIFIER")
+        self.assertIn("MEMBER-2", held["raw_record"])
 
     def test_unrecognized_fixed_width_row_does_not_guess_last_money_token(self):
         from .recon_service import parse_recon_rows

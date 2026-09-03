@@ -258,8 +258,10 @@ def recon_detail(request, file_id):
     } for claim in recon.claims.all()[:500]]
     errors = [{
         "row_number": error.row_number,
+        "claim_control_number": error.claim_control_number,
         "error_code": error.error_code,
         "error_message": error.error_message,
+        "raw_record": error.raw_record,
     } for error in recon.processing_errors.all()[:200]]
     return JsonResponse({"success": True, "file": _serialize_file(recon), "claims": claims, "errors": errors})
 

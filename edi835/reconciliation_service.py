@@ -134,14 +134,14 @@ def waterfall_summary(rows):
 
 
 SORT_FIELDS = {
-    "claim_id": lambda row: row["claim_id"].casefold(),
-    "patient_name": lambda row: row["patient_name"].casefold(),
-    "mir_filename": lambda row: row["mir_filename"].casefold(),
-    "recon_filename": lambda row: row["recon_filename"].casefold(),
-    "amount_to_pay": lambda row: Decimal(row["amount_to_pay"]),
-    "recon_paid_amount": lambda row: Decimal(row["recon_paid_amount"]),
-    "difference_amount": lambda row: Decimal(row["difference_amount"]),
-    "status": lambda row: row["status"].casefold(),
+    "claim_id": lambda row: str(row.get("claim_id") or "").casefold(),
+    "patient_name": lambda row: str(row.get("patient_name") or "").casefold(),
+    "mir_filename": lambda row: str(row.get("mir_filename") or "").casefold(),
+    "recon_filename": lambda row: str(row.get("recon_filename") or "").casefold(),
+    "amount_to_pay": lambda row: Decimal(str(row.get("amount_to_pay") or "0")),
+    "recon_paid_amount": lambda row: Decimal(str(row.get("recon_paid_amount") or "0")),
+    "difference_amount": lambda row: Decimal(str(row.get("difference_amount") or "0")),
+    "status": lambda row: str(row.get("status") or "").casefold(),
 }
 
 
