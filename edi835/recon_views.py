@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 import uuid
+from datetime import timedelta
+from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.cache import cache
@@ -10,6 +12,7 @@ from django.db import IntegrityError
 from django.http import HttpResponse, JsonResponse
 from django.utils.text import slugify
 from django.utils import timezone
+from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
@@ -19,6 +22,54 @@ from .models import EDI835File, MIRClaim, RECONClaim, RECONFile
 from .recon_service import process_recon_file
 from .reconciliation_service import reconciliation_policy, reconciliation_rows, waterfall_summary
 from .reconciliation_export import build_reconciliation_workbook
+
+
+def _comparison_counts(rows):
+    cutoff = timezone.now() - timedelta(days=8)
+
+    def amount(row, key):
+        try:
+            return Decimal(str(row.get(key) or "0"))
+        except InvalidOperation:
+            return Decimal("0")
+
+    counts = {"MIR_EQ_RECON": 0, "MIR_GT_RECON": 0, "MIR_LT_RECON": 0, "NOT_IN_RECON": 0, "AGED_NOT_IN_RECON": 0}
+    for row in rows:
+        in_mir = bool(row.get("mir_claim_id"))
+        in_recon = bool(row.get("recon_filename"))
+        if in_mir and in_recon:
+            mir_amount = amount(row, "amount_to_pay")
+            recon_amount = amount(row, "recon_paid_amount")
+            key = "MIR_EQ_RECON" if mir_amount == recon_amount else "MIR_GT_RECON" if mir_amount > recon_amount else "MIR_LT_RECON"
+            counts[key] += 1
+        elif in_mir:
+            counts["NOT_IN_RECON"] += 1
+            mir_date = parse_datetime(str(row.get("mir_date") or ""))
+            if mir_date and timezone.is_naive(mir_date):
+                mir_date = timezone.make_aware(mir_date)
+            if mir_date and mir_date < cutoff:
+                counts["AGED_NOT_IN_RECON"] += 1
+    return counts
+
+
+def _paginated_dashboard_payload(payload, request):
+    try:
+        page = max(1, int(request.GET.get("review_page", "1")))
+        page_size = min(100, max(10, int(request.GET.get("review_page_size", "25"))))
+    except ValueError:
+        page, page_size = 1, 25
+    records = payload.get("records") or []
+    total = len(records)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = min(page, total_pages)
+    start = (page - 1) * page_size
+    response_payload = dict(payload)
+    response_payload["records"] = records[start:start + page_size]
+    response_payload["review_pagination"] = {
+        "page": page, "page_size": page_size, "total": total,
+        "total_pages": total_pages,
+    }
+    return response_payload
 
 
 def _request_client(request, supplied_client_id=None):
@@ -338,7 +389,7 @@ def reconciliation_dashboard(request):
     cache_key = f"reconciliation-dashboard:{cache_scope}:{cache_version}"
     cached_payload = cache.get(cache_key)
     if cached_payload is not None:
-        return JsonResponse(cached_payload)
+        return JsonResponse(_paginated_dashboard_payload(cached_payload, request))
     rows = reconciliation_rows(client, files, include_match_history=False)
 
     from decimal import Decimal, InvalidOperation
@@ -383,6 +434,7 @@ def reconciliation_dashboard(request):
             "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
         },
         "waterfall": waterfall_summary(rows),
+        "comparison_counts": _comparison_counts(rows),
         "policy": reconciliation_policy(),
         "records": [{
             "claim_id": row.get("claim_id"), "mir901": row.get("amount_to_pay"),
@@ -392,11 +444,11 @@ def reconciliation_dashboard(request):
             "recon_mir907": row.get("recon_paid_amount"), "difference": row.get("difference_amount"),
             "status": row.get("status"), "match_step": row.get("match_step"),
             "affected_by_interim_policy": row.get("affected_by_interim_policy", False),
-        } for row in discrepancies + caveats],
+        } for row in discrepancies],
         "message": "" if latest else "No processed RECON file is available in this scope yet.",
     }
     cache.set(cache_key, payload, timeout=300)
-    return JsonResponse(payload)
+    return JsonResponse(_paginated_dashboard_payload(payload, request))
 
 
 def _visible_source_file(request, file_id):
@@ -509,6 +561,7 @@ def reconciliation_file_dashboard(request, file_id):
             "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
         },
         "waterfall": waterfall,
+        "comparison_counts": _comparison_counts(rows),
         "policy": reconciliation_policy(),
         "records": records,
         "message": "" if latest else "No processed RECON file is available for this client yet.",

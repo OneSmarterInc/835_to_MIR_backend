@@ -427,6 +427,24 @@ class RECONResultAPITestCase(TestCase):
         )
         self.client.force_login(self.user)
 
+    def test_dashboard_comparison_counts_include_aged_missing_recon_claims(self):
+        from datetime import timedelta
+        from django.utils import timezone
+        from .recon_views import _comparison_counts
+
+        old_date = (timezone.now() - timedelta(days=9)).isoformat()
+        rows = [
+            {"mir_claim_id": 1, "recon_filename": "a.p7a", "amount_to_pay": "10", "recon_paid_amount": "10"},
+            {"mir_claim_id": 2, "recon_filename": "a.p7a", "amount_to_pay": "20", "recon_paid_amount": "10"},
+            {"mir_claim_id": 3, "recon_filename": "a.p7a", "amount_to_pay": "10", "recon_paid_amount": "20"},
+            {"mir_claim_id": 4, "recon_filename": "", "amount_to_pay": "10", "recon_paid_amount": "0", "mir_date": old_date},
+        ]
+
+        self.assertEqual(_comparison_counts(rows), {
+            "MIR_EQ_RECON": 1, "MIR_GT_RECON": 1, "MIR_LT_RECON": 1,
+            "NOT_IN_RECON": 1, "AGED_NOT_IN_RECON": 1,
+        })
+
     def test_excel_export_handles_three_filtered_rows_without_unpacking_them(self):
         from io import BytesIO
         from unittest.mock import patch
