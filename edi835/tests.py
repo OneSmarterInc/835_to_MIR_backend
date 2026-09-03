@@ -445,6 +445,24 @@ class RECONResultAPITestCase(TestCase):
             "NOT_IN_RECON": 1, "AGED_NOT_IN_RECON": 1,
         })
 
+    def test_cash_summary_uses_real_claim_amounts(self):
+        from .recon_views import _cash_summary
+
+        rows = [
+            {"amount_to_pay": "100.00", "recon_paid_amount": "100.00"},
+            {"amount_to_pay": "50.00", "recon_paid_amount": "70.00"},
+            {"amount_to_pay": "80.00", "recon_paid_amount": "40.00"},
+            {"amount_to_pay": "30.00", "recon_paid_amount": "0.00"},
+            {"amount_to_pay": "0.00", "recon_paid_amount": "10.00"},
+        ]
+
+        self.assertEqual(_cash_summary(rows), {
+            "total_amount_in_mir": "260.00",
+            "total_amount_in_recon": "220.00",
+            "overpaid": "30.00",
+            "underpaid": "70.00",
+        })
+
     def test_reconciliation_review_action_is_persisted_for_client_claim(self):
         response = self.client.post(
             "/edi835/api/reconciliation/actions/",

@@ -25,6 +25,30 @@ from .reconciliation_service import reconciliation_policy, reconciliation_rows, 
 from .reconciliation_export import build_reconciliation_workbook
 
 
+def _cash_summary(rows):
+    """Calculate reconciliation dollars from persisted claim rows."""
+    def amount(row, key):
+        try:
+            return Decimal(str(row.get(key) or "0"))
+        except InvalidOperation:
+            return Decimal("0")
+
+    total_mir = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
+    total_recon = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    return {
+        "total_amount_in_mir": str(total_mir),
+        "total_amount_in_recon": str(total_recon),
+        "overpaid": str(sum((
+            max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0"))
+            for row in rows
+        ), Decimal("0"))),
+        "underpaid": str(sum((
+            max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0"))
+            for row in rows
+        ), Decimal("0"))),
+    }
+
+
 def _comparison_counts(rows):
     cutoff = timezone.now() - timedelta(days=8)
 
@@ -431,11 +455,7 @@ def reconciliation_dashboard(request):
         except InvalidOperation:
             return Decimal("0")
 
-    approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
-    withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
-    review_rows = [row for row in rows if row.get("status") != "CLEAR"]
-    overpaid = sum((max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0")) for row in review_rows), Decimal("0"))
-    underpaid = sum((max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0")) for row in review_rows), Decimal("0"))
+    cash = _cash_summary(rows)
     fees = {
         name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
         for name in ("MIR904", "MIR905", "MPL920")
@@ -453,11 +473,12 @@ def reconciliation_dashboard(request):
             "processed_at": latest.processed_at.isoformat() if latest and latest.processed_at else None,
         },
         "cash": {
-            "approved": str(approved), "withdrawn": str(withdrawn),
-            "overpaid": str(overpaid), "underpaid": str(underpaid),
+            **cash,
+            "approved": cash["total_amount_in_mir"],
+            "withdrawn": cash["total_amount_in_recon"],
             "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
             "mpl920": str(fees["MPL920"]),
-            "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
+            "unexplained": str(Decimal(cash["total_amount_in_recon"]) - Decimal(cash["total_amount_in_mir"]) - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
         },
         "tallies": {
             "recon_claims": recon_claims, "mir_claims": mir_claims,
@@ -562,11 +583,7 @@ def reconciliation_file_dashboard(request, file_id):
             return Decimal("0")
 
     from decimal import Decimal
-    approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
-    withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
-    review_rows = [row for row in rows if row.get("status") != "CLEAR"]
-    overpaid = sum((max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0")) for row in review_rows), Decimal("0"))
-    underpaid = sum((max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0")) for row in review_rows), Decimal("0"))
+    cash = _cash_summary(rows)
     fees = {
         name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
         for name in ("MIR904", "MIR905", "MPL920")
@@ -606,11 +623,12 @@ def reconciliation_file_dashboard(request, file_id):
             "processed_at": latest.processed_at.isoformat() if latest and latest.processed_at else None,
         },
         "cash": {
-            "approved": str(approved), "withdrawn": str(withdrawn),
-            "overpaid": str(overpaid), "underpaid": str(underpaid),
+            **cash,
+            "approved": cash["total_amount_in_mir"],
+            "withdrawn": cash["total_amount_in_recon"],
             "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
             "mpl920": str(fees["MPL920"]),
-            "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
+            "unexplained": str(Decimal(cash["total_amount_in_recon"]) - Decimal(cash["total_amount_in_mir"]) - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
         },
         "tallies": {
             "recon_claims": recon_claims, "mir_claims": mir_claims,
