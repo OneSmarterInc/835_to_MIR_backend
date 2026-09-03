@@ -1,6 +1,7 @@
 import os
 import uuid
 import logging
+import time
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
@@ -24,6 +25,24 @@ from .models import SFTPConfig, EDI835File, MIRFile
 from .batch_jobs import active_job_for, read_job, write_job
 from .services import process_edi835_file_content, get_edi835_storage_dirs, sync_folder_observer, process_multiple_edi835_files
 from .file_types import allowed_extensions, file_extension_error, has_valid_file_extension
+
+
+def _remove_sftp_file_with_retry(sftp, remote_path, attempts=3):
+    """Remove a successfully processed inbound file, tolerating transient SFTP errors."""
+    last_error = None
+    for attempt in range(max(1, attempts)):
+        try:
+            sftp.remove(remote_path)
+            return True, ""
+        except OSError as exc:
+            if getattr(exc, "errno", None) == 2:
+                return True, ""
+            last_error = exc
+        except Exception as exc:
+            last_error = exc
+        if attempt + 1 < attempts:
+            time.sleep(0.2 * (attempt + 1))
+    return False, str(last_error or "Unknown SFTP deletion error")
 
 
 @csrf_exempt
@@ -2159,12 +2178,12 @@ def _execute_batch_conversion(request):
                             # Remove only after the same processing used by a
                             # manual upload has completed successfully. Failed
                             # files remain remotely available for a safe retry.
-                            if result_reference["file"]["status"] == "PROCESSED":
-                                try:
-                                    sftp_837.remove(remote_path)
-                                    result_reference["remote_deleted"] = True
-                                except Exception as delete_error:
-                                    result_reference["remote_deleted"] = False
+                            if result_reference["file"]["status"] in {"PROCESSED", "PARTIAL"}:
+                                deleted, delete_error = _remove_sftp_file_with_retry(
+                                    sftp_837, remote_path
+                                )
+                                result_reference["remote_deleted"] = deleted
+                                if not deleted:
                                     errors.append(
                                         f"{filename}: processed successfully, but could not be removed "
                                         f"from the RECON SFTP folder: {delete_error}"
@@ -2296,14 +2315,37 @@ def _execute_batch_conversion(request):
                         allow_agent=False,
                     )
                     sftp_del = ssh_del.open_sftp()
+                    deleted_835_files = []
+                    retained_835_files = []
                     for item in sftp_batch_items:
-                        try:
-                            sftp_del.remove(item["remote_path"])
-                        except Exception as del_err:
-                            logger.warning(f"Could not remove remote SFTP file {item['remote_path']}: {del_err}")
+                        deleted, del_err = _remove_sftp_file_with_retry(
+                            sftp_del, item["remote_path"]
+                        )
+                        if deleted:
+                            deleted_835_files.append(item["filename"])
+                        else:
+                            retained_835_files.append(item["filename"])
+                            errors.append(
+                                f"{item['filename']}: MIR was delivered, but the inbound 835 "
+                                f"could not be deleted after 3 attempts: {del_err}"
+                            )
+                            logger.warning(
+                                "Could not remove remote SFTP file %s after retries: %s",
+                                item["remote_path"], del_err,
+                            )
+                    batch_res["remote_deleted_files"] = deleted_835_files
+                    batch_res["remote_retained_files"] = retained_835_files
                     sftp_del.close()
                     ssh_del.close()
                 except Exception as del_conn_err:
+                    batch_res["remote_deleted_files"] = []
+                    batch_res["remote_retained_files"] = [
+                        item["filename"] for item in sftp_batch_items
+                    ]
+                    errors.append(
+                        "MIR was delivered, but the inbound 835 cleanup connection failed; "
+                        f"source files were retained: {del_conn_err}"
+                    )
                     logger.warning(f"Cleanup error removing remote SFTP files: {del_conn_err}")
 
             if batch_res.get("sftp_uploaded"):
@@ -2374,6 +2416,14 @@ def _execute_batch_conversion(request):
         # conversion fails.  ``processed_files`` records the successful subset.
         "files": [item["filename"] for item in combined_items] if run_835 else [],
         "processed_files": processed_files,
+        "remote_deleted_files": (
+            batch_res.get("remote_deleted_files", [])
+            if combined_items and 'batch_res' in locals() else []
+        ),
+        "remote_retained_files": (
+            batch_res.get("remote_retained_files", [])
+            if combined_items and 'batch_res' in locals() else []
+        ),
         "sftp_837_files": sftp_837_results,
         "sftp_recon_files": sftp_recon_results,
         "automation_type": automation_type,

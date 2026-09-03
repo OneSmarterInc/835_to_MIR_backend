@@ -296,3 +296,15 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(recon.import_mode, "SFTP")
         self.assertEqual(recon.status, "PROCESSED")
         self.assertEqual(recon.claim_count, 1)
+
+    def test_sftp_delete_retries_transient_failure(self):
+        from .views import _remove_sftp_file_with_retry
+
+        sftp = Mock()
+        sftp.remove.side_effect = [OSError("temporary failure"), None]
+
+        deleted, error = _remove_sftp_file_with_retry(sftp, "/in/file.835")
+
+        self.assertTrue(deleted)
+        self.assertEqual(error, "")
+        self.assertEqual(sftp.remove.call_count, 2)
