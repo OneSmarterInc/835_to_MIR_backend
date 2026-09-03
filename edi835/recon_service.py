@@ -128,8 +128,41 @@ def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict |
                 "fixed_width_mir": "1",
             }
 
+    # Legacy client P7A files are fixed-width reports rather than MIR-layout
+    # records. Preserve support for them, but only when the row contains a
+    # complete 23-character MIR reconciliation key. This is deliberately more
+    # restrictive than the former fallback: it never creates ROW-* identifiers
+    # and never associates a partial identifier with a claim.
+    compact_raw = _claim_key(raw)
+    candidates = re.findall(
+        r"(?<![A-Za-z0-9])\d{17}[A-Za-z0-9]{6}(?![A-Za-z0-9])",
+        raw,
+    )
+    claim_id = candidates[0] if candidates else ""
+    if not claim_id:
+        known = sorted(
+            (_claim_key(value) for value in (known_claim_ids or []) if value),
+            key=len,
+            reverse=True,
+        )
+        claim_id = next(
+            (value for value in known if len(value) >= 23 and value in compact_raw),
+            "",
+        )
+    if claim_id:
+        amounts = re.findall(
+            r"(?<![A-Za-z0-9])(?:\(?[-+]?\$?\d[\d,]*\.\d{2}\)?)(?!\d)",
+            raw,
+        )
+        if amounts:
+            return {
+                "claim_control_number": claim_id,
+                "paid_amount": amounts[-1],
+                "fixed_width_legacy_p7a": "1",
+            }
+
     # Do not infer identifiers or paid amounts from arbitrary text. A row that
-    # does not satisfy the documented layout is retained as a parsing finding.
+    # matches neither supported layout is retained as a parsing finding.
     return None
 
 

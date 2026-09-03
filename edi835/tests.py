@@ -606,6 +606,34 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(findings[0]["error_code"], "UNRECOGNIZED_RECON_LAYOUT")
         self.assertNotIn("paid_amount", findings[0])
 
+    def test_legacy_p7a_row_uses_full_known_claim_key_and_last_amount(self):
+        from .recon_service import parse_recon_rows
+
+        claim_id = "12345678901234567ABC123"
+        rows, findings = parse_recon_rows(
+            f"P7A REPORT {claim_id} CHARGE 125.00 PAID 98.25",
+            known_claim_ids=[claim_id],
+            include_findings=True,
+        )
+
+        self.assertEqual(findings, [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["data"]["claim_control_number"], claim_id)
+        self.assertEqual(rows[0]["data"]["paid_amount"], "98.25")
+        self.assertEqual(rows[0]["data"]["fixed_width_legacy_p7a"], "1")
+
+    def test_legacy_fixed_width_row_without_full_claim_key_is_held(self):
+        from .recon_service import parse_recon_rows
+
+        rows, findings = parse_recon_rows(
+            "P7A REPORT CLAIM-123 CHARGE 125.00 PAID 98.25",
+            known_claim_ids=["12345678901234567ABC123"],
+            include_findings=True,
+        )
+
+        self.assertEqual(rows, [])
+        self.assertEqual(findings[0]["error_code"], "UNRECOGNIZED_RECON_LAYOUT")
+
     def test_dos_eof_marker_is_not_parsed_as_a_recon_record(self):
         from .recon_service import parse_recon_rows
 
