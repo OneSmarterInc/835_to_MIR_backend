@@ -331,7 +331,7 @@ def reconciliation_dashboard(request):
     files = RECONFile.objects.filter(
         client=client, status__in=("PROCESSED", "PARTIAL")
     ).order_by("-processed_at", "-uploaded_at")[:500]
-    rows = reconciliation_rows(client, files)
+    rows = reconciliation_rows(client, files, include_match_history=False)
 
     from decimal import Decimal, InvalidOperation
     def amount(row, key):
@@ -376,7 +376,7 @@ def reconciliation_dashboard(request):
             "recon_mir907": row.get("recon_paid_amount"), "difference": row.get("difference_amount"),
             "status": row.get("status"), "match_step": row.get("match_step"),
             "affected_by_interim_policy": row.get("affected_by_interim_policy", False),
-        } for row in rows],
+        } for row in discrepancies + caveats],
         "message": "" if latest else "No processed RECON file is available in this scope yet.",
     })
 
@@ -403,7 +403,9 @@ def _file_reconciliation_rows(request, file_id):
     files = RECONFile.objects.filter(
         client=source.client, status__in=("PROCESSED", "PARTIAL")
     ).order_by("-processed_at", "-uploaded_at")[:500]
-    rows = reconciliation_rows(source.client, files, mir_file_id=mir_file.id)
+    rows = reconciliation_rows(
+        source.client, files, mir_file_id=mir_file.id, include_match_history=False
+    )
     return source, files, rows
 
 

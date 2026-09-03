@@ -148,6 +148,7 @@ SORT_FIELDS = {
 def reconciliation_rows(
     client, recon_files=None, page=None, page_size=200, claim_id=None, search="",
     sort_by="", sort_direction="asc", status_filter="", mir_file_id=None,
+    include_match_history=True,
 ):
     claims = (
         MIRClaim.objects.filter(mir_file__client=client)
@@ -347,7 +348,12 @@ def reconciliation_rows(
         output = output[start:start + page_size]
 
     # Fetch per-file histories only for claims that survived pagination.
-    raw_ids = {raw_id for row in output for raw_id in row.pop("_recon_raw_ids", [])}
+    raw_ids = {
+        raw_id for row in output for raw_id in row.pop("_recon_raw_ids", [])
+    } if include_match_history else set()
+    if not include_match_history:
+        for row in output:
+            row.pop("_recon_raw_ids", None)
     matches_by_claim = {}
     if raw_ids:
         page_matches = recon_base.filter(claim_control_number__in=raw_ids).values(

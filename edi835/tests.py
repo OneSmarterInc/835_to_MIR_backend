@@ -473,6 +473,7 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(payload["tallies"]["matched_with_caveat"], 1)
         self.assertEqual(payload["records"][0]["mpl920"], "3.00")
         self.assertEqual(reconcile.call_args.kwargs["mir_file_id"], source.mir_file.id)
+        self.assertFalse(reconcile.call_args.kwargs["include_match_history"])
 
     def test_upload_process_and_tenant_scoped_listing(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
