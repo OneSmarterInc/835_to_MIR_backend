@@ -140,11 +140,15 @@ def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict |
     )
     claim_id = candidates[0] if candidates else ""
     if not claim_id:
-        known = sorted(
-            (_claim_key(value) for value in (known_claim_ids or []) if value),
-            key=len,
-            reverse=True,
-        )
+        known = known_claim_ids or []
+        # Callers parsing a complete file pass a pre-normalized tuple so this
+        # expensive normalization/sort is not repeated for every physical row.
+        if not isinstance(known, tuple):
+            known = tuple(sorted(
+                (_claim_key(value) for value in known if value),
+                key=len,
+                reverse=True,
+            ))
         claim_id = next(
             (value for value in known if len(value) >= 23 and value in compact_raw),
             "",
@@ -214,8 +218,13 @@ def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
     if not delimiter:
         output = []
         findings = []
+        normalized_claim_ids = tuple(sorted(
+            (_claim_key(value) for value in (known_claim_ids or []) if value),
+            key=len,
+            reverse=True,
+        ))
         for number, raw in enumerate(lines, start=1):
-            data = _fixed_width_data(raw, number, known_claim_ids)
+            data = _fixed_width_data(raw, number, normalized_claim_ids)
             if data is None:
                 findings.append({
                     "row_number": number,
@@ -314,6 +323,8 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         total_charge = Decimal("0")
         total_paid = Decimal("0")
         service_total = 0
+        claims_to_create = []
+        prepared_claims = []
         for claim_sequence, (claim_number, claim_rows) in enumerate(grouped.items(), start=1):
             first = claim_rows[0]["data"]
             def first_money(field):
@@ -336,7 +347,7 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
             mpl920 = first_money("mpl920_pca_fee")
             patient = sum((_money_decimal(row["data"].get("patient_responsibility")) for row in claim_rows), Decimal("0"))
             adjustment = sum((_money_decimal(row["data"].get("adjustment_amount")) for row in claim_rows), Decimal("0"))
-            claim = RECONClaim.objects.create(
+            claim = RECONClaim(
                 recon_file=recon_file,
                 client=recon_file.client,
                 claim_sequence=claim_sequence,
@@ -361,7 +372,18 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
                 raw_record="\n".join(row["raw"] for row in claim_rows),
                 segment_data={"rows": [row["segment_data"] for row in claim_rows]},
             )
-            services = []
+            claims_to_create.append(claim)
+            prepared_claims.append((claim, claim_rows))
+            service_total += len(claim_rows)
+            total_charge += charge
+            total_paid += paid
+
+        # PostgreSQL returns primary keys for bulk-created rows. Creating all
+        # claims and service lines in batches avoids thousands of synchronous
+        # database round trips for production-sized P7A files.
+        RECONClaim.objects.bulk_create(claims_to_create, batch_size=1000)
+        services = []
+        for claim, claim_rows in prepared_claims:
             for service_sequence, row in enumerate(claim_rows, start=1):
                 data = row["data"]
                 services.append(RECONServiceLine(
@@ -384,10 +406,7 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
                     raw_service=row["raw"],
                     segment_data=row["segment_data"],
                 ))
-            RECONServiceLine.objects.bulk_create(services, batch_size=1000)
-            service_total += len(services)
-            total_charge += charge
-            total_paid += paid
+        RECONServiceLine.objects.bulk_create(services, batch_size=2000)
 
         now = timezone.now()
         recon_file.status = (
