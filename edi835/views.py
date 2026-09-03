@@ -1878,11 +1878,13 @@ def _execute_batch_conversion(request):
     # admin conversion screen. Client users remain locked to their own tenant.
     if request.method == "POST" and request.user.is_staff:
         selected_client_id = request_body.get("client_id") or request_body.get("client")
-        if selected_client_id:
+        # The Global selection is represented by no client.  Never pass
+        # None/"None"/"null" into a UUID primary-key lookup.
+        if selected_client_id is not None and str(selected_client_id).strip().lower() not in {"", "none", "null", "undefined"}:
             from accounts.models import Client
             try:
                 client = Client.objects.get(id=selected_client_id)
-            except (Client.DoesNotExist, ValueError):
+            except (Client.DoesNotExist, ValueError, TypeError):
                 return JsonResponse({
                     "success": False,
                     "error": "The selected client was not found.",
@@ -2396,16 +2398,25 @@ def api_start_batch_conversion(request):
     automation_type = str(request_body.get("automation_type") or "ALL").strip().upper()
     if automation_type not in {"ALL", "835", "837", "RECON"}:
         return JsonResponse({"success": False, "error": "Invalid SFTP automation type."}, status=400)
-    client_id = str(
+    raw_client_id = (
         (requested_client_id or getattr(request.user, "client_id", None))
         if request.user.is_staff
-        else (getattr(request.user, "client_id", None) or "")
+        else getattr(request.user, "client_id", None)
     )
+    # Global/admin runs legitimately have no client UUID.  Preserve that as an
+    # empty value instead of converting None to the literal string "None",
+    # which Django then rejects as an invalid UUID.
+    client_id = ""
+    if raw_client_id is not None:
+        candidate_client_id = str(raw_client_id).strip()
+        if candidate_client_id.lower() not in {"", "none", "null", "undefined"}:
+            client_id = candidate_client_id
+
     if client_id:
         from accounts.models import Client
         try:
             selected_client = Client.objects.get(id=client_id)
-        except (Client.DoesNotExist, ValueError):
+        except (Client.DoesNotExist, ValueError, TypeError):
             return JsonResponse({"success": False, "error": "The selected client was not found."}, status=404)
         if str(selected_client.stage or "").lower() == "offboarded":
             return JsonResponse({
