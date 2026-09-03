@@ -2322,11 +2322,39 @@ def _execute_batch_conversion(request):
     else:
         msg = f"Processed {len(processed_files)} file(s) (.x12/.835/.edi) from inbound folder into single combined MIR." if processed_files else "No .x12, .835, or .edi files found in inbound folder."
 
-    batch_failed = bool(
-        errors
-        or (combined_items and not processed_files)
-        or (run_835 and validation_failed_835 and not processed_files)
-    )
+    # Warnings collected during discovery/cleanup must not turn a completed
+    # conversion and successful outbound delivery into an HTTP 502.  A 502 here
+    # causes the reverse proxy to replace our JSON response with its HTML error
+    # page, even though the MIR was already created and uploaded.
+    #
+    # Treat the run as failed only when the requested pipeline produced no
+    # successful result.  Keep non-fatal errors in the JSON response as
+    # warnings so the admin can see them without reporting a false failure.
+    succeeded_835 = bool(processed_files)
+    succeeded_837 = bool(sftp_837_results)
+    succeeded_recon = bool(sftp_recon_results)
+
+    if automation_type == "835":
+        batch_failed = bool(combined_items and not succeeded_835) or (
+            not combined_items and bool(errors)
+        )
+    elif automation_type == "837":
+        batch_failed = bool(errors) and not succeeded_837
+    elif automation_type == "RECON":
+        batch_failed = bool(errors) and not succeeded_recon
+    else:
+        requested_success = (
+            (not run_835 or not combined_items or succeeded_835)
+            and (not run_837 or not errors or succeeded_837)
+            and (not run_recon or not errors or succeeded_recon)
+        )
+        batch_failed = not requested_success
+
+    # A successful 835 conversion/upload is authoritative for the normal admin
+    # batch flow. Discovery/cleanup warnings remain visible but must not cause a
+    # false 502 after the MIR has already reached the outbound folder.
+    if succeeded_835 and batch_res.get("sftp_uploaded"):
+        batch_failed = False
     # process_multiple_edi835_files persists the exact admin-configured
     # delivery filename in MIRFile. Return that value to the frontend instead
     # of exposing the locally namespaced output filename.
@@ -2351,6 +2379,7 @@ def _execute_batch_conversion(request):
         "automation_type": automation_type,
         "mir_filename": batch_mir_filename,
         "errors": errors,
+        "warnings": errors if not batch_failed else [],
         "message": errors[-1] if batch_failed and errors else msg,
         "error": errors[-1] if batch_failed and errors else None,
     }, status=502 if batch_failed else 200)
