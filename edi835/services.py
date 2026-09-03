@@ -414,66 +414,14 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         shutil.move(input_file_path, processing_file_path)
 
     db_record.status = "PROCESSING"
-    # This timestamp is the run's immutable source for MIR200/MIR201. Preserve
-    # it when an existing file record is regenerated so the MIR bytes remain
-    # reproducible across calendar days.
-    if not db_record.processing_started_at:
-        db_record.processing_started_at = timezone.now()
+    db_record.processing_started_at = timezone.now()
     db_record.save()
 
     try:
-        # Step 3: Validate before parsing/conversion. Every ingestion path that
-        # reaches this pipeline (manual upload, admin processing, and SFTP)
-        # must be subject to the same authoritative 835 validation gate.
-        is_valid, validation_report = validate_835_content(edi_text)
-        if not is_valid:
-            errors = validation_report.get("errors") or ["835 validation failed."]
-            raise ValueError(
-                json.dumps(
-                    {
-                        "message": "835 validation failed",
-                        "errors": errors,
-                        "findings": validation_report.get("findings", []),
-                        "validator_engine": validation_report.get(
-                            "validator_engine", "Validated using PyX12"
-                        ),
-                    }
-                )
-            )
-
-        # Only validated files may enter parsing and MIR conversion.
+        # Step 3: Perform 835 parsing and MIR conversion during processing
         client = db_record.client if db_record else None
-        process_date = timezone.localdate(db_record.processing_started_at)
-        res = parse_835_to_mir(
-            edi_text, filename=stored_filename, client=client, process_date=process_date
-        )
+        res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
         mir_text = res["text"]
-        held_claims = res.get("held_claims_count", 0)
-        delivered_claims = res.get("delivered_claims_count", res["claims_count"])
-        findings = res.get("conversion_findings", [])
-
-        if held_claims:
-            archived_835_path = dirs["archive"] / stored_filename
-            if os.path.exists(processing_file_path):
-                shutil.move(processing_file_path, archived_835_path)
-            db_record.status = "ERROR"
-            db_record.archive_path = (Path("media") / "edi835" / "archive" / stored_filename).as_posix()
-            db_record.claims_count = res["claims_count"]
-            db_record.services_count = res["services_count"]
-            db_record.delivered_claims_count = 0
-            db_record.held_claims_count = held_claims
-            db_record.conversion_findings = findings
-            db_record.error_message = (
-                f"Conversion stopped: {held_claims} of {res['claims_count']} claim(s) "
-                "require review. No partial MIR file was created."
-            )
-            db_record.present_in_archive_folder = True
-            db_record.processing_completed_at = timezone.now()
-            db_record.save()
-            return {
-                "success": False, "partial": False, "code": "CLAIMS_HELD",
-                "error": db_record.error_message, "findings": findings, "db_record": db_record,
-            }
 
         # Step 4: Write converted MIR file to output/ folder
         output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
@@ -507,9 +455,6 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         db_record.claims_count = res["claims_count"]
         db_record.services_count = res["services_count"]
         db_record.records_count = res["records_count"]
-        db_record.delivered_claims_count = delivered_claims
-        db_record.held_claims_count = held_claims
-        db_record.conversion_findings = findings
         db_record.error_message = None
         db_record.present_in_sftp = sftp_uploaded
         db_record.present_in_archive_folder = True
@@ -518,8 +463,6 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         return {
             "success": True,
-            "partial": False,
-            "findings": findings,
             "db_record": db_record,
             "mir_text": mir_text,
             "claims_count": res["claims_count"],
@@ -574,80 +517,18 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         return {"success": False, "error": "No files provided for batch conversion."}
 
     first_archive_rel_path = None
-    batch_validation_errors = []
-
-    # Atomic batch validation gate: validate every file before parsing, MIR
-    # generation, archival success, or outbound delivery. One invalid member
-    # invalidates the entire batch.
-    normalized_items = []
-    for idx, item in enumerate(files_list):
-        fname = os.path.basename(
-            item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
-        )
-        if not has_valid_file_extension(fname, "835"):
-            batch_validation_errors.append({
-                "filename": fname,
-                "errors": [file_extension_error("835")],
-            })
-            continue
-
-        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
-        if not content:
-            batch_validation_errors.append({
-                "filename": fname,
-                "errors": ["File is empty."],
-            })
-            continue
-
-        is_valid, report = validate_835_content(content)
-        if not is_valid:
-            batch_validation_errors.append({
-                "filename": fname,
-                "errors": report.get("errors") or ["835 validation failed."],
-                "findings": report.get("findings", []),
-            })
-        normalized_items.append((fname, content))
-
-    if batch_validation_errors:
-        combined_names = ", ".join(fname for fname, _ in normalized_items) or ", ".join(
-            str(err.get("filename", "unknown.835")) for err in batch_validation_errors
-        )
-        db_rec = EDI835File.objects.create(
-            client=client,
-            original_filename=combined_names,
-            stored_filename=(normalized_items[0][0] if normalized_items else "invalid_batch.835"),
-            input_file_content="\n\n".join(content for _, content in normalized_items),
-            status="ERROR",
-            error_message=json.dumps({
-                "message": "Batch validation failed. No files were converted.",
-                "batch_invalid": True,
-                "invalid_files": batch_validation_errors,
-                "validator_engine": "PyX12",
-            }),
-            ingestion_source=ingestion_source,
-            processing_completed_at=timezone.now(),
-        )
-        return {
-            "success": False,
-            "error": "Batch validation failed because one or more files are invalid. No files were converted.",
-            "errors": batch_validation_errors,
-            "db_record": db_rec,
-        }
 
     file_uuid = uuid.uuid4()
-    for idx, (fname, content) in enumerate(normalized_items):
-        # Use the already validated item from normalized_items. Do not reuse
-        # `item` from the validation loop above: that would make every batch
-        # member use the last file's filename/content.
+    for idx, item in enumerate(files_list):
+        fname = item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
+        fname = os.path.basename(fname)
         if not has_valid_file_extension(fname, "835"):
             return {"success": False, "error": file_extension_error("835")}
         file_names.append(fname)
 
+        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
         if not content:
-            return {
-                "success": False,
-                "error": f"{fname}: File is empty after validation.",
-            }
+            continue
         input_contents.append(content)
 
         # Prefix with UUID to avoid overwrites in batch mode
@@ -674,14 +555,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
             "errors": errors
         }
 
-    # Select the runtime date once for the batch and persist the corresponding
-    # timestamp on its source record. All claims in this MIR use this same date.
-    batch_started_at = timezone.now()
-    batch_process_date = timezone.localdate(batch_started_at)
-    generated = generate_mir_text(
-        all_claims, client=client, process_date=batch_process_date
-    )
-    mir_text, mir_res = normalize_mir_generation_result(generated, all_claims)
+    # Generate ONE single combined MIR file from all claims across all input 835 files
+    mir_text, mir_res = generate_mir_text(all_claims, client=client)
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
@@ -691,6 +566,8 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     )
     delivery_mir_filename = unique_mir_filename(delivery_mir_filename, file_uuid)
     stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
+    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
+    rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
     # Combine all input file names into a single string for table 835 IN column
     combined_inputs_str = ", ".join(file_names)
@@ -698,34 +575,6 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
     claims_count = mir_res.get("claims", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("claims", 0)
     services_count = mir_res.get("services", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("services", 0)
     records_count = mir_res.get("mir_records", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("mir_records", 0)
-    delivered_claims_count = mir_res.get("delivered_claims", claims_count)
-    held_claims_count = mir_res.get("held_claims", 0)
-    conversion_findings = mir_res.get("findings", [])
-
-    if held_claims_count:
-        db_rec = EDI835File.objects.create(
-            id=file_uuid, client=client, original_filename=", ".join(file_names),
-            stored_filename=file_names[0] if file_names else "batch.835",
-            input_file_content="\n\n".join(input_contents), status="ERROR",
-            claims_count=claims_count, services_count=services_count,
-            delivered_claims_count=0, held_claims_count=held_claims_count,
-            conversion_findings=conversion_findings,
-            archive_path=first_archive_rel_path, present_in_archive_folder=True,
-            ingestion_source=ingestion_source,
-            processing_started_at=batch_started_at,
-            error_message=(
-                f"Conversion stopped: {held_claims_count} of {claims_count} claim(s) "
-                "require review. No partial MIR file was created."
-            ),
-            processing_completed_at=timezone.now(),
-        )
-        return {
-            "success": False, "partial": False, "code": "CLAIMS_HELD",
-            "error": db_rec.error_message, "findings": conversion_findings, "db_record": db_rec,
-        }
-
-    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
-    rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
 
     # Create one source record, then store the complete normalized MIR before
     # attempting the outbound SFTP push.
@@ -739,15 +588,11 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         claims_count=claims_count,
         services_count=services_count,
         records_count=records_count,
-        delivered_claims_count=delivered_claims_count,
-        held_claims_count=held_claims_count,
-        conversion_findings=conversion_findings,
         output_path=rel_output_path,
         archive_path=first_archive_rel_path,
         present_in_sftp=False,
         present_in_archive_folder=True,
         ingestion_source=ingestion_source,
-        processing_started_at=batch_started_at,
         processing_completed_at=timezone.now()
     )
 
@@ -768,8 +613,6 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
 
     return {
         "success": True,
-        "partial": False,
-        "findings": conversion_findings,
         "mir_text": mir_text,
         "combined_filename": delivery_mir_filename,
         "stored_filename": stored_mir_filename,
