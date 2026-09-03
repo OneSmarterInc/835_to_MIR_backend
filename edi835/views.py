@@ -2233,7 +2233,11 @@ def _execute_batch_conversion(request):
     combined_items = sftp_batch_items + local_batch_items
     if combined_items:
         try:
-            batch_res = process_multiple_edi835_files(combined_items, client=client)
+            batch_res = process_multiple_edi835_files(
+                combined_items,
+                client=client,
+                outbound_config=outbound_config,
+            )
         except Exception as batch_exc:
             logger.exception("Combined SFTP batch conversion failed")
             return JsonResponse({
@@ -2245,9 +2249,10 @@ def _execute_batch_conversion(request):
             }, status=500)
         if batch_res.get("success"):
             if not batch_res.get("sftp_uploaded"):
+                upload_reason = batch_res.get("sftp_error") or "No detailed outbound SFTP error was recorded."
                 errors.append(
-                    "The files were converted into one combined MIR, but the outbound SFTP upload failed. "
-                    "Inbound SFTP files were retained so the batch can be retried safely."
+                    "The files were converted into one combined MIR, but the outbound SFTP upload failed: "
+                    f"{upload_reason}. Inbound SFTP files were retained so the batch can be retried safely."
                 )
             else:
                 processed_files.extend([item["filename"] for item in combined_items])
