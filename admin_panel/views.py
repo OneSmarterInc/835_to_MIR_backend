@@ -1290,6 +1290,38 @@ def api_admin_template_download(request, client_id, step_key):
     import os
     from django.conf import settings
     from django.http import HttpResponse
+    from django.core.cache import cache
+    from django.utils.cache import patch_cache_control
+    import hashlib
+
+    def cached_client_pdf(client_obj, template_name, builder):
+        # PDF generation parses and merges several pages and was previously
+        # repeated for every click.  Cache by every client value rendered into
+        # the document, so edits automatically produce a different artifact.
+        cache_material = "|".join([
+            template_name,
+            str(client_obj.id),
+            str(client_obj.name or ""),
+            str(client_obj.address or ""),
+            str(client_obj.state or ""),
+            str(client_obj.zip_code or ""),
+            timezone.localdate().isoformat(),
+        ])
+        digest = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
+        key = f"admin-template-pdf:{digest}"
+        pdf_bytes = cache.get(key)
+        if pdf_bytes is None:
+            pdf_bytes = builder(client_obj)
+            cache.set(key, pdf_bytes, timeout=24 * 60 * 60)
+        return pdf_bytes, digest
+
+    def pdf_download_response(pdf_bytes, download_name, digest):
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{download_name}"'
+        response['X-OneSmarter-Filename'] = download_name
+        response['ETag'] = f'"{digest}"'
+        patch_cache_control(response, private=True, max_age=86400)
+        return response
 
     try:
         parts = step_key.split('_')
@@ -1299,22 +1331,16 @@ def api_admin_template_download(request, client_id, step_key):
             if step_num == 1:
                 from admin_panel.nda_service import build_client_nda, nda_download_filename
                 client_obj = Client.objects.get(id=client_id)
-                pdf_bytes = build_client_nda(client_obj)
+                pdf_bytes, digest = cached_client_pdf(client_obj, "nda-v1", build_client_nda)
                 download_name = nda_download_filename(client_obj)
-                response = HttpResponse(pdf_bytes, content_type='application/pdf')
-                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
-                response['X-OneSmarter-Filename'] = download_name
-                return response
+                return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 2:
                 from admin_panel.baa_service import build_client_baa, baa_download_filename
                 client_obj = Client.objects.get(id=client_id)
-                pdf_bytes = build_client_baa(client_obj)
+                pdf_bytes, digest = cached_client_pdf(client_obj, "baa-v1", build_client_baa)
                 download_name = baa_download_filename(client_obj)
-                response = HttpResponse(pdf_bytes, content_type='application/pdf')
-                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
-                response['X-OneSmarter-Filename'] = download_name
-                return response
+                return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 3:
                 from admin_panel.security_review_service import (
@@ -1322,12 +1348,11 @@ def api_admin_template_download(request, client_id, step_key):
                     security_review_download_filename,
                 )
                 client_obj = Client.objects.get(id=client_id)
-                pdf_bytes = build_client_security_review(client_obj)
+                pdf_bytes, digest = cached_client_pdf(
+                    client_obj, "security-review-v1", build_client_security_review
+                )
                 download_name = security_review_download_filename(client_obj)
-                response = HttpResponse(pdf_bytes, content_type='application/pdf')
-                response['Content-Disposition'] = f'attachment; filename="{download_name}"'
-                response['X-OneSmarter-Filename'] = download_name
-                return response
+                return pdf_download_response(pdf_bytes, download_name, digest)
 
             template_map = {}
 
