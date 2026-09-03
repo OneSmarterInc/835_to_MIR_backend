@@ -1628,7 +1628,11 @@ def api_admin_step_validate_835(request, client_id):
 
             return JsonResponse({"success": False, "error": err_msg, "checks": checks}, status=400)
 
-        checks = [{"ok": True, "label": "Structure", "detail": f"835 structural and balance checks passed. Claims found: {report.get('claims', 0)}"}]
+        checks = [{
+            "ok": True,
+            "label": "Structure",
+            "detail": "835 structural and balance checks passed."
+        }]
 
         # Save as ClientDocument now that it is valid
         filename = uploaded_filename
