@@ -146,7 +146,7 @@ def get_edi835_storage_dirs():
     return dirs
 
 
-def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
+def upload_mir_to_sftp(local_file_path, mir_filename, client=None, sftp_config=None):
     """
     Uploads converted .mir file directly to the configured remote SFTP outbound folder.
     """
@@ -159,7 +159,10 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None):
     try:
         import paramiko
 
-        cfg = resolve_sftp_config(client=client, outbound=True)
+        # The batch endpoint may already have resolved and validated the exact
+        # outbound configuration for the selected client. Reuse it so the
+        # upload cannot accidentally resolve a different/global config.
+        cfg = sftp_config or resolve_sftp_config(client=client, outbound=True)
 
         if not cfg:
             logger.warning("upload_mir_to_sftp: No SFTPConfig found in database.")
@@ -491,7 +494,12 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         }
 
 
-def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=None):
+def process_multiple_edi835_files(
+    files_list,
+    ingestion_source="SFTP",
+    client=None,
+    outbound_config=None,
+):
     """
     Takes a list of file items: [ {"filename": "f1.835", "content": "..."}, {"filename": "f2.835", "content": "..."} ]
     Parses claims from all 835 files, combines them into a SINGLE MIR output file,
@@ -605,8 +613,26 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         output_mir_path,
         delivery_mir_filename,
         client=client,
+        sftp_config=outbound_config,
     )
     set_mir_push_status(stored_mir, sftp_uploaded)
+
+    # Surface the real outbound error to the API instead of returning only a
+    # boolean. This is especially important for direct execution where the
+    # admin page must distinguish conversion success from delivery failure.
+    sftp_error = ""
+    if not sftp_uploaded:
+        try:
+            cfg_for_error = outbound_config or resolve_sftp_config(
+                client=client,
+                outbound=True,
+            )
+            if cfg_for_error:
+                cfg_for_error.refresh_from_db(fields=["last_error"])
+                sftp_error = cfg_for_error.last_error or ""
+        except Exception:
+            logger.exception("Unable to read outbound SFTP upload error")
+
     if sftp_uploaded:
         db_rec.present_in_sftp = True
         db_rec.save(update_fields=["present_in_sftp"])
@@ -621,6 +647,7 @@ def process_multiple_edi835_files(files_list, ingestion_source="SFTP", client=No
         "services_count": services_count,
         "records_count": records_count,
         "sftp_uploaded": sftp_uploaded,
+        "sftp_error": sftp_error,
         "db_record": db_rec,
         "errors": errors,
     }
