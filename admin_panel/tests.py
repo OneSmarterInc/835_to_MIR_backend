@@ -5,7 +5,7 @@ from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from accounts.models import Client, ClientContact, User
-from admin_panel.models import AuditLog
+from admin_panel.models import AuditLog, ClientSmtpConfig
 from edi835.models import EDI835File
 
 
@@ -32,6 +32,72 @@ class Onboarding835ValidationTestCase(TestCase):
 
         self.assertEqual(response.status_code, 400)
         self.assertNotIn("name 'os' is not defined", response.json().get("error", ""))
+
+
+class ClientSmtpAssignmentTestCase(TestCase):
+    def setUp(self):
+        self.admin = User.objects.create_superuser(
+            email="smtp-admin@example.com", name="SMTP Admin",
+            mobile="5550199100", password="test-password",
+        )
+        self.client.force_login(self.admin)
+        self.client_record = Client.objects.create(
+            name="SMTP Client", client_code="SMTP-CLIENT",
+            email="smtp-client@example.com",
+        )
+        self.url = f"/admin-panel/api/clients/{self.client_record.id}/smtp/"
+        self.default_config = ClientSmtpConfig.objects.create(
+            client=None,
+            sender_name="Global Mail",
+            sender_email="mail@example.com",
+            smtp_host="smtp.example.com",
+            smtp_port=465,
+            smtp_username="global-user",
+            smtp_password="encrypted-secret",
+            security="SSL_TLS",
+            reply_to="reply@example.com",
+        )
+
+    def test_default_assignment_prefills_effective_values_without_password(self):
+        response = self.client.post(
+            self.url,
+            data=json.dumps({"use_default": True}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+        assignment = ClientSmtpConfig.objects.get(client=self.client_record)
+        self.assertTrue(assignment.use_default)
+
+        config = self.client.get(self.url).json()["config"]
+        self.assertEqual(config["smtp_host"], "smtp.example.com")
+        self.assertEqual(config["smtp_username"], "global-user")
+        self.assertTrue(config["use_default"])
+        self.assertTrue(config["inherited_from_default"])
+        self.assertTrue(config["has_password"])
+        self.assertNotIn("smtp_password", config)
+
+    def test_manual_assignment_is_returned_without_password(self):
+        response = self.client.post(
+            self.url,
+            data=json.dumps({
+                "use_default": False,
+                "sender_name": "Client Mail",
+                "sender_email": "client@example.com",
+                "smtp_host": "smtp.client.example",
+                "smtp_port": 587,
+                "smtp_username": "client-user",
+                "smtp_password": "new-secret",
+                "security": "STARTTLS",
+            }),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200)
+
+        config = self.client.get(self.url).json()["config"]
+        self.assertEqual(config["smtp_host"], "smtp.client.example")
+        self.assertFalse(config["use_default"])
+        self.assertTrue(config["has_password"])
+        self.assertNotIn("smtp_password", config)
 
 
 class PermanentClientDeletionTestCase(TestCase):

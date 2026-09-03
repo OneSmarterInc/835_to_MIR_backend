@@ -1998,19 +1998,36 @@ def api_admin_client_smtp(request, client_id):
     if request.method == 'GET':
         try:
             cfg = client_obj.smtp_config
+            effective_cfg = cfg
+            inherited_from_default = False
+            if cfg.use_default:
+                effective_cfg = ClientSmtpConfig.objects.filter(client__isnull=True).first()
+                inherited_from_default = effective_cfg is not None
+
+            if effective_cfg is None:
+                return JsonResponse({
+                    'success': True,
+                    'config': {
+                        'sender_name': '', 'sender_email': '', 'smtp_host': '',
+                        'smtp_port': 587, 'smtp_username': '', 'security': 'STARTTLS',
+                        'reply_to': '', 'use_default': True, 'has_password': False,
+                        'inherited_from_default': False,
+                    },
+                })
             return JsonResponse({
                 'success': True,
                 'config': {
-                    'sender_name':   cfg.sender_name,
-                    'sender_email':  cfg.sender_email,
-                    'smtp_host':     cfg.smtp_host,
-                    'smtp_port':     cfg.smtp_port,
-                    'smtp_username': cfg.smtp_username,
-                    'security':      cfg.security,
-                    'reply_to':      cfg.reply_to or '',
+                    'sender_name':   effective_cfg.sender_name,
+                    'sender_email':  effective_cfg.sender_email,
+                    'smtp_host':     effective_cfg.smtp_host,
+                    'smtp_port':     effective_cfg.smtp_port,
+                    'smtp_username': effective_cfg.smtp_username,
+                    'security':      effective_cfg.security,
+                    'reply_to':      effective_cfg.reply_to or '',
                     'use_default':   cfg.use_default,
+                    'inherited_from_default': inherited_from_default,
                     # smtp_password intentionally NEVER sent to the browser
-                    'has_password':  bool(cfg.smtp_password),
+                    'has_password':  bool(effective_cfg.smtp_password),
                 }
             })
         except ClientSmtpConfig.DoesNotExist:
@@ -2022,6 +2039,9 @@ def api_admin_client_smtp(request, client_id):
             return locked
         try:
             data = json.loads(request.body.decode('utf-8'))
+            use_default = data.get('use_default', False)
+            if isinstance(use_default, str):
+                use_default = use_default.lower() == 'true'
             smtp_fields = {
                 'sender_name':   data.get('sender_name', '').strip(),
                 'sender_email':  data.get('sender_email', '').strip(),
@@ -2030,6 +2050,7 @@ def api_admin_client_smtp(request, client_id):
                 'smtp_username': data.get('smtp_username', '').strip(),
                 'security':      data.get('security', 'STARTTLS').strip(),
                 'reply_to':      data.get('reply_to', '').strip() or None,
+                'use_default':   bool(use_default),
             }
             plain_password = data.get('smtp_password', '').strip()
             if plain_password:
