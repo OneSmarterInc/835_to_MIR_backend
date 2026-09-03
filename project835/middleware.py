@@ -1,6 +1,5 @@
 from django.http import JsonResponse, HttpResponseForbidden
 from django.conf import settings
-import time
 import re
 from accounts.admin_screens import user_can_access_screen
 
@@ -27,12 +26,6 @@ ADMIN_SCREEN_PATHS = (
     ("/admin-panel/api/mappings", "defaults"),
     ("/edi835/api/admin/sftp-automation", "sftp-automation"),
 )
-
-PRIVILEGED_PATH_FRAGMENTS = (
-    "/delete/", "/users/create/", "/users/", "/access/grants/",
-    "/offboarding/", "/mappings/reset/", "/default-smtp/",
-)
-
 
 def required_admin_screen(path):
     if "/offboarding/" in path:
@@ -73,10 +66,6 @@ class AdminAccessMiddleware:
             enrolled = bool(getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None))
             if not enrolled or not request.session.get("totp_verified", False):
                 return JsonResponse({"success": False, "error": "MFA enrollment and verification required."}, status=403)
-            if request.method not in {"GET", "HEAD", "OPTIONS"} and any(fragment in normalized_path for fragment in PRIVILEGED_PATH_FRAGMENTS):
-                verified_at = int(request.session.get("totp_verified_at", 0) or 0)
-                if int(time.time()) - verified_at > 300:
-                    return JsonResponse({"success": False, "error": "Recent MFA verification is required for this privileged action.", "code": "REAUTH_REQUIRED"}, status=403)
             # Super Admins retain system-wide oversight. Temporary client
             # grants constrain delegated staff administrators only.
             if request.user.is_staff and not request.user.is_superuser and (

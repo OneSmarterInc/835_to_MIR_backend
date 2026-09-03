@@ -40,3 +40,27 @@ class AdminClientGrantMiddlewareTests(SimpleTestCase):
         self.assertEqual(response.status_code, 403)
         payload = json.loads(response.content.decode("utf-8"))
         self.assertEqual(payload["code"], "CLIENT_GRANT_REQUIRED")
+
+
+@override_settings(MFA_ENFORCEMENT_ENABLED=True)
+class AdminMFASessionLifetimeTests(SimpleTestCase):
+    def test_verified_mfa_remains_valid_for_the_authenticated_session(self):
+        request = RequestFactory().post("/api/files/delete/")
+        request.user = SimpleNamespace(
+            is_authenticated=True,
+            is_staff=False,
+            is_superuser=False,
+            totp_enabled=True,
+            totp_secret="configured",
+            client=None,
+        )
+        # A timestamp is deliberately absent: session verification, rather
+        # than a second five-minute timer, is now the source of truth.
+        request.session = {"totp_verified": True}
+        middleware = AdminAccessMiddleware(
+            lambda current_request: JsonResponse({"success": True})
+        )
+
+        response = middleware(request)
+
+        self.assertEqual(response.status_code, 200)
