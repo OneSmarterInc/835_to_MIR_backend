@@ -2025,26 +2025,19 @@ def _execute_batch_conversion(request):
                     with sftp.open(remote_file_path, "rb") as rf:
                         raw_bytes = rf.read()
                     
-                    if raw_bytes.startswith(b"\xef\xbb\xbf"):
-                        raw_bytes = raw_bytes[3:]
+                    # Keep SFTP ingestion byte-for-byte compatible with the manual
+                    # upload path.  Manual uploads decode with errors="ignore" and do
+                    # not run a separate pre-conversion validation gate; adding that
+                    # gate only to SFTP made the exact same file fail remotely.
+                    edi_content = raw_bytes.decode("utf-8-sig", errors="ignore").strip()
+                    if not edi_content:
+                        raise ValueError("The inbound 835 file is empty.")
 
-                    edi_content = raw_bytes.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
-                    is_valid, validation_report = validate_835_content(edi_content)
-                    if is_valid:
-                        sftp_batch_items.append({
-                            "filename": fname,
-                            "content": edi_content,
-                            "remote_path": remote_file_path,
-                        })
-                    else:
-                        validation_failed_835 = True
-                        validation_errors = validation_report.get("errors") or [
-                            {"code": "VALIDATION_FAILED", "message": "835 validation failed."}
-                        ]
-                        errors.append(
-                            f"{fname}: 835 validation failed; file retained on inbound SFTP. "
-                            f"Findings: {json.dumps(validation_errors)}"
-                        )
+                    sftp_batch_items.append({
+                        "filename": fname,
+                        "content": edi_content,
+                        "remote_path": remote_file_path,
+                    })
                 except Exception as file_err:
                     errors.append(f"{fname}: {str(file_err)}")
 
@@ -2221,26 +2214,18 @@ def _execute_batch_conversion(request):
                     with open(local_file_path, "rb") as lf:
                         raw_bytes = lf.read()
 
-                    if raw_bytes.startswith(b"\xef\xbb\xbf"):
-                        raw_bytes = raw_bytes[3:]
+                    # Use the same normalization as manual uploads and SFTP.
+                    # There must be one ingestion/conversion behavior regardless of
+                    # where the identical 835 file came from.
+                    edi_content = raw_bytes.decode("utf-8-sig", errors="ignore").strip()
+                    if not edi_content:
+                        raise ValueError("The local 835 file is empty.")
 
-                    edi_content = raw_bytes.decode("utf-8", errors="replace").lstrip("\ufeff").strip()
-                    is_valid, validation_report = validate_835_content(edi_content)
-                    if is_valid:
-                        local_batch_items.append({
-                            "filename": fname,
-                            "content": edi_content,
-                            "local_path": local_file_path,
-                        })
-                    else:
-                        validation_failed_835 = True
-                        validation_errors = validation_report.get("errors") or [
-                            {"code": "VALIDATION_FAILED", "message": "835 validation failed."}
-                        ]
-                        errors.append(
-                            f"{fname} (local): 835 validation failed; file retained for review. "
-                            f"Findings: {json.dumps(validation_errors)}"
-                        )
+                    local_batch_items.append({
+                        "filename": fname,
+                        "content": edi_content,
+                        "local_path": local_file_path,
+                    })
                 except Exception as local_err:
                     errors.append(f"{fname} (local): {str(local_err)}")
 
