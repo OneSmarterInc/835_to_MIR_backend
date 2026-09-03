@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 import subprocess
 import sys
@@ -18,7 +19,7 @@ from django.views.decorators.csrf import csrf_exempt
 from accounts.models import Client
 from project835.decorators import authenticated_api_required, json_api_errors
 
-from .models import EDI835File, MIRClaim, RECONClaim, RECONFile
+from .models import EDI835File, MIRClaim, RECONClaim, RECONFile, ReconciliationReviewAction
 from .recon_service import process_recon_file
 from .reconciliation_service import reconciliation_policy, reconciliation_rows, waterfall_summary
 from .reconciliation_export import build_reconciliation_workbook
@@ -52,13 +53,44 @@ def _comparison_counts(rows):
     return counts
 
 
-def _paginated_dashboard_payload(payload, request):
+def _paginated_dashboard_payload(payload, request, client):
     try:
         page = max(1, int(request.GET.get("review_page", "1")))
         page_size = min(100, max(10, int(request.GET.get("review_page_size", "25"))))
     except ValueError:
         page, page_size = 1, 25
-    records = payload.get("records") or []
+    records = [dict(row) for row in (payload.get("records") or [])]
+    scope_key = str(client.id) if client else "global"
+    claim_ids = [row.get("claim_id") for row in records if row.get("claim_id")]
+    saved_actions = dict(ReconciliationReviewAction.objects.filter(
+        scope_key=scope_key, claim_control_number__in=claim_ids,
+    ).values_list("claim_control_number", "action_status"))
+    for row in records:
+        row["action_status"] = saved_actions.get(row.get("claim_id"), "YET_TO_START")
+
+    search = str(request.GET.get("review_search") or "").strip().casefold()
+    outcome = str(request.GET.get("review_status") or "").strip().upper()
+    action_filter = str(request.GET.get("review_action") or "").strip().upper()
+    if search:
+        records = [row for row in records if search in " ".join(str(row.get(key) or "") for key in (
+            "claim_id", "mir901", "recon_mir907", "status", "difference", "action_status"
+        )).casefold()]
+    if outcome:
+        records = [row for row in records if row.get("status") == outcome]
+    if action_filter:
+        records = [row for row in records if row.get("action_status") == action_filter]
+
+    sort_by = str(request.GET.get("review_sort") or "claim_id")
+    direction = str(request.GET.get("review_direction") or "asc").lower()
+    sorters = {
+        "claim_id": lambda row: str(row.get("claim_id") or "").casefold(),
+        "mir901": lambda row: Decimal(str(row.get("mir901") or "0")),
+        "recon_mir907": lambda row: Decimal(str(row.get("recon_mir907") or "0")),
+        "status": lambda row: str(row.get("status") or "").casefold(),
+        "difference": lambda row: Decimal(str(row.get("difference") or "0")),
+        "action_status": lambda row: str(row.get("action_status") or "").casefold(),
+    }
+    records.sort(key=sorters.get(sort_by, sorters["claim_id"]), reverse=direction == "desc")
     total = len(records)
     total_pages = max(1, (total + page_size - 1) // page_size)
     page = min(page, total_pages)
@@ -67,7 +99,7 @@ def _paginated_dashboard_payload(payload, request):
     response_payload["records"] = records[start:start + page_size]
     response_payload["review_pagination"] = {
         "page": page, "page_size": page_size, "total": total,
-        "total_pages": total_pages,
+        "total_pages": total_pages, "unfiltered_total": len(payload.get("records") or []),
     }
     return response_payload
 
@@ -389,7 +421,7 @@ def reconciliation_dashboard(request):
     cache_key = f"reconciliation-dashboard:{cache_scope}:{cache_version}"
     cached_payload = cache.get(cache_key)
     if cached_payload is not None:
-        return JsonResponse(_paginated_dashboard_payload(cached_payload, request))
+        return JsonResponse(_paginated_dashboard_payload(cached_payload, request, client))
     rows = reconciliation_rows(client, files, include_match_history=False)
 
     from decimal import Decimal, InvalidOperation
@@ -437,7 +469,8 @@ def reconciliation_dashboard(request):
         "comparison_counts": _comparison_counts(rows),
         "policy": reconciliation_policy(),
         "records": [{
-            "claim_id": row.get("claim_id"), "mir901": row.get("amount_to_pay"),
+            "claim_id": row.get("claim_id"), "mir_claim_id": row.get("mir_claim_id"),
+            "mir901": row.get("amount_to_pay"),
             "mir904": (row.get("recon_fees") or {}).get("MIR904", "0.00"),
             "mir905": (row.get("recon_fees") or {}).get("MIR905", "0.00"),
             "mpl920": (row.get("recon_fees") or {}).get("MPL920", "0.00"),
@@ -448,7 +481,31 @@ def reconciliation_dashboard(request):
         "message": "" if latest else "No processed RECON file is available in this scope yet.",
     }
     cache.set(cache_key, payload, timeout=300)
-    return JsonResponse(_paginated_dashboard_payload(payload, request))
+    return JsonResponse(_paginated_dashboard_payload(payload, request, client))
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def reconciliation_review_action(request):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
+    body = json.loads(request.body.decode("utf-8")) if request.body else {}
+    is_global = request.user.is_staff and body.get("scope") == "global"
+    client = None if is_global else _request_client(request, body.get("client_id"))
+    if not client and not is_global:
+        return JsonResponse({"success": False, "error": "Select a client."}, status=400)
+    claim_id = str(body.get("claim_id") or "").strip()
+    action_status = str(body.get("action_status") or "").strip().upper()
+    allowed = {choice[0] for choice in ReconciliationReviewAction.STATUS_CHOICES}
+    if not claim_id or action_status not in allowed:
+        return JsonResponse({"success": False, "error": "Invalid claim or action status."}, status=400)
+    scope_key = str(client.id) if client else "global"
+    action, _ = ReconciliationReviewAction.objects.update_or_create(
+        scope_key=scope_key, claim_control_number=claim_id,
+        defaults={"client": client, "action_status": action_status, "updated_by": request.user},
+    )
+    return JsonResponse({"success": True, "claim_id": claim_id, "action_status": action.action_status})
 
 
 def _visible_source_file(request, file_id):
@@ -524,6 +581,7 @@ def reconciliation_file_dashboard(request, file_id):
     for row in rows:
         records.append({
             "claim_id": row.get("claim_id"),
+            "mir_claim_id": row.get("mir_claim_id"),
             "mir901": row.get("amount_to_pay"),
             "mir904": (row.get("recon_fees") or {}).get("MIR904", "0.00"),
             "mir905": (row.get("recon_fees") or {}).get("MIR905", "0.00"),

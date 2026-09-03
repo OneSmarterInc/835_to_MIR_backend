@@ -462,3 +462,33 @@ class RECONProcessingError(models.Model):
     class Meta:
         db_table = "recon_processing_error"
         ordering = ["row_number"]
+
+
+class ReconciliationReviewAction(models.Model):
+    STATUS_CHOICES = [
+        ("YET_TO_START", "Yet to Start"),
+        ("IN_PROCESS", "In Process"),
+        ("HOLD", "Hold"),
+        ("REJECTED", "Rejected"),
+        ("APPROVED", "Approved"),
+    ]
+
+    client = models.ForeignKey(
+        "accounts.Client", on_delete=models.CASCADE, null=True, blank=True,
+        related_name="reconciliation_review_actions",
+    )
+    scope_key = models.CharField(max_length=64, db_index=True)
+    claim_control_number = models.CharField(max_length=100)
+    action_status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="YET_TO_START")
+    updated_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="updated_reconciliation_review_actions",
+    )
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "reconciliation_review_action"
+        constraints = [models.UniqueConstraint(
+            fields=["scope_key", "claim_control_number"],
+            name="uniq_reconciliation_review_action",
+        )]

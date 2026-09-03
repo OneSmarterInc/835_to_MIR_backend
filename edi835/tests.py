@@ -7,7 +7,7 @@ from pathlib import Path
 from django.test import TestCase, Client, override_settings
 from unittest.mock import patch
 from accounts.models import Client as AccountClient, User
-from .models import EDI835File, MIRFile, MIRServiceLine, RECONFile
+from .models import EDI835File, MIRFile, MIRServiceLine, RECONFile, ReconciliationReviewAction
 from .mir_persistence import store_mir_file
 from .services import (
     get_edi835_storage_dirs,
@@ -444,6 +444,21 @@ class RECONResultAPITestCase(TestCase):
             "MIR_EQ_RECON": 1, "MIR_GT_RECON": 1, "MIR_LT_RECON": 1,
             "NOT_IN_RECON": 1, "AGED_NOT_IN_RECON": 1,
         })
+
+    def test_reconciliation_review_action_is_persisted_for_client_claim(self):
+        response = self.client.post(
+            "/edi835/api/reconciliation/actions/",
+            data='{"claim_id":"CLAIM-REVIEW-1","action_status":"IN_PROCESS"}',
+            content_type="application/json",
+        )
+
+        self.assertEqual(response.status_code, 200)
+        action = ReconciliationReviewAction.objects.get(
+            scope_key=str(self.tenant.id), claim_control_number="CLAIM-REVIEW-1"
+        )
+        self.assertEqual(action.client, self.tenant)
+        self.assertEqual(action.action_status, "IN_PROCESS")
+        self.assertEqual(action.updated_by, self.user)
 
     def test_excel_export_handles_three_filtered_rows_without_unpacking_them(self):
         from io import BytesIO
