@@ -37,8 +37,10 @@ USE_X_FORWARDED_HOST = True
 # ============================================================
 SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip()
 SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip()
-SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "1800"))
-SESSION_SAVE_EVERY_REQUEST = True
+# Authentication is valid for one fixed hour. Activity does not silently
+# extend the session; after expiry the user must sign in and verify MFA again.
+SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "3600"))
+SESSION_SAVE_EVERY_REQUEST = False
 SESSION_EXPIRE_AT_BROWSER_CLOSE = True
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG
