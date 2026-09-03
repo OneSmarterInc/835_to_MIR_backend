@@ -7,54 +7,13 @@ Runs entirely locally using open-source PyX12 library.
 import io
 import json
 import logging
-import re
 import pyx12.params
 import pyx12.x12file
 import pyx12.x12n_document
 
 logger = logging.getLogger(__name__)
 
-
 class PyX12Validator:
-
-    @staticmethod
-    def _professional_rule_code(segment, raw_code, message=""):
-        """Convert PyX12 numeric error ids into the rule-code families used by Checks."""
-        raw = str(raw_code or "PYX12_ERR").strip().upper()
-
-        # Keep already-authored professional/business rule identifiers intact.
-        if raw and not raw.isdigit():
-            existing = re.fullmatch(r"(ENV|SEG|ELM|REF)-(\d{1,3})", raw)
-            if existing:
-                return f"{existing.group(1)}-{existing.group(2).zfill(3)}"
-            return raw
-
-        numeric_code = raw.zfill(3) if raw.isdigit() else "ERR"
-        segment_code = re.sub(r"[^A-Z0-9]+", "", str(segment or "X12").strip().upper()) or "X12"
-        message_text = str(message or "").lower()
-
-        # Envelope/control checks use ENV; reference checks use REF; element-level
-        # syntax/content checks use ELM; other transaction/segment checks use SEG.
-        if segment_code in {"ISA", "IEA", "GS", "GE", "ST", "SE", "ISAIEA", "GSGE", "STSE"}:
-            family = "ENV"
-        elif segment_code.startswith("REF") or "reference" in message_text:
-            family = "REF"
-        elif any(term in message_text for term in (
-            "element",
-            "data element",
-            "mandatory",
-            "required value",
-            "minimum length",
-            "maximum length",
-            "invalid value",
-            "invalid code",
-            "not used",
-        )):
-            family = "ELM"
-        else:
-            family = "SEG"
-
-        return f"{family}-{numeric_code}"
 
     def validate(self, edi_text):
         """
@@ -177,7 +136,7 @@ class PyX12Validator:
                     "message": f"PyX12 validation failed: {str(val_err)}"
                 }],
                 "warnings": [],
-                "segment_summary": {}
+                "segment_summary": segment_summary
             }
 
         # 4. Extract errors and warnings from PyX12 JSON output
@@ -193,33 +152,7 @@ class PyX12Validator:
             except Exception as json_parse_err:
                 logger.error("Failed to parse PyX12 JSON output: %s", json_parse_err)
 
-        # PyX12 can return a truthy/None result depending on version while
-        # still reporting structural issues. Treat the explicit result as valid
-        # only when it is strictly True, and never let a missing ST/SE envelope
-        # silently pass.
-        has_835 = any(t == '835' for t in st_types)
-        required_segments = {'ISA', 'IEA', 'GS', 'GE', 'ST', 'SE'}
-        missing_segments = sorted(required_segments - set(segment_summary))
-        if missing_segments:
-            errors.append({
-                "line": 0,
-                "segment": "X12",
-                "element": None,
-                "severity": "error",
-                "code": "MISSING_REQUIRED_SEGMENTS",
-                "message": "Missing required X12 envelope segment(s): " + ", ".join(missing_segments),
-            })
-        if not st_types or not has_835:
-            errors.append({
-                "line": 0,
-                "segment": "ST",
-                "element": "ST01",
-                "severity": "error",
-                "code": "MISSING_835_TRANSACTION",
-                "message": "No valid 835 transaction set was found.",
-            })
-
-        overall_valid = (is_valid_doc is True) and (len(errors) == 0)
+        overall_valid = is_valid_doc and (len(errors) == 0)
 
         return {
             "valid": overall_valid,
@@ -242,9 +175,8 @@ class PyX12Validator:
 
             for err in node.get("errors", []):
                 if isinstance(err, dict):
-                    raw_code = str(err.get("err_cde") or "PYX12_ERR")
+                    code = str(err.get("err_cde") or "PYX12_ERR")
                     msg = str(err.get("err_str") or "PyX12 validation error")
-                    code = self._professional_rule_code(seg_id, raw_code, msg)
                     val = err.get("err_val")
                     if val:
                         msg += f" (Value: '{val}')"
@@ -254,7 +186,6 @@ class PyX12Validator:
                         "element": None,
                         "severity": "error",
                         "code": code,
-                        "pyx12_code": raw_code,
                         "message": msg
                     })
 
