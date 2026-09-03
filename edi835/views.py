@@ -2359,5 +2359,16 @@ def api_start_batch_conversion(request):
             "error": "Method not allowed. Use POST to start batch conversion.",
         }, status=405)
 
-    return _execute_batch_conversion(request)
+    try:
+        return _execute_batch_conversion(request)
+    except Exception as exc:
+        # Direct execution must never fall back to Django's HTML 500 page because
+        # the admin UI expects JSON. Log the full traceback server-side and
+        # return a useful API error to the caller.
+        logger = logging.getLogger(__name__)
+        logger.exception("Direct SFTP batch conversion crashed")
+        return JsonResponse({
+            "success": False,
+            "error": f"Batch pipeline failed: {exc}",
+        }, status=500)
 
