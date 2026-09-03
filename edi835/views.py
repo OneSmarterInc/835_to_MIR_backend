@@ -2389,28 +2389,89 @@ def _execute_batch_conversion(request):
 @json_api_errors
 @authenticated_api_required
 def api_start_batch_conversion(request):
-    """
-    Run the SFTP batch pipeline in the normal Django request process.
+    """Queue resource-heavy SFTP work or return its durable status."""
+    if request.method == "GET":
+        job_id = (request.GET.get("job_id") or "").strip()
+        if not job_id:
+            return JsonResponse({"success": False, "error": "job_id is required."}, status=400)
+        job_data = read_job(job_id)
+        if not job_data:
+            return JsonResponse({
+                "success": False,
+                "error": "Batch job was not found or the server was restarted.",
+            }, status=404)
+        if job_data.get("owner_user_id") != str(request.user.id):
+            return JsonResponse({
+                "success": False,
+                "error": "You are not authorized to view this batch job.",
+            }, status=403)
+        job_data.pop("owner_user_id", None)
+        job_data.pop("client_id", None)
+        return JsonResponse({"success": True, "job": job_data})
 
-    This endpoint intentionally does not queue work for mir-batch-worker.
-    The admin conversion page and SFTP Test button now execute the same
-    _execute_batch_conversion path directly and return the real result.
-    """
     if request.method != "POST":
-        return JsonResponse({
-            "success": False,
-            "error": "Method not allowed. Use POST to start batch conversion.",
-        }, status=405)
+        return JsonResponse({"success": False, "error": "Method not allowed."}, status=405)
 
     try:
-        return _execute_batch_conversion(request)
-    except Exception as exc:
-        # Direct execution must never fall back to Django's HTML 500 page because
-        # the admin UI expects JSON. Log the full traceback server-side and
-        # return a useful API error to the caller.
-        logger = logging.getLogger(__name__)
-        logger.exception("Direct SFTP batch conversion crashed")
+        request_body = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (TypeError, ValueError, UnicodeDecodeError):
+        request_body = {}
+    requested_client_id = request_body.get("client_id") or request_body.get("client")
+    automation_type = str(request_body.get("automation_type") or "ALL").strip().upper()
+    if automation_type not in {"ALL", "835", "837", "RECON"}:
+        return JsonResponse({"success": False, "error": "Invalid SFTP automation type."}, status=400)
+    raw_client_id = (
+        (requested_client_id or getattr(request.user, "client_id", None))
+        if request.user.is_staff
+        else getattr(request.user, "client_id", None)
+    )
+    client_id = ""
+    if raw_client_id is not None:
+        candidate = str(raw_client_id).strip()
+        if candidate.lower() not in {"", "none", "null", "undefined"}:
+            client_id = candidate
+
+    if client_id:
+        from accounts.models import Client
+        try:
+            selected_client = Client.objects.get(id=client_id)
+        except (Client.DoesNotExist, ValueError, TypeError):
+            return JsonResponse({"success": False, "error": "The selected client was not found."}, status=404)
+        if str(selected_client.stage or "").lower() == "offboarded":
+            return JsonResponse({
+                "success": False,
+                "code": "CLIENT_OFFBOARDED",
+                "offboarded": True,
+                "error": "This client has been permanently offboarded. SFTP batch processing is locked.",
+            }, status=409)
+
+    scope_key = f"{client_id or 'GLOBAL'}:{automation_type}"
+    existing = active_job_for(scope_key)
+    if existing:
         return JsonResponse({
             "success": False,
-            "error": f"Batch pipeline failed: {exc}",
-        }, status=500)
+            "error": "A batch conversion is already queued or running for this scope.",
+            "job_id": existing["id"],
+            "state": existing["state"],
+        }, status=409)
+
+    job_id = str(uuid.uuid4())
+    write_job({
+        "id": job_id,
+        "owner_user_id": str(request.user.id),
+        "client_id": client_id,
+        "automation_type": automation_type,
+        "scope_key": scope_key,
+        "state": "QUEUED",
+        "started_at": timezone.now().isoformat(),
+        "worker_started_at": None,
+        "finished_at": None,
+        "status_code": None,
+        "result": None,
+    })
+    return JsonResponse({
+        "success": True,
+        "job_id": job_id,
+        "state": "QUEUED",
+        "message": "SFTP batch pipeline queued for the isolated worker.",
+    }, status=202)
