@@ -350,12 +350,18 @@ def reconciliation_dashboard(request):
 
     approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
     withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    review_rows = [row for row in rows if row.get("status") != "CLEAR"]
+    overpaid = sum((max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0")) for row in review_rows), Decimal("0"))
+    underpaid = sum((max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0")) for row in review_rows), Decimal("0"))
     fees = {
         name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
         for name in ("MIR904", "MIR905", "MPL920")
     }
     discrepancies = [row for row in rows if row.get("status") != "CLEAR"]
     caveats = [row for row in rows if row.get("status") == "CLEAR" and row.get("affected_by_interim_policy")]
+    recon_claims = sum(1 for row in rows if row.get("recon_filename"))
+    mir_claims = sum(1 for row in rows if row.get("mir_claim_id"))
+    matched_claims = len(rows) - len(discrepancies)
     payload = {
         "success": True,
         "source": {"client_name": client.name if client else "Global System Default"},
@@ -365,11 +371,14 @@ def reconciliation_dashboard(request):
         },
         "cash": {
             "approved": str(approved), "withdrawn": str(withdrawn),
+            "overpaid": str(overpaid), "underpaid": str(underpaid),
             "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
             "mpl920": str(fees["MPL920"]),
             "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
         },
         "tallies": {
+            "recon_claims": recon_claims, "mir_claims": mir_claims,
+            "matched_claims": matched_claims,
             "records": len(rows), "matched_cleanly": len(rows) - len(discrepancies) - len(caveats),
             "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
         },
@@ -446,12 +455,18 @@ def reconciliation_file_dashboard(request, file_id):
     from decimal import Decimal
     approved = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
     withdrawn = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    review_rows = [row for row in rows if row.get("status") != "CLEAR"]
+    overpaid = sum((max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0")) for row in review_rows), Decimal("0"))
+    underpaid = sum((max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0")) for row in review_rows), Decimal("0"))
     fees = {
         name: sum((amount(row.get("recon_fees") or {}, name) for row in rows), Decimal("0"))
         for name in ("MIR904", "MIR905", "MPL920")
     }
     discrepancies = [row for row in rows if row.get("status") != "CLEAR"]
     caveats = [row for row in rows if row.get("status") == "CLEAR" and row.get("affected_by_interim_policy")]
+    recon_claims = sum(1 for row in rows if row.get("recon_filename"))
+    mir_claims = sum(1 for row in rows if row.get("mir_claim_id"))
+    matched_claims = len(rows) - len(discrepancies)
     waterfall = waterfall_summary(rows)
     records = []
     for row in rows:
@@ -482,11 +497,14 @@ def reconciliation_file_dashboard(request, file_id):
         },
         "cash": {
             "approved": str(approved), "withdrawn": str(withdrawn),
+            "overpaid": str(overpaid), "underpaid": str(underpaid),
             "mir904": str(fees["MIR904"]), "mir905": str(fees["MIR905"]),
             "mpl920": str(fees["MPL920"]),
             "unexplained": str(withdrawn - approved - fees["MIR904"] - fees["MIR905"] - fees["MPL920"]),
         },
         "tallies": {
+            "recon_claims": recon_claims, "mir_claims": mir_claims,
+            "matched_claims": matched_claims,
             "records": len(rows), "matched_cleanly": len(rows) - len(discrepancies) - len(caveats),
             "matched_with_caveat": len(caveats), "discrepancies": len(discrepancies),
         },

@@ -470,6 +470,8 @@ class RECONResultAPITestCase(TestCase):
         payload = response.json()
         self.assertEqual(payload["source"]["filename"], "cycle.835")
         self.assertEqual(payload["cash"]["unexplained"], "0.00")
+        self.assertEqual(payload["cash"]["overpaid"], "0")
+        self.assertEqual(payload["cash"]["underpaid"], "0")
         self.assertEqual(payload["tallies"]["matched_with_caveat"], 1)
         self.assertEqual(payload["records"][0]["mpl920"], "3.00")
         self.assertEqual(reconcile.call_args.kwargs["mir_file_id"], source.mir_file.id)
