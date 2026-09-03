@@ -262,7 +262,7 @@ def recon_detail(request, file_id):
         "error_code": error.error_code,
         "error_message": error.error_message,
         "raw_record": error.raw_record,
-    } for error in recon.processing_errors.all()[:200]]
+    } for error in recon.processing_errors.all()]
     return JsonResponse({"success": True, "file": _serialize_file(recon), "claims": claims, "errors": errors})
 
 
