@@ -55,6 +55,15 @@ class EDI835File(models.Model):
 
 
 class SFTPConfig(models.Model):
+    PURPOSES = [
+        ("DEFAULT", "Default SFTP"),
+        ("837_IN", "837 Inbound"),
+        ("837_OUT", "837 Outbound"),
+        ("835_IN", "835 Inbound"),
+        ("835_OUT", "835 Outbound"),
+        ("MIR_OUT", "MIR Outbound"),
+        ("RECON_IN", "RECON Inbound"),
+    ]
     CONNECTION_TYPES = [
         ("UNIFIED", "Unified SFTP"),
         ("INBOUND", "Inbound SFTP"),
@@ -66,6 +75,10 @@ class SFTPConfig(models.Model):
     name = models.CharField(max_length=255, default="SFTP Connection")
     connection_type = models.CharField(max_length=50, choices=CONNECTION_TYPES, default="UNIFIED")
     use_same_server = models.BooleanField(default=True)
+    purpose = models.CharField(max_length=20, choices=PURPOSES, default="DEFAULT", db_index=True)
+    remote_folder = models.CharField(max_length=500, blank=True, default="")
+    setup_all_paths = models.BooleanField(default=True)
+    route_paths = models.JSONField(default=dict, blank=True)
 
     host = models.CharField(max_length=255, blank=True, null=True, default="sftp.example.com")
     port = models.IntegerField(default=22)

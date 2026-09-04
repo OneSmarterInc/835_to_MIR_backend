@@ -782,7 +782,7 @@ def _resolve_sftp_config_for_request(request, config_id=None):
         if not actor_client_id and not request.user.is_staff and config.client_id is None:
             return None, "Administrator access is required."
     else:
-        config = resolve_sftp_config(client=getattr(request.user, "client", None), outbound=False)
+        config = resolve_sftp_config(client=getattr(request.user, "client", None), outbound=False, purpose="RECON_IN")
     if not config:
         return None, "No inbound SFTP configuration is available."
     return config, None

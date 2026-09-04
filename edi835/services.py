@@ -112,22 +112,49 @@ def unique_mir_filename(delivery_filename, file_uuid):
     return f"{stem}_{str(file_uuid).replace('-', '')[:12]}{suffix or '.MIR'}"
 
 
-def resolve_sftp_config(client=None, outbound=False):
+def resolve_sftp_config(client=None, outbound=False, purpose=None):
     """Resolve the correct tenant or global SFTP row for a transfer direction."""
     from .models import SFTPConfig
 
-    def pick(queryset):
+    purpose = purpose or ("MIR_OUT" if outbound else "835_IN")
+
+    def apply_route(config, requested_purpose):
+        if not config:
+            return None
+        path = config.remote_folder or (config.route_paths or {}).get(requested_purpose, "")
+        # Runtime-only effective folder; no database write is performed here.
+        config.remote_folder = path
+        if requested_purpose == "837_IN":
+            config.inbound_837_folder = path or config.inbound_837_folder
+        elif requested_purpose == "835_IN":
+            config.inbound_835_folder = path or config.inbound_835_folder
+        elif requested_purpose == "RECON_IN":
+            config.inbound_recon_folder = path or config.inbound_recon_folder
+        elif requested_purpose == "MIR_OUT":
+            config.outbound_mir_folder = path or config.outbound_mir_folder
+        return config
+
+    def pick(queryset, requested_purpose):
+        routed = queryset.filter(purpose=requested_purpose).order_by("-updated_at").first()
+        if routed and not routed.use_default:
+            return apply_route(routed, requested_purpose)
+        default = queryset.filter(purpose="DEFAULT").order_by("-updated_at").first()
+        if default:
+            return apply_route(default, requested_purpose)
         compatible_types = ["OUTBOUND", "UNIFIED"] if outbound else ["INBOUND", "UNIFIED"]
         compatible = queryset.filter(connection_type__in=compatible_types).order_by("-updated_at")
         # The latest compatible client record is authoritative regardless of
         # whether an admin or client user saved it. Never silently fall back to
         # an older connection merely because it is still marked CONNECTED.
-        return compatible.first()
+        return apply_route(compatible.first(), requested_purpose)
 
-    config = pick(SFTPConfig.objects.filter(client=client)) if client else None
+    config = pick(SFTPConfig.objects.filter(client=client), purpose) if client else None
     if config and config.use_default:
+        default = pick(SFTPConfig.objects.filter(client__isnull=True), purpose)
+        if default:
+            return default
         config = None
-    return config or pick(SFTPConfig.objects.filter(client__isnull=True))
+    return config or pick(SFTPConfig.objects.filter(client__isnull=True), purpose)
 
 
 

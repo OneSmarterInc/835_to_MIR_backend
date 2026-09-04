@@ -415,6 +415,10 @@ def api_get_sftp_config(request):
             "connection_type": (
                 config.connection_type
             ),
+            "purpose": config.purpose,
+            "remote_folder": config.remote_folder,
+            "setup_all_paths": config.setup_all_paths,
+            "route_paths": config.route_paths or {},
 
             "use_same_server": (
                 config.use_same_server
@@ -512,14 +516,10 @@ def api_get_sftp_config(request):
                 if connection_type == "INBOUND"
                 else ["UNIFIED"]
             )
-            effective = (
-                SFTPConfig.objects.filter(
-                    client__isnull=True,
-                    connection_type__in=compatible_types,
-                )
-                .order_by("-updated_at")
-                .first()
-            )
+            effective_qs = SFTPConfig.objects.filter(client__isnull=True)
+            effective = effective_qs.filter(purpose=config_data.get("purpose", "DEFAULT")).order_by("-updated_at").first()
+            if not effective:
+                effective = effective_qs.filter(purpose="DEFAULT").order_by("-updated_at").first()
             if not effective:
                 config_data["status"] = "PENDING"
                 config_data["last_error"] = "The assigned default SFTP configuration was not found."
@@ -1089,6 +1089,110 @@ def api_save_sftp_config(request):
         body = json.loads(request.body.decode("utf-8")) if request.body else request.POST
     except Exception:
         body = request.POST
+
+    # New route-aware contract. The legacy contract below remains available
+    # during rollout so existing clients and automations keep working.
+    purpose = str(body.get("purpose") or "").upper()
+    valid_purposes = {value for value, _label in SFTPConfig.PURPOSES}
+    if purpose:
+        if purpose not in valid_purposes:
+            return JsonResponse({"success": False, "error": "Invalid SFTP route."}, status=400)
+
+        actor_client_id = getattr(request.user, "client_id", None)
+        client_id = body.get("client_id") or body.get("client")
+        if actor_client_id:
+            client_id = str(actor_client_id)
+        elif not request.user.is_staff:
+            return JsonResponse({"success": False, "error": "Your account is not associated with a client."}, status=403)
+
+        queryset = SFTPConfig.objects.filter(purpose=purpose)
+        queryset = queryset.filter(client_id=client_id) if client_id else queryset.filter(client__isnull=True)
+        config_id = body.get("id") or body.get("config_id")
+        config = queryset.filter(id=config_id).first() if config_id else queryset.order_by("-updated_at").first()
+        if config_id and not config:
+            return JsonResponse({"success": False, "error": "SFTP route was not found."}, status=404)
+
+        def as_bool(value, default=False):
+            if value is None:
+                return default
+            return value if isinstance(value, bool) else str(value).lower() == "true"
+
+        use_default = purpose != "DEFAULT" and as_bool(body.get("use_default"), True)
+        host = str(body.get("host") or "").strip()
+        username = str(body.get("username") or "").strip()
+        auth_method = str(body.get("auth_method") or "Password").strip()
+        remote_folder = str(body.get("remote_folder") or "").strip()
+        try:
+            port = int(body.get("port") or 22)
+            if not 1 <= port <= 65535:
+                raise ValueError
+        except (TypeError, ValueError):
+            return JsonResponse({"success": False, "error": "Port must be between 1 and 65535."}, status=400)
+
+        incoming_password = str(body.get("password") or "").strip()
+        incoming_key = str(body.get("ssh_key") or "").strip()
+        saved_password = config.password if config else ""
+        saved_key = config.ssh_key if config else ""
+        try:
+            password = incoming_password or (decrypt_sftp_field(saved_password) if saved_password else "")
+            ssh_key = incoming_key or (decrypt_sftp_field(saved_key) if saved_key else "")
+        except Exception:
+            return JsonResponse({"success": False, "error": "Saved SFTP credentials could not be decrypted."}, status=500)
+
+        test_only = as_bool(body.get("test_only"), False)
+        save_paths_only = as_bool(body.get("save_paths_only"), False)
+        if use_default:
+            test_res = {"success": True, "message": "Default SFTP route selected."}
+        elif save_paths_only and config and config.status == "CONNECTED":
+            test_res = {"success": True, "message": "SFTP path saved."}
+        else:
+            if not host or not username:
+                return JsonResponse({"success": False, "error": "Host and username are required."}, status=400)
+            test_res = test_sftp_connection(
+                host=host, port=port, username=username, password=password,
+                ssh_key=ssh_key, auth_method=auth_method,
+                trust_unknown_key=as_bool(body.get("trust_unknown_key"), True),
+                remote_folder=remote_folder or "/",
+            )
+        if test_only:
+            return JsonResponse({**test_res, "connected": bool(test_res.get("success"))}, status=200)
+
+        if not config:
+            config = SFTPConfig(client_id=client_id or None, purpose=purpose)
+        config.name = "Default SFTP" if purpose == "DEFAULT" else f"{purpose.replace('_', ' ')} SFTP"
+        config.connection_type = "UNIFIED" if purpose == "DEFAULT" else ("OUTBOUND" if purpose.endswith("OUT") else "INBOUND")
+        config.use_same_server = purpose == "DEFAULT"
+        config.use_default = use_default
+        config.setup_all_paths = as_bool(body.get("setup_all_paths"), config.setup_all_paths)
+        config.route_paths = body.get("route_paths") if isinstance(body.get("route_paths"), dict) else (config.route_paths or {})
+        config.remote_folder = remote_folder
+        if not use_default:
+            config.host, config.port, config.username = host, port, username
+            config.auth_method = auth_method
+            config.trust_unknown_key = as_bool(body.get("trust_unknown_key"), True)
+            try:
+                if incoming_password:
+                    config.password = encrypt_sftp_field(incoming_password)
+                if incoming_key:
+                    config.ssh_key = encrypt_sftp_field(incoming_key)
+            except FieldEncryptionError as exc:
+                return JsonResponse({"success": False, "error": str(exc)}, status=500)
+        if purpose == "DEFAULT":
+            paths = config.route_paths
+            config.inbound_837_folder = paths.get("837_IN", "")
+            config.inbound_835_folder = paths.get("835_IN", "")
+            config.inbound_recon_folder = paths.get("RECON_IN", "")
+            config.outbound_mir_folder = paths.get("MIR_OUT", "")
+        config.status = "CONNECTED" if test_res.get("success") else "FAILED"
+        config.last_error = None if test_res.get("success") else test_res.get("error", "Connection failed")
+        config.last_tested_at = timezone.now()
+        config.save()
+        return JsonResponse({
+            "success": bool(test_res.get("success")), "connected": bool(test_res.get("success")),
+            "message": test_res.get("message") or "SFTP configuration saved.",
+            "error": test_res.get("error"), "config_id": str(config.id),
+            "purpose": config.purpose, "status": config.status,
+        })
 
     use_same_server = body.get("use_same_server", True)
     if isinstance(use_same_server, str):
@@ -1695,6 +1799,7 @@ def api_browse_sftp(request):
         credential_config = resolve_sftp_config(
             client=config.client,
             outbound=browse_outbound,
+            purpose=config.purpose,
         )
         if not credential_config or credential_config.use_default:
             return JsonResponse({
@@ -1889,7 +1994,10 @@ def _execute_batch_conversion(request):
             "error": "This client has been permanently offboarded. SFTP batch processing is locked.",
         }, status=409)
 
-    config = resolve_sftp_config(client=client, outbound=False)
+    inbound_purpose = {
+        "835": "835_IN", "837": "837_IN", "RECON": "RECON_IN"
+    }.get(automation_type, "835_IN")
+    config = resolve_sftp_config(client=client, outbound=False, purpose=inbound_purpose)
     if not client and config:
         client = config.client
     dirs = get_edi835_storage_dirs(client)
@@ -1929,7 +2037,7 @@ def _execute_batch_conversion(request):
     if automation_type == "RECON" and not config.inbound_recon_folder:
         return JsonResponse({"success": False, "error": "The inbound RECON folder is not configured."}, status=400)
 
-    outbound_config = resolve_sftp_config(client=client, outbound=True) if run_835 else None
+    outbound_config = resolve_sftp_config(client=client, outbound=True, purpose="MIR_OUT") if run_835 else None
     if run_835 and not outbound_config:
         return JsonResponse({
             "success": False,

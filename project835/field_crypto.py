@@ -93,6 +93,19 @@ def get_sftp_runtime_credentials(config, outbound=False):
     if config is None:
         raise SFTPCredentialError("SFTP configuration was not found.")
 
+    purpose = getattr(config, "purpose", "DEFAULT") or "DEFAULT"
+    if purpose != "DEFAULT":
+        return {
+            "host": config.host or "",
+            "port": int(config.port or 22),
+            "username": config.username or "",
+            "password": _decrypt_sftp_secret(config.password, "password"),
+            "ssh_key": _decrypt_sftp_secret(config.ssh_key, "SSH private key"),
+            "auth_method": config.auth_method or "Password",
+            "trust_unknown_key": config.trust_unknown_key,
+            "remote_folder": config.remote_folder or "/",
+        }
+
     separate_outbound = outbound and not config.use_same_server
     if separate_outbound:
         return {
@@ -119,6 +132,7 @@ def get_sftp_runtime_credentials(config, outbound=False):
         "auth_method": config.auth_method or "Password",
         "trust_unknown_key": config.trust_unknown_key,
         "remote_folder": (
-            config.outbound_mir_folder if outbound else config.inbound_835_folder
+            config.remote_folder
+            or (config.outbound_mir_folder if outbound else config.inbound_835_folder)
         ) or "/",
     }
