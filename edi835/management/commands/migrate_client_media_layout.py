@@ -44,6 +44,31 @@ def _write_verified(path, content):
     return path
 
 
+def _content_hash(content):
+    data = content if isinstance(content, bytes) else str(content or "").encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
+def _file_hash(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def _collision_safe_target(path, expected_hash, identity):
+    """Keep an existing different file and select a stable record-specific name."""
+    path = Path(path)
+    if not path.exists() or _file_hash(path) == expected_hash:
+        return path
+    suffix = str(identity).replace("-", "")[:12]
+    candidate = path.with_name(f"{path.stem}_{suffix}{path.suffix}")
+    if not candidate.exists() or _file_hash(candidate) == expected_hash:
+        return candidate
+    return path.with_name(f"{path.stem}_{suffix}_{expected_hash[:12]}{path.suffix}")
+
+
 class Command(BaseCommand):
     help = "Copy legacy media to media/<client-id>/...; never deletes legacy files."
 
@@ -69,10 +94,17 @@ class Command(BaseCommand):
                 media_root / "edi835" / "archive" / (record.original_filename or ""),
             )
             if apply_changes:
-                archive_target = dirs["835_archive"] / Path(record.stored_filename or record.original_filename).name
                 if archive_source:
+                    archive_target = _collision_safe_target(
+                        dirs["835_archive"] / Path(record.stored_filename or record.original_filename).name,
+                        _file_hash(archive_source), record.id,
+                    )
                     verified_copy(archive_source, archive_target)
                 elif record.input_file_content:
+                    archive_target = _collision_safe_target(
+                        dirs["835_archive"] / Path(record.stored_filename or record.original_filename).name,
+                        _content_hash(record.input_file_content), record.id,
+                    )
                     _write_verified(archive_target, record.input_file_content)
                 else:
                     counts["missing"] += 1
@@ -83,14 +115,21 @@ class Command(BaseCommand):
                 mir = getattr(record, "mir_file", None)
                 if mir:
                     mir_name = Path(record.output_path or "").name or f"{record.id}_{mir.mir_filename}"
-                    mir_target = dirs["mir_archive"] / mir_name
                     mir_source = _first_file(
                         base_dir / record.output_path if record.output_path else None,
                         media_root / "edi835" / "output" / mir_name,
                     )
                     if mir_source:
+                        mir_target = _collision_safe_target(
+                            dirs["mir_archive"] / mir_name,
+                            _file_hash(mir_source), record.id,
+                        )
                         verified_copy(mir_source, mir_target)
                     else:
+                        mir_target = _collision_safe_target(
+                            dirs["mir_archive"] / mir_name,
+                            _content_hash(mir.file_content), record.id,
+                        )
                         _write_verified(mir_target, mir.file_content)
                     record.output_path = relative_media_path(mir_target)
                     if not record.present_in_sftp:
@@ -104,14 +143,21 @@ class Command(BaseCommand):
             kind = "837" if is_837 else "recon"
             if apply_changes:
                 dirs = client_storage_dirs(record.client)
-                target = dirs[f"{kind}_archive"] / Path(record.stored_filename or record.original_filename).name
                 source = _first_file(
                     base_dir / record.archive_path if record.archive_path else None,
                     media_root / "edi835" / "archive" / (record.stored_filename or ""),
                 )
                 if source:
+                    target = _collision_safe_target(
+                        dirs[f"{kind}_archive"] / Path(record.stored_filename or record.original_filename).name,
+                        _file_hash(source), record.id,
+                    )
                     verified_copy(source, target)
                 elif record.file_content:
+                    target = _collision_safe_target(
+                        dirs[f"{kind}_archive"] / Path(record.stored_filename or record.original_filename).name,
+                        _content_hash(record.file_content), record.id,
+                    )
                     _write_verified(target, record.file_content)
                 else:
                     counts["missing"] += 1
@@ -128,7 +174,10 @@ class Command(BaseCommand):
                 continue
             if apply_changes:
                 source = Path(document.file.path)
-                target = client_storage_dirs(document.client)["documents"] / source.name
+                target = _collision_safe_target(
+                    client_storage_dirs(document.client)["documents"] / source.name,
+                    _file_hash(source), document.id,
+                )
                 if source.resolve() != target.resolve():
                     verified_copy(source, target)
                 document.file.name = target.relative_to(media_root).as_posix()
