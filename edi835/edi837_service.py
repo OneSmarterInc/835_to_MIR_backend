@@ -48,43 +48,50 @@ def parse_837(text):
     claims = []
     current = None
     context_start = 0
-    context = {"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "billing_provider": "", "rendering_provider": "", "payer": ""}
+    context = {"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "billing_provider": "", "rendering_provider": "", "referring_provider": "", "payer": ""}
     current_service = None
     transaction_prefix = []
 
     for index, seg in enumerate(segments):
         tag = (seg[0] if seg else "").upper()
+        # An HL after CLM always starts the next claim hierarchy. Finalize first,
+        # otherwise the following subscriber/provider names leak into this claim.
+        if tag == "HL" and current is not None:
+            current["end_index"] = index
+            claims.append(current)
+            current = None
+            current_service = None
         if tag in {"ISA", "GS", "ST", "BHT"}:
             transaction_prefix.append(raw_segments[index])
-        if tag == "HL" and len(seg) > 3 and seg[3] in {"22", "23"}:
+        if tag == "HL" and len(seg) > 3 and seg[3] == "20":
+            context.update({"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "billing_provider": "", "rendering_provider": "", "referring_provider": "", "payer": ""})
+        if tag == "HL" and len(seg) > 3 and seg[3] == "22":
             context_start = index
-            context.update({"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "rendering_provider": ""})
+            context.update({"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "rendering_provider": "", "referring_provider": "", "payer": ""})
+        elif tag == "HL" and len(seg) > 3 and seg[3] == "23":
+            context.update({"patient_first": "", "patient_last": "", "rendering_provider": "", "referring_provider": ""})
         if tag == "NM1":
             entity = seg[1] if len(seg) > 1 else ""
             first, last, display = _name(seg)
             identifier = seg[9].strip() if len(seg) > 9 else ""
             if entity == "IL":
                 context.update(member_id=identifier, subscriber_first=first, subscriber_last=last)
-                if current:
-                    current.update(member_id=identifier or current["member_id"], subscriber_first=first, subscriber_last=last)
             elif entity == "QC":
                 context.update(patient_first=first, patient_last=last)
                 if identifier:
                     context["member_id"] = identifier
-                if current:
-                    current.update(patient_first=first, patient_last=last, member_id=identifier or current["member_id"])
             elif entity == "85":
                 context["billing_provider"] = display or last
-                if current:
-                    current["billing_provider"] = display or last
-            elif entity in {"82", "DN"}:
+            elif entity == "82":
                 context["rendering_provider"] = display or last
                 if current:
                     current["rendering_provider"] = display or last
+            elif entity == "DN":
+                context["referring_provider"] = display or last
+                if current:
+                    current["referring_provider"] = display or last
             elif entity == "PR":
                 context["payer"] = display or last
-                if current:
-                    current["payer"] = display or last
         if tag == "CLM":
             if current:
                 current["end_index"] = index
@@ -104,6 +111,8 @@ def parse_837(text):
                 "total_charge_amount": _decimal(seg[2] if len(seg) > 2 else ""),
                 "place_of_service": facility[0] if facility else "",
                 "claim_type": facility[1] if len(facility) > 1 else "",
+                "claim_frequency_code": facility[2] if len(facility) > 2 else "",
+                "original_claim_number": "",
                 "diagnosis_codes": [], "service_from_date": "", "service_to_date": "", "services": [],
                 **context,
             }
@@ -132,6 +141,8 @@ def parse_837(text):
             # Highmark files commonly carry the adjudication-facing claim key
             # in REF*9C while CLM01 remains the submitter's patient-control ID.
             current["reference_9c"] = seg[2].strip()
+        elif current and tag == "REF" and len(seg) > 2 and seg[1].upper() == "F8":
+            current["original_claim_number"] = seg[2].strip()
         elif current and tag == "DTP" and len(seg) > 3:
             qualifier, value = seg[1], seg[3]
             dates = value.split("-")
@@ -197,6 +208,8 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
     claim_models = []
     for sequence, data in enumerate(parsed["claims"], start=1):
         split = split_claim_number(data["claim_control_number"])
+        if not split["internal_claim_number"] and data["reference_9c"]:
+            split["internal_claim_number"] = data["reference_9c"]
         claim_models.append(EDI837Claim(
             edi_file=edi_file, client=client, claim_sequence=sequence,
             claim_control_number=data["claim_control_number"], **split,
@@ -205,7 +218,9 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
             patient_first_name=data["patient_first"], patient_last_name=data["patient_last"],
             subscriber_first_name=data["subscriber_first"], subscriber_last_name=data["subscriber_last"],
             billing_provider_name=data["billing_provider"], rendering_provider_name=data["rendering_provider"],
+            referring_provider_name=data["referring_provider"],
             payer_name=data["payer"], claim_type=data["claim_type"], place_of_service=data["place_of_service"],
+            claim_frequency_code=data["claim_frequency_code"], original_claim_number=data["original_claim_number"],
             service_from_date=data["service_from_date"], service_to_date=data["service_to_date"],
             diagnosis_codes=data["diagnosis_codes"], service_count=len(data["services"]),
             total_charge_amount=data["total_charge_amount"], raw_claim=data["raw_claim"],
@@ -289,6 +304,15 @@ def export_single_claim(claim):
     # subscriber context and claim segments, excluding sibling subscriber loops.
     subscriber_start = next((i for i in range(matched - provider_start, -1, -1)
                              if block[i][0] == "HL" and len(block[i]) > 3 and block[i][3] in {"22", "23"}), None)
+    # A dependent claim begins at HL*23, but its subscriber, SBR, member ID,
+    # and payer live in the parent HL*22 loop and must be exported with it.
+    if subscriber_start is not None and block[subscriber_start][3] == "23":
+        parent_id = block[subscriber_start][2] if len(block[subscriber_start]) > 2 else ""
+        parent_start = next((i for i in range(subscriber_start - 1, -1, -1)
+                             if block[i][0] == "HL" and len(block[i]) > 3
+                             and block[i][3] == "22" and block[i][1] == parent_id), None)
+        if parent_start is not None:
+            subscriber_start = parent_start
     if subscriber_start is not None:
         first_subscriber = next((i for i, seg in enumerate(block)
                                  if seg[0] == "HL" and len(seg) > 3 and seg[3] in {"22", "23"}), subscriber_start)

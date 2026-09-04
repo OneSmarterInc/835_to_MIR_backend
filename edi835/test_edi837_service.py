@@ -13,8 +13,21 @@ SAMPLE_837 = (
     "NM1*IL*1*DOE*JANE****MI*MEMBER1~NM1*PR*2*HIGHMARK*****PI*PAYOR~"
     "CLM*123456789QYN071*13.62***11:B:1*Y*A*Y*Y~REF*9C*EXTERNAL1~HI*ABK:M255~"
     "LX*1~SV1*HC:99213*13.62*UN*1***1~DTP*472*D8*20260901~"
+    "HL*3**20*1~NM1*85*2*OTHER PROVIDER*****XX*9876543210~HL*4*3*22*0~SBR*P*18*******CI~"
+    "NM1*IL*1*SMITH*JOHN****MI*MEMBER2~NM1*PR*2*OTHER PAYER*****PI*OTHER~"
     "CLM*987654321ABC123*20.00***11:B:1*Y*A*Y*Y~REF*9C*EXTERNAL2~"
     "LX*1~SV1*HC:93000*20.00*UN*1***1~SE*20*0001~GE*1*1~IEA*1*000000001~"
+)
+
+DEPENDENT_837 = (
+    "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *260904*1200*^*00501*000000001*0*P*:~"
+    "GS*HC*SENDER*RECEIVER*20260904*1200*1*X*005010X222A1~ST*837*0001*005010X222A1~BHT*0019*00*1*20260904*1200*CH~"
+    "HL*1**20*1~NM1*85*2*LABCORP*****XX*1234567890~HL*2*1*22*1~SBR*P********BL~"
+    "NM1*IL*1*MILES*SONIA****MI*MEMBER1~NM1*PR*2*HIGHMARK*****PI*PAYOR~"
+    "HL*3*2*23*0~PAT*19~NM1*QC*1*MILES*LAYNA*I~"
+    "CLM*08020260371453502*339.15***81:B:6*Y*C*Y*Y~REF*F8*08020260371453501~REF*9C*H03717655302~"
+    "NM1*DN*1*UNAVAILABLE*UNAVAILABL****XX*1083661219~LX*1~SV1*HC:85025*36.93*UN*1***1~"
+    "SE*16*0001~GE*1*1~IEA*1*000000001~"
 )
 
 
@@ -33,6 +46,17 @@ class EDI837ParsingTests(SimpleTestCase):
             "highmark_claim_number": "123456789", "internal_claim_number": "",
         })
 
+    def test_next_hierarchy_does_not_overwrite_previous_claim_context(self):
+        parsed = parse_837(SAMPLE_837)
+        first, second = parsed["claims"]
+        self.assertEqual(first["subscriber_first"], "JANE")
+        self.assertEqual(first["member_id"], "MEMBER1")
+        self.assertEqual(first["billing_provider"], "PROVIDER")
+        self.assertEqual(first["payer"], "HIGHMARK")
+        self.assertEqual(second["subscriber_first"], "JOHN")
+        self.assertEqual(second["member_id"], "MEMBER2")
+        self.assertEqual(second["billing_provider"], "OTHER PROVIDER")
+
     def test_single_claim_export_has_valid_counts_and_no_sibling_claim(self):
         claim = SimpleNamespace(
             pk=1, claim_control_number="123456789QYN071",
@@ -46,3 +70,22 @@ class EDI837ParsingTests(SimpleTestCase):
         self.assertNotIn("987654321ABC123", output)
         st_index, se_index = tags.index("ST"), tags.index("SE")
         self.assertEqual(int(segments[se_index][1]), se_index - st_index + 1)
+
+    def test_dependent_claim_keeps_subscriber_and_exports_parent_loop(self):
+        data = parse_837(DEPENDENT_837)["claims"][0]
+        self.assertEqual(data["patient_first"], "LAYNA")
+        self.assertEqual(data["subscriber_first"], "SONIA")
+        self.assertEqual(data["member_id"], "MEMBER1")
+        self.assertEqual(data["referring_provider"], "UNAVAILABL UNAVAILABLE")
+        self.assertEqual(data["rendering_provider"], "")
+        self.assertEqual(data["claim_frequency_code"], "6")
+        self.assertEqual(data["original_claim_number"], "08020260371453501")
+        claim = SimpleNamespace(
+            pk=2, claim_control_number="08020260371453502",
+            patient_control_number="08020260371453502",
+            edi_file=SimpleNamespace(file_content=DEPENDENT_837),
+        )
+        output = export_single_claim(claim)
+        self.assertIn("NM1*IL*1*MILES*SONIA****MI*MEMBER1", output)
+        self.assertIn("NM1*QC*1*MILES*LAYNA*I", output)
+        self.assertIn("NM1*PR*2*HIGHMARK", output)

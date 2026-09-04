@@ -148,8 +148,10 @@ def edi837_claim_detail(request, claim_id):
         **_claim_row(claim), "client_name": claim.client.name,
         "subscriber_name": " ".join(part for part in (claim.subscriber_first_name, claim.subscriber_last_name) if part),
         "billing_provider": claim.billing_provider_name, "rendering_provider": claim.rendering_provider_name,
+        "referring_provider": claim.referring_provider_name,
         "payer": claim.payer_name, "claim_type": claim.claim_type,
-        "place_of_service": claim.place_of_service, "diagnosis_codes": claim.diagnosis_codes,
+        "place_of_service": claim.place_of_service, "claim_frequency_code": claim.claim_frequency_code,
+        "original_claim_number": claim.original_claim_number, "diagnosis_codes": claim.diagnosis_codes,
         "services": services,
     }})
 
