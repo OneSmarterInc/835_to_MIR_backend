@@ -60,7 +60,6 @@ class SFTPConfig(models.Model):
         ("837_IN", "837 Inbound"),
         ("837_OUT", "837 Outbound"),
         ("835_IN", "835 Inbound"),
-        ("835_OUT", "835 Outbound"),
         ("MIR_OUT", "MIR Outbound"),
         ("RECON_IN", "RECON Inbound"),
     ]
