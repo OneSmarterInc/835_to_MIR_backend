@@ -2223,7 +2223,7 @@ def _execute_batch_conversion(request):
 
                     filename = attr.filename
                     extension = os.path.splitext(filename)[1].lower()
-                    if extension not in allowed_extensions(reference_type):
+                    if extension not in allowed_extensions(reference_type) and not (reference_type == "837" and not extension):
                         continue
 
                     remote_path = posixpath.join(remote_reference_dir, filename)

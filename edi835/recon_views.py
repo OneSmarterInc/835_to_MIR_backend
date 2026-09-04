@@ -782,7 +782,7 @@ def _resolve_sftp_config_for_request(request, config_id=None):
         if not actor_client_id and not request.user.is_staff and config.client_id is None:
             return None, "Administrator access is required."
     else:
-        config = resolve_sftp_config(client=getattr(request.user, "client", None), outbound=False, purpose="RECON_IN")
+        config = resolve_sftp_config(client=getattr(request.user, "client", None), outbound=False, purpose="837_IN")
     if not config:
         return None, "No inbound SFTP configuration is available."
     return config, None
@@ -818,7 +818,7 @@ def _safe_837_path(config, filename):
         raise ValueError("Invalid 837 filename.")
     from .file_types import validate_file_extension
     validate_file_extension(name, "837")
-    base = config.inbound_837_folder or ""
+    base = config.remote_folder or config.inbound_837_folder or ""
     if not base:
         raise ValueError("The inbound 837 folder is not configured.")
     return posixpath.normpath(posixpath.join(base, name))
@@ -837,7 +837,7 @@ def sftp_837_files(request):
     config, error = _resolve_sftp_config_for_request(request, body.get("config_id"))
     if error:
         return JsonResponse({"success": False, "error": error}, status=400)
-    if not config.inbound_837_folder:
+    if not (config.remote_folder or config.inbound_837_folder):
         return JsonResponse({"success": False, "error": "The inbound 837 folder is not configured."}, status=400)
     import stat, posixpath
     from .file_types import allowed_extensions
@@ -845,7 +845,7 @@ def sftp_837_files(request):
     ssh = sftp = None
     try:
         ssh, sftp = _open_sftp(config)
-        base = sftp.normalize(config.inbound_837_folder)
+        base = sftp.normalize(config.remote_folder or config.inbound_837_folder)
         files = []
         for attr in sftp.listdir_attr(base):
             if stat.S_ISDIR(attr.st_mode):
@@ -854,7 +854,7 @@ def sftp_837_files(request):
             ext = posixpath.splitext(name)[1].lower()
             files.append({"name": name, "path": posixpath.join(base, name), "size": attr.st_size,
                 "mtime": datetime.fromtimestamp(attr.st_mtime).strftime("%Y-%m-%d %H:%M:%S") if attr.st_mtime else None,
-                "extension": ext, "is_837_candidate": ext in allowed_extensions("837")})
+                "extension": ext, "is_837_candidate": not ext or ext in allowed_extensions("837")})
         files.sort(key=lambda x: x["name"].lower())
         return JsonResponse({"success": True, "folder": base, "files": files})
     except Exception as exc:
