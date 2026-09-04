@@ -2,6 +2,8 @@ import os
 import uuid
 import logging
 import time
+from pathlib import Path
+from django.conf import settings
 from project835.decorators import (
     admin_api_required,
     authenticated_api_required,
@@ -25,6 +27,7 @@ from .models import SFTPConfig, EDI835File, MIRFile
 from .batch_jobs import active_job_for, read_job, write_job
 from .services import process_edi835_file_content, get_edi835_storage_dirs, sync_folder_observer, process_multiple_edi835_files
 from .file_types import allowed_extensions, file_extension_error, has_valid_file_extension
+from .storage import relative_media_path
 
 
 def _remove_sftp_file_with_retry(sftp, remote_path, attempts=3):
@@ -167,7 +170,7 @@ def tracked_files_list(request):
     """
     # Trigger Folder Observer to discover untracked files & sync disk presence
     try:
-        sync_folder_observer()
+        sync_folder_observer(getattr(request.user, "client", None))
     except Exception:
         # Disk synchronization is supplemental. Database history must remain
         # visible even if a physical folder is temporarily unavailable.
@@ -177,10 +180,6 @@ def tracked_files_list(request):
 
     from django.conf import settings
     from pathlib import Path
-    dirs = get_edi835_storage_dirs()
-    input_dir = dirs["input"]
-    archive_dir = dirs["archive"]
-
     client = getattr(request.user, "client", None)
     if request.user.is_staff:
         records = EDI835File.objects.select_related("client", "mir_file").defer(
@@ -199,6 +198,7 @@ def tracked_files_list(request):
     data = []
     records_to_update = []
     for r in records:
+        archive_dir = get_edi835_storage_dirs(r.client)["archive"]
         # This flag records a confirmed remote SFTP delivery. Never infer it
         # from a local output/archive file, because local conversion does not
         # prove that the remote upload succeeded.
@@ -287,11 +287,9 @@ def api_get_metrics(request):
     runs_needing_attention_count = base_qs.filter(status="ERROR").count()
     mir_outputs_today_count = converted_today_file_count
 
-    dirs = get_edi835_storage_dirs()
-    archive_dir = dirs["archive"]
-    archive_folder_files_count = 0
-    if os.path.exists(archive_dir):
-        archive_folder_files_count = len([f for f in os.listdir(archive_dir) if os.path.isfile(os.path.join(archive_dir, f))])
+    archive_folder_files_count = base_qs.filter(
+        present_in_archive_folder=True
+    ).count()
 
     total_conversion_sets = base_qs.count()
     validated_sets_count = base_qs.exclude(status="ERROR").count()
@@ -319,63 +317,44 @@ def api_get_metrics(request):
 
 def api_archive_files_list(request):
     """
-    API Endpoint: Scans media/edi835/archive/ directory and returns list of physical files on disk.
+    API Endpoint: Lists physical 835 archives in the authorized client scope.
     """
-    dirs = get_edi835_storage_dirs()
-    archive_dir = dirs["archive"]
-
     files_info = []
 
     # Build a lookup from the physical archived 835 filename to the canonical
     # MIR filename persisted in MIRFile. The archive directory itself contains
     # the original 835 inputs, not the generated MIR output.
-    archive_records = (
-        EDI835File.objects
-        .select_related("mir_file")
-        .defer("input_file_content", "mir_file__file_content")
-        .all()
+    archive_records = EDI835File.objects.select_related("mir_file").defer(
+        "input_file_content", "mir_file__file_content"
     )
-    mir_by_archive_name = {}
-
+    if not request.user.is_staff:
+        archive_records = archive_records.filter(
+            client=getattr(request.user, "client", None)
+        )
     for record in archive_records:
+        archive_dir = get_edi835_storage_dirs(record.client)["archive"]
         mir_record = getattr(record, "mir_file", None)
-        if not mir_record or not mir_record.mir_filename:
-            continue
+        filename = os.path.basename(record.archive_path or record.stored_filename or record.original_filename or "")
+        file_path = Path(settings.BASE_DIR) / record.archive_path if record.archive_path else archive_dir / filename
+        if filename and file_path.is_file():
+            stat = file_path.stat()
+            mtime = timezone.datetime.fromtimestamp(
+                stat.st_mtime,
+                tz=timezone.get_current_timezone()
+            )
 
-        if record.stored_filename:
-            mir_by_archive_name[record.stored_filename] = mir_record.mir_filename
-
-        if record.original_filename:
-            mir_by_archive_name[record.original_filename] = mir_record.mir_filename
-
-        if record.archive_path:
-            mir_by_archive_name[
-                os.path.basename(record.archive_path)
-            ] = mir_record.mir_filename
-
-    if os.path.exists(archive_dir):
-        for filename in sorted(os.listdir(archive_dir)):
-            file_path = os.path.join(archive_dir, filename)
-
-            if os.path.isfile(file_path):
-                stat = os.stat(file_path)
-                mtime = timezone.datetime.fromtimestamp(
-                    stat.st_mtime,
-                    tz=timezone.get_current_timezone()
-                )
-
-                files_info.append({
+            files_info.append({
                     # Physical archive filename remains available for internal
                     # file identification.
                     "filename": filename,
 
                     # Canonical user-facing MIR filename.
-                    "mir_filename": mir_by_archive_name.get(filename, ""),
+                    "mir_filename": mir_record.mir_filename if mir_record else "",
 
                     "size_bytes": stat.st_size,
                     "modified_at": mtime.strftime("%Y-%m-%d %H:%M:%S"),
-                    "path": f"media/edi835/archive/{filename}",
-                })
+                    "path": relative_media_path(file_path),
+            })
 
     return JsonResponse({
         "files_count": len(files_info),
@@ -1873,11 +1852,6 @@ def _execute_batch_conversion(request):
 
     logger = logging.getLogger(__name__)
 
-    dirs = get_edi835_storage_dirs()
-    input_dir = dirs["input"]
-    archive_dir = dirs["archive"]
-    output_dir = dirs["output"]
-
     try:
         request_body = json.loads(request.body.decode("utf-8")) if request.method == "POST" and request.body else {}
     except (TypeError, ValueError, UnicodeDecodeError):
@@ -1918,6 +1892,10 @@ def _execute_batch_conversion(request):
     config = resolve_sftp_config(client=client, outbound=False)
     if not client and config:
         client = config.client
+    dirs = get_edi835_storage_dirs(client)
+    input_dir = dirs["input"]
+    archive_dir = dirs["archive"]
+    output_dir = dirs["output"]
     processed_files = []
     errors = []
     sftp_batch_items = []
@@ -2175,24 +2153,24 @@ def _execute_batch_conversion(request):
                                 text=text_reference,
                             )
 
-                            # Remove only after the same processing used by a
-                            # manual upload has completed successfully. Failed
-                            # files remain remotely available for a safe retry.
-                            if result_reference["file"]["status"] in {"PROCESSED", "PARTIAL"}:
-                                deleted, delete_error = _remove_sftp_file_with_retry(
-                                    sftp_837, remote_path
-                                )
-                                result_reference["remote_deleted"] = deleted
-                                if not deleted:
-                                    errors.append(
-                                        f"{filename}: processed successfully, but could not be removed "
-                                        f"from the RECON SFTP folder: {delete_error}"
-                                    )
-                            else:
-                                result_reference["remote_deleted"] = False
+
+                        # Once the local database and archive are complete,
+                        # remove every successfully handled inbound file.
+                        if result_reference["file"]["status"] in {"PROCESSED", "PARTIAL"}:
+                            deleted, delete_error = _remove_sftp_file_with_retry(
+                                sftp_837, remote_path
+                            )
+                            result_reference["remote_deleted"] = deleted
+                            if not deleted:
                                 errors.append(
-                                    f"{filename}: RECON processing failed; the remote file was retained for retry."
+                                    f"{filename}: processed and archived, but could not be removed "
+                                    f"from the {reference_type} SFTP inbound folder: {delete_error}"
                                 )
+                        else:
+                            result_reference["remote_deleted"] = False
+                            errors.append(
+                                f"{filename}: {reference_type} processing failed; the remote file was retained for retry."
+                            )
 
                         target_results = sftp_837_results if reference_type == "837" else sftp_recon_results
                         target_results.append({
@@ -2348,12 +2326,6 @@ def _execute_batch_conversion(request):
                     )
                     logger.warning(f"Cleanup error removing remote SFTP files: {del_conn_err}")
 
-            if batch_res.get("sftp_uploaded"):
-                for item in local_batch_items:
-                    try:
-                        os.remove(item["local_path"])
-                    except Exception:
-                        pass
         else:
             errors.append(f"Batch conversion error: {batch_res.get('error')}")
 

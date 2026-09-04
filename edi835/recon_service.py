@@ -6,6 +6,7 @@ import csv
 import hashlib
 import io
 import re
+import shutil
 import uuid
 from collections import OrderedDict
 from decimal import Decimal, InvalidOperation
@@ -20,6 +21,12 @@ from .models import (
     RECONProcessingError,
     RECONProcessingRun,
     RECONServiceLine,
+)
+from .storage import (
+    archive_inbound,
+    client_storage_dirs,
+    relative_media_path,
+    stage_inbound,
 )
 
 
@@ -296,6 +303,15 @@ def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
 
 @transaction.atomic
 def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
+    inbound_path = client_storage_dirs(recon_file.client)["recon_in"] / recon_file.stored_filename
+    if not inbound_path.is_file():
+        inbound_path = stage_inbound(
+            recon_file.client,
+            "recon",
+            recon_file.stored_filename,
+            (recon_file.file_content or "").encode("utf-8"),
+            binary=True,
+        )
     run = RECONProcessingRun.objects.create(
         recon_file=recon_file,
         client=recon_file.client,
@@ -426,6 +442,8 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         recon_file.total_charge_amount = total_charge
         recon_file.total_paid_amount = total_paid
         recon_file.processed_at = now
+        archived_path = archive_inbound(recon_file.client, "recon", inbound_path)
+        recon_file.archive_path = relative_media_path(archived_path)
         recon_file.save()
         run.status = (
             "FAILED" if parsing_findings and not rows
@@ -444,10 +462,13 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         return run
     except Exception as exc:
         now = timezone.now()
+        if inbound_path.exists():
+            archived_path = archive_inbound(recon_file.client, "recon", inbound_path)
+            recon_file.archive_path = relative_media_path(archived_path)
         recon_file.status = "FAILED"
         recon_file.processing_error = str(exc)
         recon_file.processed_at = now
-        recon_file.save(update_fields=["status", "processing_error", "processed_at", "updated_at"])
+        recon_file.save(update_fields=["status", "processing_error", "processed_at", "archive_path", "updated_at"])
         run.status = "FAILED"
         run.error_message = str(exc)
         run.invalid_records = 1
@@ -486,6 +507,7 @@ def ingest_sftp_recon_file(*, client, actor, filename, remote_path, raw, text):
             file_size=len(raw),
             import_mode="SFTP",
         )
+        stage_inbound(client, "recon", recon.stored_filename, raw, binary=True)
     else:
         # The latest ingestion source is SFTP. This also ensures a file first
         # uploaded manually is shown as SFTP after the Test pipeline fetches it.
@@ -618,7 +640,7 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
         client=client, uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
         original_filename=os.path.basename(filename)[:255],
         stored_filename=f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{os.path.basename(filename)}"[:255],
-        file_content=text, file_hash=file_hash, file_size=len(raw), import_mode="SFTP", status="PROCESSING",
+        file_content=text, file_hash=file_hash, file_size=len(raw), import_mode="SFTP", file_kind="837", status="PROCESSING",
         processing_started_at=timezone.now(), processing_error="",
     )
     total_charge = Decimal("0")
@@ -653,6 +675,13 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
     recon.total_charge_amount = total_charge
     recon.total_paid_amount = Decimal("0")
     recon.processed_at = now
+    # Stage only after database persistence has succeeded, then immediately
+    # move the exact source bytes into the permanent archive. No failed DB
+    # operation can strand a file in the inbound directory.
+    inbound_path = stage_inbound(client, "837", recon.stored_filename, raw, binary=True)
+    archived_path = archive_inbound(client, "837", inbound_path)
+    shutil.copy2(archived_path, archived_path.parent.parent / "out" / archived_path.name)
+    recon.archive_path = relative_media_path(archived_path)
     recon.save()
     return {"already_exists": False, "file": {"id": str(recon.id), "original_filename": recon.original_filename,
             "status": recon.status, "source": "SFTP", "remote_path": remote_path, "claim_count": recon.claim_count}}

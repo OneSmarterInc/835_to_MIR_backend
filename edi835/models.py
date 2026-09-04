@@ -330,6 +330,9 @@ class RECONFile(models.Model):
     file_content = models.TextField()
     file_hash = models.CharField(max_length=64, db_index=True)
     file_size = models.BigIntegerField(default=0)
+    FILE_KIND_CHOICES = [("RECON", "RECON"), ("837", "837 Reference")]
+    file_kind = models.CharField(max_length=10, choices=FILE_KIND_CHOICES, default="RECON", db_index=True)
+    archive_path = models.CharField(max_length=500, blank=True, default="")
     record_count = models.PositiveIntegerField(default=0)
     claim_count = models.PositiveIntegerField(default=0)
     service_count = models.PositiveIntegerField(default=0)

@@ -9,7 +9,7 @@ from decimal import Decimal, InvalidOperation
 
 from django.conf import settings
 from django.core.cache import cache
-from django.db import IntegrityError
+from django.db import IntegrityError, transaction
 from django.http import HttpResponse, JsonResponse
 from django.utils.text import slugify
 from django.utils import timezone
@@ -23,6 +23,7 @@ from .models import EDI835File, MIRClaim, RECONClaim, RECONFile, ReconciliationR
 from .recon_service import process_recon_file
 from .reconciliation_service import reconciliation_policy, reconciliation_rows, waterfall_summary
 from .reconciliation_export import build_reconciliation_workbook
+from .storage import stage_inbound
 
 
 def _cash_summary(rows):
@@ -268,16 +269,18 @@ def recon_upload(request):
     file_hash = hashlib.sha256(raw).hexdigest()
     original = os.path.basename(upload.name)[:255]
     try:
-        recon = RECONFile.objects.create(
-            client=client,
-            uploaded_by=request.user,
-            original_filename=original,
-            stored_filename=f"{client.client_code if client else 'GLOBAL'}_{uuid.uuid4()}_{original}"[:255],
-            file_content=text,
-            file_hash=file_hash,
-            file_size=len(raw),
-            import_mode="MANUAL",
-        )
+        with transaction.atomic():
+            recon = RECONFile.objects.create(
+                client=client,
+                uploaded_by=request.user,
+                original_filename=original,
+                stored_filename=f"{client.client_code if client else 'GLOBAL'}_{uuid.uuid4()}_{original}"[:255],
+                file_content=text,
+                file_hash=file_hash,
+                file_size=len(raw),
+                import_mode="MANUAL",
+            )
+            stage_inbound(client, "recon", recon.stored_filename, raw, binary=True)
     except IntegrityError:
         existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
         return JsonResponse({
@@ -885,6 +888,14 @@ def sftp_837_ingest(request):
         client = config.client or getattr(request.user, "client", None)
         result = ingest_837_reference(client=client, actor=request.user, filename=filename,
             remote_path=remote_path, raw=raw, text=text)
+        from .views import _remove_sftp_file_with_retry
+        deleted, delete_error = _remove_sftp_file_with_retry(sftp, remote_path)
+        result["remote_deleted"] = deleted
+        if not deleted:
+            result["warning"] = (
+                "The 837 was processed and archived, but its inbound SFTP copy "
+                f"could not be removed: {delete_error}"
+            )
         return JsonResponse({"success": True, **result}, status=200)
     except Exception as exc:
         return JsonResponse({"success": False, "error": f"837 ingestion failed: {exc}"}, status=400)

@@ -365,7 +365,7 @@ def api_convert(request):
             rec = EDI835File.objects.get(id=file_id)
             if rec.original_filename:
                 original_filename = rec.original_filename
-            dirs = get_edi835_storage_dirs()
+            dirs = get_edi835_storage_dirs(rec.client)
             possible_paths = []
             if rec.input_path:
                 possible_paths.append(Path(settings.BASE_DIR) / rec.input_path)
@@ -585,7 +585,7 @@ def api_validate(request):
         from django.conf import settings
         from edi835.services import get_edi835_storage_dirs
 
-        dirs = get_edi835_storage_dirs()
+        dirs = get_edi835_storage_dirs(client)
         archive_file_path = dirs["archive"] / original_filename
         with open(archive_file_path, "w", encoding="utf-8") as f:
             f.write(edi_text)
@@ -697,7 +697,7 @@ def download_mir(request):
             from pathlib import Path
             from django.conf import settings
 
-            dirs = get_edi835_storage_dirs()
+            dirs = get_edi835_storage_dirs(rec.client if rec else None)
 
             if rec and getattr(rec, "mir_file", None):
                 mir_content = rec.mir_file.file_content or ""

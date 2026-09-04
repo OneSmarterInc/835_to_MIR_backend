@@ -1,5 +1,6 @@
 from django.db import models
 from accounts.models import Client
+from edi835.storage import client_document_upload_to
 
 class OnboardingStepDefinition(models.Model):
     step_number = models.IntegerField(unique=True)
@@ -183,7 +184,7 @@ class ClientDocument(models.Model):
     document_name = models.CharField(max_length=255)
     original_filename = models.CharField(max_length=255)
     document_type = models.CharField(max_length=100, default='General Document')
-    file = models.FileField(upload_to='documents/')
+    file = models.FileField(upload_to=client_document_upload_to)
     file_size = models.IntegerField(default=0)
     uploaded_by = models.CharField(max_length=255, default='Admin User')
     created_at = models.DateTimeField(auto_now_add=True)

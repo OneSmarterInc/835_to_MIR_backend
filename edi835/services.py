@@ -17,6 +17,14 @@ from .file_types import file_extension_error, has_valid_file_extension
 from .mir_persistence import set_mir_push_status, store_mir_file
 from .parser import parse_835_to_mir, EDI835Validator
 from .mir_exporter import export_mir_file
+from .storage import (
+    archive_inbound,
+    client_storage_dirs,
+    relative_media_path,
+    remove_delivered_outbound,
+    stage_inbound,
+    write_mir_copies,
+)
 
 logger = logging.getLogger("edi835")
 
@@ -124,26 +132,21 @@ def resolve_sftp_config(client=None, outbound=False):
 
 
 
-def get_edi835_storage_dirs():
+def get_edi835_storage_dirs(client=None):
     """
-    Returns dictionary of local/FTP storage directories under media/edi835/.
+    Returns compatibility aliases plus the complete client-scoped media tree.
     """
-    base_media = Path(getattr(settings, "MEDIA_ROOT", Path(settings.BASE_DIR) / "media"))
-    edi_base = base_media / "edi835"
-
-    dirs = {
-        "base": edi_base,
-        "input": edi_base / "input",
-        "processing": edi_base / "processing",
-        "output": edi_base / "output",
-        "archive": edi_base / "archive",
-        "error": edi_base / "error",
+    scoped = client_storage_dirs(client)
+    return {
+        "base": scoped["root"] / "files",
+        "input": scoped["835_in"],
+        "processing": scoped["835_in"],
+        "output": scoped["mir_out"],
+        "archive": scoped["835_archive"],
+        "error": scoped["835_archive"],
+        "mir_archive": scoped["mir_archive"],
+        **scoped,
     }
-
-    for d in dirs.values():
-        os.makedirs(d, exist_ok=True)
-
-    return dirs
 
 
 def upload_mir_to_sftp(local_file_path, mir_filename, client=None, sftp_config=None):
@@ -301,7 +304,7 @@ def push_file_record_to_sftp(file_id):
     if cfg.status != "CONNECTED":
         return False, f"SFTP connection is not active (Status: {cfg.status}). Please test and verify your SFTP credentials first."
 
-    dirs = get_edi835_storage_dirs()
+    dirs = get_edi835_storage_dirs(client)
     success_mir = False
 
     # Push MIR file to SFTP MIR outbound folder ONLY
@@ -310,12 +313,18 @@ def push_file_record_to_sftp(file_id):
         base_name = os.path.splitext(stored_name)[0]
         # Resolve mir_filename dynamically
         mir_filename = resolve_mir_filename(client=client, fallback_base=base_name)
-        mir_path = Path(settings.BASE_DIR) / rec.output_path
-        if not os.path.exists(mir_path):
-            mir_path = dirs["output"] / f"{base_name}.mir"
-
-        if os.path.exists(mir_path):
-            success_mir = upload_mir_to_sftp(mir_path, mir_filename, client=client)
+        archived_path = Path(settings.BASE_DIR) / rec.output_path
+        if not archived_path.exists() and getattr(rec, "mir_file", None):
+            archived_path, _ = write_mir_copies(
+                client, local_mir_filename(client, rec.mir_file.mir_filename),
+                rec.mir_file.file_content,
+            )
+        if archived_path.exists():
+            out_path = dirs["mir_out"] / archived_path.name
+            shutil.copy2(archived_path, out_path)
+            success_mir = upload_mir_to_sftp(out_path, mir_filename, client=client)
+            if success_mir:
+                remove_delivered_outbound(client, "mir", out_path)
 
     if success_mir:
         rec.present_in_sftp = True
@@ -340,15 +349,13 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     edi_text = (edi_text or "").lstrip("\ufeff").strip()
     """
     Processes EDI 835 content through the complete pipeline when 'Submit & Convert to MIR' is triggered:
-    1. Save to input/
-    2. Move input/ -> processing/ (leaving input/ empty)
+    1. Save to the client's 835/in folder.
+    2. Process it and move it to 835/archive (leaving in empty).
     3. Perform MIR conversion
-    4. Save converted MIR to output/<base_name>.mir
-    5. Move 835 EDI file (.x12/.835) from processing/ -> archive/ (saving ONLY .x12/.835 in archive/, leaving processing/ empty)
-    6. On error -> move processing/ -> error/
+    4. Save converted MIR to both mir/archive and mir/out.
+    5. Delete mir/out only after confirmed SFTP delivery.
+    6. Archive the source 835 on success or failure.
     """
-    dirs = get_edi835_storage_dirs()
-
     db_record = None
     file_uuid = uuid.uuid4()
     if file_id:
@@ -359,6 +366,8 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
                 client = db_record.client
         except (EDI835File.DoesNotExist, ValueError):
             db_record = None
+
+    dirs = get_edi835_storage_dirs(client)
 
     if client and str(getattr(client, "stage", "") or "").lower() == "offboarded":
         return {
@@ -384,11 +393,12 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     stored_filename = f"{file_uuid}_{original_filename}"
 
     # Step 1: Save uploaded file to input/ folder
-    input_file_path = dirs["input"] / stored_filename
-    with open(input_file_path, "w", encoding="utf-8") as f:
-        f.write(edi_text)
-
-    relative_input_path = (Path("media") / "edi835" / "input" / stored_filename).as_posix()
+    input_file_path = stage_inbound(client, "835", stored_filename, edi_text)
+    # Move it immediately to permanent archive before database parsing or
+    # external delivery. This keeps inbound transient and prevents an early
+    # database/SFTP error from stranding a source file there.
+    processing_file_path = archive_inbound(client, "835", input_file_path)
+    relative_input_path = relative_media_path(processing_file_path)
 
     if not db_record:
         db_record = EDI835File.objects.create(
@@ -411,11 +421,6 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         if ingestion_source and ingestion_source != "MANUAL":
             db_record.ingestion_source = ingestion_source
 
-    # Step 2: Move file from input/ to processing/ (input/ folder becomes empty)
-    processing_file_path = dirs["processing"] / stored_filename
-    if os.path.exists(input_file_path):
-        shutil.move(input_file_path, processing_file_path)
-
     db_record.status = "PROCESSING"
     db_record.processing_started_at = timezone.now()
     db_record.save()
@@ -427,8 +432,8 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         mir_text = res["text"]
 
         # Step 4: Write converted MIR file to output/ folder
-        output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
-        rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
+        archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
+        rel_output_path = relative_media_path(archived_mir_path)
 
         # The database is the system of record. Persist the exact file and its
         # claim/chunk/service structure before attempting any external push.
@@ -445,12 +450,10 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
             client=client,
         )
         set_mir_push_status(stored_mir, sftp_uploaded)
+        if sftp_uploaded:
+            remove_delivered_outbound(client, "mir", output_mir_path)
 
-        # Step 5: Move original 835/x12 EDI file from processing/ to archive/
-        archived_835_path = dirs["archive"] / stored_filename
-        if os.path.exists(processing_file_path):
-            shutil.move(processing_file_path, archived_835_path)
-        rel_archive_path = (Path("media") / "edi835" / "archive" / stored_filename).as_posix()
+        rel_archive_path = relative_media_path(processing_file_path)
 
         db_record.status = "ARCHIVED"
         db_record.output_path = rel_output_path
@@ -477,12 +480,9 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         err_str = str(err)
         logger.exception(f"EDI 835 processing failed for file '{stored_filename}': {err_str}")
 
-        # Step 6: On error, move file from processing/ to error/ folder
-        error_file_path = dirs["error"] / stored_filename
-        if os.path.exists(processing_file_path):
-            shutil.move(processing_file_path, error_file_path)
-
         db_record.status = "ERROR"
+        db_record.archive_path = relative_media_path(processing_file_path)
+        db_record.present_in_archive_folder = True
         db_record.error_message = err_str
         db_record.processing_completed_at = timezone.now()
         db_record.save()
@@ -514,7 +514,7 @@ def process_multiple_edi835_files(
             "error": "This client has been permanently offboarded. New file processing is locked.",
             "code": "CLIENT_OFFBOARDED",
         }
-    dirs = get_edi835_storage_dirs()
+    dirs = get_edi835_storage_dirs(client)
 
     all_claims = []
     input_contents = []
@@ -542,11 +542,20 @@ def process_multiple_edi835_files(
         # Prefix with UUID to avoid overwrites in batch mode
         stored_fname = f"{file_uuid}_{idx}_{fname}"
         
-        # Save each input file to archive/
-        archive_path_file = dirs["archive"] / stored_fname
-        with open(archive_path_file, "w", encoding="utf-8") as af:
-            af.write(content)
-        rel_archive_path = (Path("media") / "edi835" / "archive" / stored_fname).as_posix()
+        # A file already dropped in this client's inbound directory is the
+        # staged copy.  Reuse it so the original is moved (not duplicated)
+        # into archive and the inbound directory is empty after the attempt.
+        supplied_path = item.get("local_path")
+        inbound_path = Path(supplied_path) if supplied_path else None
+        expected_in = dirs["835_in"].resolve()
+        if not (
+            inbound_path
+            and inbound_path.is_file()
+            and inbound_path.resolve().parent == expected_in
+        ):
+            inbound_path = stage_inbound(client, "835", stored_fname, content)
+        archive_path_file = archive_inbound(client, "835", inbound_path)
+        rel_archive_path = relative_media_path(archive_path_file)
         if not first_archive_rel_path:
             first_archive_rel_path = rel_archive_path
 
@@ -574,8 +583,8 @@ def process_multiple_edi835_files(
     )
     delivery_mir_filename = unique_mir_filename(delivery_mir_filename, file_uuid)
     stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
-    output_mir_path = Path(export_mir_file(mir_text, dirs["output"], stored_mir_filename))
-    rel_output_path = (Path("media") / "edi835" / "output" / output_mir_path.name).as_posix()
+    archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
+    rel_output_path = relative_media_path(archived_mir_path)
 
     # Combine all input file names into a single string for table 835 IN column
     combined_inputs_str = ", ".join(file_names)
@@ -616,6 +625,8 @@ def process_multiple_edi835_files(
         sftp_config=outbound_config,
     )
     set_mir_push_status(stored_mir, sftp_uploaded)
+    if sftp_uploaded:
+        remove_delivered_outbound(client, "mir", output_mir_path)
 
     # Surface the real outbound error to the API instead of returning only a
     # boolean. This is especially important for direct execution where the
@@ -653,16 +664,16 @@ def process_multiple_edi835_files(
     }
 
 
-def sync_folder_observer():
+def sync_folder_observer(client=None):
     """
-    Folder Observer Service:
-    1. Scans media/edi835/input/ (SFTP Inbound folder) for any new untracked files dropped into the folder.
+    Folder Observer Service for one client scope:
+    1. Scans <client>/files/835/in for new untracked files.
        Creates a DB record with present_in_sftp=True.
     2. Scans all EDI835File records and updates physical existence booleans:
        - present_in_sftp: True if file exists in input/ folder on disk.
        - present_in_archive_folder: True if file exists in archive/ folder on disk.
     """
-    dirs = get_edi835_storage_dirs()
+    dirs = get_edi835_storage_dirs(client)
     input_dir = dirs["input"]
     archive_dir = dirs["archive"]
 
@@ -686,7 +697,7 @@ def sync_folder_observer():
             for fname in untracked_fnames:
                 if fname in existing_names:
                     continue
-                rel_input_path = (Path("media") / "edi835" / "input" / fname).as_posix()
+                rel_input_path = relative_media_path(input_dir / fname)
                 EDI835File.objects.create(
                     original_filename=fname,
                     stored_filename=fname,
@@ -695,11 +706,15 @@ def sync_folder_observer():
                     present_in_sftp=True,
                     present_in_archive_folder=False,
                     ingestion_source="SFTP",
+                    client=client,
                 )
 
     # 2. Sync physical disk existence for all DB records
     to_update = []
-    for r in EDI835File.objects.all().iterator():
+    records = EDI835File.objects.filter(client=client)
+    for r in records.iterator():
+        record_dirs = get_edi835_storage_dirs(r.client)
+        archive_dir = record_dirs["archive"]
         # Remote delivery is updated only by a successful SFTP upload. A local
         # MIR/output/archive file must not turn the SFTP status green.
         in_sftp = r.present_in_sftp
