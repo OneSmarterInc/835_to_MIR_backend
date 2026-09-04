@@ -355,7 +355,7 @@ class EDI837File(models.Model):
         db_table = "837_file"
         ordering = ["-uploaded_at"]
         constraints = [models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_837_hash")]
-        indexes = [models.Index(fields=["client", "-uploaded_at"], name="837_file_client_date_idx")]
+        indexes = [models.Index(fields=["client", "-uploaded_at"], name="edi837_file_client_date_idx")]
 
 
 class EDI837Claim(models.Model):
@@ -391,9 +391,9 @@ class EDI837Claim(models.Model):
         ordering = ["claim_sequence"]
         constraints = [models.UniqueConstraint(fields=["edi_file", "claim_sequence"], name="uniq_837_claim_sequence")]
         indexes = [
-            models.Index(fields=["client", "claim_control_number"], name="837_claim_control_idx"),
-            models.Index(fields=["client", "highmark_claim_number"], name="837_highmark_idx"),
-            models.Index(fields=["client", "internal_claim_number"], name="837_internal_idx"),
+            models.Index(fields=["client", "claim_control_number"], name="edi837_claim_control_idx"),
+            models.Index(fields=["client", "highmark_claim_number"], name="edi837_highmark_idx"),
+            models.Index(fields=["client", "internal_claim_number"], name="edi837_internal_idx"),
         ]
 
 
