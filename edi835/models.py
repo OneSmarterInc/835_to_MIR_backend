@@ -240,6 +240,7 @@ class MIRFile(models.Model):
         indexes = [
             models.Index(fields=["client", "-converted_at"]),
             models.Index(fields=["mir_filename"]),
+            models.Index(fields=["client", "mir_filename"], name="mir_client_filename_idx"),
         ]
 
 

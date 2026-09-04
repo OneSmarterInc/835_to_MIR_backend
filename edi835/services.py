@@ -101,9 +101,8 @@ def resolve_mir_filename(client=None, fallback_base="MIR", now=None):
 
 
 def local_mir_filename(client, delivery_filename):
-    """Namespace a locally stored MIR by tenant while preserving SFTP naming."""
-    client_prefix = str(client.id) if client else "system"
-    return f"{client_prefix}_{os.path.basename(delivery_filename)}"
+    """Use the delivery name locally; the client directory is the namespace."""
+    return os.path.basename(delivery_filename)
 
 
 def unique_mir_filename(delivery_filename, file_uuid):
@@ -312,12 +311,17 @@ def push_file_record_to_sftp(file_id):
     if rec.output_path:
         base_name = os.path.splitext(stored_name)[0]
         # Resolve mir_filename dynamically
-        mir_filename = resolve_mir_filename(client=client, fallback_base=base_name)
+        mir_record = getattr(rec, "mir_file", None)
+        mir_filename = (
+            os.path.basename(mir_record.mir_filename)
+            if mir_record and mir_record.mir_filename
+            else resolve_mir_filename(client=client, fallback_base=base_name)
+        )
         archived_path = Path(settings.BASE_DIR) / rec.output_path
-        if not archived_path.exists() and getattr(rec, "mir_file", None):
+        if not archived_path.exists() and mir_record:
             archived_path, _ = write_mir_copies(
-                client, local_mir_filename(client, rec.mir_file.mir_filename),
-                rec.mir_file.file_content,
+                client, local_mir_filename(client, mir_record.mir_filename),
+                mir_record.file_content,
             )
         if archived_path.exists():
             out_path = dirs["mir_out"] / archived_path.name

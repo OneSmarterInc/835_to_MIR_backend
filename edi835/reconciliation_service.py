@@ -14,6 +14,7 @@ from django.db.models import Max, Min, Q, Sum
 from django.db.models.functions import Coalesce
 
 from .models import MIRClaim, RECONClaim, RECONFile
+from .claim_numbers import add_split_claim_number
 
 
 ZERO = Decimal("0.00")
@@ -135,6 +136,8 @@ def waterfall_summary(rows):
 
 SORT_FIELDS = {
     "claim_id": lambda row: str(row.get("claim_id") or "").casefold(),
+    "highmark_claim_number": lambda row: str(row.get("highmark_claim_number") or "").casefold(),
+    "internal_claim_number": lambda row: str(row.get("internal_claim_number") or "").casefold(),
     "patient_name": lambda row: str(row.get("patient_name") or "").casefold(),
     "mir_filename": lambda row: str(row.get("mir_filename") or "").casefold(),
     "recon_filename": lambda row: str(row.get("recon_filename") or "").casefold(),
@@ -226,7 +229,7 @@ def reconciliation_rows(
         recon_services = recon["service_count"] if recon else 0
         match = reconciliation_waterfall(claim["mir_payable"], recon_paid, bool(recon), recon)
         status, remaining = match["status"], match["remaining"]
-        output.append({
+        output.append(add_split_claim_number({
             "mir_claim_id": claim["id"],
             "claim_id": claim_number,
             "patient_name": " ".join(part for part in [claim["patient_first_name"], claim["patient_last_name"]] if part).strip(),
@@ -262,7 +265,7 @@ def reconciliation_rows(
             "waterfall_candidates": match["candidates"],
             "affected_by_interim_policy": match["affected_by_interim_policy"],
             "policy_flags": match["policy_flags"],
-        })
+        }))
 
     # RECON claims without a corresponding MIR record remain visible. Their
     # RECON occurrences are aggregated exactly like matched claims, while MIR
@@ -273,7 +276,7 @@ def reconciliation_rows(
                 continue
             recon_paid = recon["paid_amount"]
             recon_charge = recon["charge_amount"]
-            output.append({
+            output.append(add_split_claim_number({
                 "mir_claim_id": None,
                 "claim_id": claim_number,
                 "patient_name": "",
@@ -306,7 +309,7 @@ def reconciliation_rows(
                 "waterfall_candidates": {},
                 "affected_by_interim_policy": False,
                 "policy_flags": [],
-            })
+            }))
 
     search_terms = [value.strip().casefold() for value in str(search or "").split(",") if value.strip()]
     if search_terms:

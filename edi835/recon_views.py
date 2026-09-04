@@ -24,6 +24,7 @@ from .recon_service import process_recon_file
 from .reconciliation_service import reconciliation_policy, reconciliation_rows, waterfall_summary
 from .reconciliation_export import build_reconciliation_workbook
 from .storage import stage_inbound
+from .claim_numbers import split_claim_number
 
 
 def _cash_summary(rows):
@@ -91,6 +92,7 @@ def _paginated_dashboard_payload(payload, request, client):
         scope_key=scope_key, claim_control_number__in=claim_ids,
     ).values_list("claim_control_number", "action_status"))
     for row in records:
+        row.update(split_claim_number(row.get("claim_id")))
         row["action_status"] = saved_actions.get(row.get("claim_id"), "YET_TO_START")
 
     search = str(request.GET.get("review_search") or "").strip().casefold()
@@ -98,7 +100,7 @@ def _paginated_dashboard_payload(payload, request, client):
     action_filter = str(request.GET.get("review_action") or "").strip().upper()
     if search:
         records = [row for row in records if search in " ".join(str(row.get(key) or "") for key in (
-            "claim_id", "mir901", "recon_mir907", "status", "difference", "action_status"
+            "claim_id", "highmark_claim_number", "internal_claim_number", "mir901", "recon_mir907", "status", "difference", "action_status"
         )).casefold()]
     if outcome:
         records = [row for row in records if row.get("status") == outcome]
@@ -109,6 +111,8 @@ def _paginated_dashboard_payload(payload, request, client):
     direction = str(request.GET.get("review_direction") or "asc").lower()
     sorters = {
         "claim_id": lambda row: str(row.get("claim_id") or "").casefold(),
+        "highmark_claim_number": lambda row: str(row.get("highmark_claim_number") or "").casefold(),
+        "internal_claim_number": lambda row: str(row.get("internal_claim_number") or "").casefold(),
         "mir901": lambda row: Decimal(str(row.get("mir901") or "0")),
         "recon_mir907": lambda row: Decimal(str(row.get("recon_mir907") or "0")),
         "status": lambda row: str(row.get("status") or "").casefold(),
@@ -355,6 +359,7 @@ def recon_detail(request, file_id):
         "id": claim.id,
         "claim_sequence": claim.claim_sequence,
         "claim_control_number": claim.claim_control_number,
+        **split_claim_number(claim.claim_control_number),
         "member_id": claim.member_id,
         "claim_status": claim.claim_status,
         "service_count": claim.service_count,
@@ -370,6 +375,7 @@ def recon_detail(request, file_id):
     errors = [{
         "row_number": error.row_number,
         "claim_control_number": error.claim_control_number,
+        **split_claim_number(error.claim_control_number),
         "error_code": error.error_code,
         "error_message": error.error_message,
         "raw_record": error.raw_record,

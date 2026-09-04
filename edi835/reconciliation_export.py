@@ -35,10 +35,10 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
     sheet.sheet_view.showGridLines = False
     sheet.freeze_panes = "A11"
 
-    for column, width in enumerate((20, 24, 20, 28, 28, 18, 18, 18, 22), start=1):
+    for column, width in enumerate((20, 18, 24, 20, 28, 28, 18, 18, 18, 22), start=1):
         sheet.column_dimensions[get_column_letter(column)].width = width
 
-    sheet.merge_cells("A1:I1")
+    sheet.merge_cells("A1:J1")
     sheet["A1"] = "MIR / RECON Reconciliation Results"
     sheet["A1"].font = Font(size=18, bold=True, color=NAVY)
     sheet["A1"].alignment = Alignment(horizontal="left", vertical="center")
@@ -89,7 +89,7 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
         cell.number_format = currency_format
 
     headers = (
-        "Claim ID", "Patient Name", "Member ID", "MIR File", "RECON File",
+        "Highmark Claim Number", "Internal Claim Number", "Patient Name", "Member ID", "MIR File", "RECON File",
         "Amount in MIR", "Amount in RECON", "Difference", "Status",
     )
     header_row = 10
@@ -103,7 +103,8 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
     for row_index, row in enumerate(rows, start=header_row + 1):
         matched_row = bool(row.get("mir_claim_id") and row.get("recon_filename"))
         values = (
-            row.get("claim_id") or "-",
+            row.get("highmark_claim_number") or "-",
+            row.get("internal_claim_number") or "-",
             row.get("patient_name") or "RECON-only claim",
             row.get("member_id") or "-",
             row.get("mir_filename") or "-",
@@ -116,21 +117,21 @@ def build_reconciliation_workbook(*, client, rows, total, search="", status=""):
         for column, value in enumerate(values, start=1):
             cell = sheet.cell(row_index, column, value)
             cell.border = Border(bottom=Side(style="hair", color="D7E0EA"))
-            cell.alignment = Alignment(vertical="top", wrap_text=column in (2, 4, 5))
-            if column in (6, 7) or (column == 8 and matched_row):
+            cell.alignment = Alignment(vertical="top", wrap_text=column in (2, 3, 5, 6))
+            if column in (7, 8) or (column == 9 and matched_row):
                 cell.number_format = currency_format
                 cell.alignment = Alignment(horizontal="right", vertical="top")
         if row_index % 2 == 0:
-            for column in range(1, 10):
+            for column in range(1, 11):
                 sheet.cell(row_index, column).fill = PatternFill("solid", fgColor="F7F9FC")
 
     last_row = max(header_row + 1, header_row + len(rows))
     if not rows:
         sheet.cell(header_row + 1, 1, "No reconciliation results match the selected filters.")
-        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 1, end_column=9)
+        sheet.merge_cells(start_row=header_row + 1, start_column=1, end_row=header_row + 1, end_column=10)
         sheet.cell(header_row + 1, 1).alignment = Alignment(horizontal="center")
     else:
-        table = Table(displayName="ReconciliationResults", ref=f"A{header_row}:I{last_row}")
+        table = Table(displayName="ReconciliationResults", ref=f"A{header_row}:J{last_row}")
         table.tableStyleInfo = TableStyleInfo(
             name="TableStyleMedium2", showFirstColumn=False, showLastColumn=False,
             showRowStripes=True, showColumnStripes=False,

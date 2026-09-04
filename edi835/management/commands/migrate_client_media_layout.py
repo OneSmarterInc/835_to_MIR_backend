@@ -69,6 +69,19 @@ def _collision_safe_target(path, expected_hash, identity):
     return path.with_name(f"{path.stem}_{suffix}_{expected_hash[:12]}{path.suffix}")
 
 
+def _unprefixed_mir_name(record, mir):
+    """Remove the obsolete tenant namespace from MIR names and paths."""
+    name = Path(mir.mir_filename or record.output_path or f"{record.id}.MIR").name
+    prefixes = ["system_"]
+    if record.client_id:
+        prefixes.extend((f"{record.client_id}_", f"{str(record.client_id).replace('-', '')}_"))
+    for prefix in prefixes:
+        if name.lower().startswith(prefix.lower()):
+            name = name[len(prefix):]
+            break
+    return name
+
+
 class Command(BaseCommand):
     help = "Copy legacy media to media/<client-id>/...; never deletes legacy files."
 
@@ -114,7 +127,7 @@ class Command(BaseCommand):
 
                 mir = getattr(record, "mir_file", None)
                 if mir:
-                    mir_name = Path(record.output_path or "").name or f"{record.id}_{mir.mir_filename}"
+                    mir_name = _unprefixed_mir_name(record, mir)
                     mir_source = _first_file(
                         base_dir / record.output_path if record.output_path else None,
                         media_root / "edi835" / "output" / mir_name,
@@ -132,6 +145,9 @@ class Command(BaseCommand):
                         )
                         _write_verified(mir_target, mir.file_content)
                     record.output_path = relative_media_path(mir_target)
+                    if mir.mir_filename != mir_name:
+                        mir.mir_filename = mir_name
+                        mir.save(update_fields=["mir_filename", "updated_at"])
                     if not record.present_in_sftp:
                         verified_copy(mir_target, dirs["mir_out"] / mir_target.name)
                     counts["mir"] += 1
