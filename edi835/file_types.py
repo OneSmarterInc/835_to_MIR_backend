@@ -19,6 +19,8 @@ def file_extension_error(kind):
 
 def has_valid_file_extension(filename, kind):
     extension = os.path.splitext(os.path.basename(str(filename or "")))[1].lower()
+    if str(kind).upper() == "837" and not extension:
+        return True
     return bool(extension and extension in allowed_extensions(kind))
 
 

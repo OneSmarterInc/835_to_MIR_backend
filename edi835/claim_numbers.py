@@ -10,6 +10,8 @@ def split_claim_number(value):
             "highmark_claim_number": match.group(1),
             "internal_claim_number": match.group(2),
         }
+    if claim.isdigit():
+        return {"highmark_claim_number": claim, "internal_claim_number": ""}
     return {"highmark_claim_number": "", "internal_claim_number": claim}
 
 

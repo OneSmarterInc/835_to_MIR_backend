@@ -24,6 +24,9 @@ from .recon_views import (
 )
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
+from .edi837_views import (
+    edi837_claim_detail, edi837_claim_export, edi837_search, edi837_upload_process,
+)
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list)
@@ -53,6 +56,10 @@ reconciliation_review_action = authenticated_api(reconciliation_review_action)
 sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
 sftp_automation = authenticated_api(sftp_automation)
+edi837_upload_process = authenticated_api(edi837_upload_process)
+edi837_search = authenticated_api(edi837_search)
+edi837_claim_detail = authenticated_api(edi837_claim_detail)
+edi837_claim_export = authenticated_api(edi837_claim_export)
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
@@ -83,5 +90,9 @@ urlpatterns = [
     path("api/reconciliation/files/<uuid:file_id>/export/", reconciliation_file_export, name="reconciliation_file_export"),
     path("api/sftp/837-files/", sftp_837_files, name="sftp_837_files"),
     path("api/sftp/837-ingest/", sftp_837_ingest, name="sftp_837_ingest"),
+    path("api/837/upload-process/", edi837_upload_process, name="edi837_upload_process"),
+    path("api/837/search/", edi837_search, name="edi837_search"),
+    path("api/837/claims/<int:claim_id>/", edi837_claim_detail, name="edi837_claim_detail"),
+    path("api/837/claims/<int:claim_id>/export/", edi837_claim_export, name="edi837_claim_export"),
     path("api/reconciliation/claims/<int:claim_id>/", reconciliation_claim_detail, name="reconciliation_claim_detail"),
 ]

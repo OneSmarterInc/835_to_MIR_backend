@@ -326,6 +326,100 @@ class MIRServiceLine(models.Model):
         ]
 
 
+class EDI837File(models.Model):
+    STATUS_CHOICES = [("PROCESSING", "Processing"), ("PROCESSED", "Processed"), ("FAILED", "Failed")]
+    IMPORT_MODE_CHOICES = [("MANUAL", "Manual"), ("SFTP", "SFTP")]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="edi837_files")
+    uploaded_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, blank=True, related_name="uploaded_837_files")
+    original_filename = models.CharField(max_length=255)
+    stored_filename = models.CharField(max_length=255)
+    file_content = models.TextField()
+    file_hash = models.CharField(max_length=64, db_index=True)
+    file_size = models.BigIntegerField(default=0)
+    import_mode = models.CharField(max_length=20, choices=IMPORT_MODE_CHOICES, default="MANUAL")
+    remote_path = models.CharField(max_length=500, blank=True, default="")
+    archive_path = models.CharField(max_length=500, blank=True, default="")
+    outbound_path = models.CharField(max_length=500, blank=True, default="")
+    claim_count = models.PositiveIntegerField(default=0)
+    service_count = models.PositiveIntegerField(default=0)
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="PROCESSING", db_index=True)
+    processing_error = models.TextField(blank=True, default="")
+    uploaded_at = models.DateTimeField(auto_now_add=True)
+    processed_at = models.DateTimeField(null=True, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "837_file"
+        ordering = ["-uploaded_at"]
+        constraints = [models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_837_hash")]
+        indexes = [models.Index(fields=["client", "-uploaded_at"], name="837_file_client_date_idx")]
+
+
+class EDI837Claim(models.Model):
+    edi_file = models.ForeignKey(EDI837File, on_delete=models.CASCADE, related_name="claims")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="edi837_claims")
+    claim_sequence = models.PositiveIntegerField()
+    claim_control_number = models.CharField(max_length=100, db_index=True)
+    highmark_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    internal_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    reference_9c = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    patient_control_number = models.CharField(max_length=100, blank=True, default="")
+    member_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    patient_first_name = models.CharField(max_length=100, blank=True, default="")
+    patient_last_name = models.CharField(max_length=100, blank=True, default="")
+    subscriber_first_name = models.CharField(max_length=100, blank=True, default="")
+    subscriber_last_name = models.CharField(max_length=100, blank=True, default="")
+    billing_provider_name = models.CharField(max_length=255, blank=True, default="")
+    rendering_provider_name = models.CharField(max_length=255, blank=True, default="")
+    payer_name = models.CharField(max_length=255, blank=True, default="")
+    claim_type = models.CharField(max_length=30, blank=True, default="")
+    place_of_service = models.CharField(max_length=10, blank=True, default="")
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    diagnosis_codes = models.JSONField(default=list, blank=True)
+    service_count = models.PositiveIntegerField(default=0)
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    raw_claim = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "837_claim"
+        ordering = ["claim_sequence"]
+        constraints = [models.UniqueConstraint(fields=["edi_file", "claim_sequence"], name="uniq_837_claim_sequence")]
+        indexes = [
+            models.Index(fields=["client", "claim_control_number"], name="837_claim_control_idx"),
+            models.Index(fields=["client", "highmark_claim_number"], name="837_highmark_idx"),
+            models.Index(fields=["client", "internal_claim_number"], name="837_internal_idx"),
+        ]
+
+
+class EDI837ServiceLine(models.Model):
+    claim = models.ForeignKey(EDI837Claim, on_delete=models.CASCADE, related_name="service_lines")
+    edi_file = models.ForeignKey(EDI837File, on_delete=models.CASCADE, related_name="service_lines")
+    service_sequence = models.PositiveIntegerField()
+    procedure_code = models.CharField(max_length=50, blank=True, default="")
+    procedure_qualifier = models.CharField(max_length=10, blank=True, default="")
+    modifiers = models.JSONField(default=list, blank=True)
+    revenue_code = models.CharField(max_length=30, blank=True, default="")
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    units = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    diagnosis_pointers = models.JSONField(default=list, blank=True)
+    raw_segments = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "837_service_line"
+        ordering = ["service_sequence"]
+        constraints = [models.UniqueConstraint(fields=["claim", "service_sequence"], name="uniq_837_service_sequence")]
+
+
 class RECONFile(models.Model):
     STATUS_CHOICES = [
         ("UPLOADED", "Uploaded"),

@@ -1,16 +1,16 @@
 ADMIN_SCREENS = (
-    "clients", "onboard", "docs", "conversions", "checks", "result",
+    "clients", "onboard", "docs", "conversions", "search", "checks", "result",
     "sftp-automation", "files", "code-dictionary", "promote", "trust",
     "access", "defaults", "audit", "ops", "offboard",
 )
 
 DEFAULT_ADMIN_SCREENS = (
-    "clients", "onboard", "conversions", "files", "promote", "trust", "ops",
+    "clients", "onboard", "conversions", "search", "files", "promote", "trust", "ops",
 )
 
 SCREEN_LABELS = {
     "clients": "All Clients", "onboard": "Onboarding", "docs": "Documents",
-    "conversions": "Conversions", "checks": "Checks", "result": "Result",
+    "conversions": "Conversions", "search": "Search", "checks": "Checks", "result": "Result",
     "sftp-automation": "SFTP Automation", "files": "Archive",
     "code-dictionary": "Code Dictionary", "promote": "Go Live",
     "trust": "Trust Center", "access": "Access", "defaults": "Default Configs",

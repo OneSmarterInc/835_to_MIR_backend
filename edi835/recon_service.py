@@ -629,59 +629,15 @@ def parse_837_rows(text):
 
 @transaction.atomic
 def ingest_837_reference(client, actor, filename, remote_path, raw, text):
-    import hashlib, os, uuid
-    file_hash = hashlib.sha256(raw).hexdigest()
-    existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
-    if existing:
-        return {"already_exists": True, "file": {"id": str(existing.id), "original_filename": existing.original_filename,
-                "status": existing.status, "source": "SFTP", "remote_path": remote_path}}
-    rows = parse_837_rows(text)
-    recon = RECONFile.objects.create(
-        client=client, uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
-        original_filename=os.path.basename(filename)[:255],
-        stored_filename=f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{os.path.basename(filename)}"[:255],
-        file_content=text, file_hash=file_hash, file_size=len(raw), import_mode="SFTP", file_kind="837", status="PROCESSING",
-        processing_started_at=timezone.now(), processing_error="",
+    # Compatibility entry point used by the batch and scheduled SFTP workers.
+    # New 837 data is normalized into dedicated 837 tables, not RECON tables.
+    from .edi837_service import ingest_837
+    edi_file, already_exists = ingest_837(
+        client=client, actor=actor, filename=filename, remote_path=remote_path,
+        raw=raw, text=text, import_mode="SFTP",
     )
-    total_charge = Decimal("0")
-    services_total = 0
-    for sequence, data in enumerate(rows, start=1):
-        services = data["services"]
-        claim = RECONClaim.objects.create(
-            recon_file=recon, client=client, claim_sequence=sequence,
-            claim_control_number=data["claim_control_number"], member_id=data["member_id"],
-            patient_control_number=data["patient_control_number"], record_type="837",
-            claim_status=data["claim_status"], service_count=len(services),
-            charge_amount=sum((s["charge_amount"] for s in services), Decimal("0")),
-            allowed_amount=Decimal("0"), paid_amount=Decimal("0"),
-            raw_record="", segment_data={**data["segment_data"], "source": "SFTP", "remote_path": remote_path},
-        )
-        RECONServiceLine.objects.bulk_create([
-            RECONServiceLine(recon_claim=claim, recon_file=recon, service_sequence=i,
-                source_row_number=0, procedure_code=s["procedure_code"],
-                revenue_code=s.get("revenue_code", ""), units=s["units"],
-                charge_amount=s["charge_amount"], allowed_amount=s["allowed_amount"],
-                paid_amount=s["paid_amount"], raw_service="",
-                segment_data={"source": "837", **s.get("segment_data", {})})
-            for i, s in enumerate(services, start=1)
-        ])
-        total_charge += claim.charge_amount
-        services_total += len(services)
-    now = timezone.now()
-    recon.status = "PROCESSED"
-    recon.record_count = len(rows)
-    recon.claim_count = len(rows)
-    recon.service_count = services_total
-    recon.total_charge_amount = total_charge
-    recon.total_paid_amount = Decimal("0")
-    recon.processed_at = now
-    # Stage only after database persistence has succeeded, then immediately
-    # move the exact source bytes into the permanent archive. No failed DB
-    # operation can strand a file in the inbound directory.
-    inbound_path = stage_inbound(client, "837", recon.stored_filename, raw, binary=True)
-    archived_path = archive_inbound(client, "837", inbound_path)
-    shutil.copy2(archived_path, archived_path.parent.parent / "out" / archived_path.name)
-    recon.archive_path = relative_media_path(archived_path)
-    recon.save()
-    return {"already_exists": False, "file": {"id": str(recon.id), "original_filename": recon.original_filename,
-            "status": recon.status, "source": "SFTP", "remote_path": remote_path, "claim_count": recon.claim_count}}
+    return {"already_exists": already_exists, "file": {
+        "id": str(edi_file.id), "original_filename": edi_file.original_filename,
+        "status": edi_file.status, "source": "SFTP", "remote_path": remote_path,
+        "claim_count": edi_file.claim_count, "service_count": edi_file.service_count,
+    }}
