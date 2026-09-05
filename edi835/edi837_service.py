@@ -198,24 +198,9 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
         raise ValueError("The 837 file is empty.")
     text = text if text is not None else raw.decode("utf-8-sig", errors="replace")
     digest = hashlib.sha256(raw).hexdigest()
-    existing = EDI837File.objects.filter(client=client, file_hash=digest).first()
-    if existing:
-        # A file may have been indexed earlier by a manual/admin workflow and
-        # later actually arrive through the configured 837_IN SFTP route. The
-        # Search table should reflect the real inbound transport. Promote the
-        # existing record to SFTP instead of leaving a stale MANUAL source.
-        if str(import_mode or "").upper() == "SFTP":
-            update_fields = []
-            if existing.import_mode != "SFTP":
-                existing.import_mode = "SFTP"
-                update_fields.append("import_mode")
-            normalized_remote = str(remote_path or "").strip()
-            if normalized_remote and existing.remote_path != normalized_remote:
-                existing.remote_path = normalized_remote
-                update_fields.append("remote_path")
-            if update_fields:
-                existing.save(update_fields=update_fields)
-        return existing, True
+    # Every valid arrival is an independent intake event. The same payload may
+    # legitimately be uploaded or received again, so the hash is retained for
+    # traceability but is never used to deduplicate 837 files or claims.
     parsed = parse_837(text)
     original_name = safe_filename(filename)[:255]
     stored_name = f"{uuid.uuid4().hex}_{original_name}"[:255]

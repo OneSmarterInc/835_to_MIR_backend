@@ -4,7 +4,7 @@ from django.test import SimpleTestCase, TestCase
 
 from accounts.models import Client
 from .claim_numbers import split_claim_number
-from .edi837_service import _837_claim_numbers, export_single_claim, parse_837, split_x12
+from .edi837_service import _837_claim_numbers, export_single_claim, ingest_837, parse_837, split_x12
 from .edi837_views import _claim_lifecycle
 from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, RECONClaim, RECONFile
 
@@ -107,6 +107,22 @@ class EDI837ParsingTests(SimpleTestCase):
 
 
 class EDI837LifecycleTests(TestCase):
+    def test_identical_837_arrivals_are_each_persisted_and_indexed(self):
+        client = Client.objects.create(
+            name="Duplicate Intake Client", client_code="DUP837", email="duplicate@example.com"
+        )
+
+        first, first_duplicate = ingest_837(client, None, "claims", SAMPLE_837.encode())
+        second, second_duplicate = ingest_837(client, None, "claims", SAMPLE_837.encode())
+
+        self.assertNotEqual(first.pk, second.pk)
+        self.assertFalse(first_duplicate)
+        self.assertFalse(second_duplicate)
+        self.assertEqual(EDI837File.objects.filter(client=client).count(), 2)
+        self.assertEqual(EDI837Claim.objects.filter(client=client).count(), 4)
+        self.assertEqual(first.file_hash, second.file_hash)
+        self.assertNotEqual(first.archive_path, second.archive_path)
+
     def test_835_lifecycle_is_resolved_through_linked_mir_source(self):
         client = Client.objects.create(
             name="Lifecycle Client", client_code="LIFE837", email="life@example.com"

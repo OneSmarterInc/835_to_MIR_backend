@@ -383,7 +383,6 @@ class EDI837File(models.Model):
     class Meta:
         db_table = "837_file"
         ordering = ["-uploaded_at"]
-        constraints = [models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_837_hash")]
         indexes = [models.Index(fields=["client", "-uploaded_at"], name="edi837_file_client_date_idx")]
 
 
