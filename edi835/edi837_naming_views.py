@@ -23,50 +23,33 @@ DEFAULT_837_FILENAME_FORMAT = "YYYYMMDDhhmmss.837"
 FORMAT_ROUTE_KEY = "837_FILENAME_FORMAT"
 
 
-def _legacy_saved_format(client):
-    """Read the pre-migration route_paths value, if one exists."""
-    rows = SFTPConfig.objects.filter(client=client).order_by("-updated_at")
-    preferred = rows.filter(purpose="DEFAULT").first()
-    if preferred:
-        value = str((preferred.route_paths or {}).get(FORMAT_ROUTE_KEY) or "").strip()
-        if value:
-            return value
-    for purpose in ("837_IN", "837_OUT"):
-        row = rows.filter(purpose=purpose).first()
-        if row:
-            value = str((row.route_paths or {}).get(FORMAT_ROUTE_KEY) or "").strip()
-            if value:
-                return value
-    for row in rows:
-        value = str((row.route_paths or {}).get(FORMAT_ROUTE_KEY) or "").strip()
-        if value:
-            return value
-    return ""
-
-
 def get_saved_837_filename_format(client):
-    """Return the authoritative per-client 837 filename template.
+    """Return the saved per-client 837 filename template.
 
-    New saves live on Client.  If this deployment still has a value saved by
-    the older route_paths implementation, migrate it lazily the first time it
-    is read so existing custom formats are not lost.
+    The template is stored in existing SFTPConfig.route_paths so deployments do
+    not require a schema migration.  Prefer DEFAULT, then 837_OUT, then 837_IN.
     """
     if client is None:
         return DEFAULT_837_FILENAME_FORMAT
 
-    current = str(getattr(client, "edi837_filename_format", "") or "").strip()
-    legacy = _legacy_saved_format(client)
-    if legacy and (not current or current == DEFAULT_837_FILENAME_FORMAT):
-        normalized = _safe_837_filename(legacy, fallback=DEFAULT_837_FILENAME_FORMAT)
-        client.edi837_filename_format = normalized
-        client.save(update_fields=["edi837_filename_format", "updated_at"])
-        return normalized
+    rows = SFTPConfig.objects.filter(client=client).order_by("-updated_at")
+    for purpose in ("DEFAULT", "837_OUT", "837_IN"):
+        row = rows.filter(purpose=purpose).first()
+        if row:
+            value = str((row.route_paths or {}).get(FORMAT_ROUTE_KEY) or "").strip()
+            if value:
+                return _safe_837_filename(value, fallback=DEFAULT_837_FILENAME_FORMAT)
 
-    return current or DEFAULT_837_FILENAME_FORMAT
+    for row in rows:
+        value = str((row.route_paths or {}).get(FORMAT_ROUTE_KEY) or "").strip()
+        if value:
+            return _safe_837_filename(value, fallback=DEFAULT_837_FILENAME_FORMAT)
+
+    return DEFAULT_837_FILENAME_FORMAT
 
 
 def save_837_filename_format(client, value):
-    """Persist one literal tokenized filename template directly on Client."""
+    """Persist the literal 837 filename template on all relevant SFTP rows."""
     if client is None:
         raise ValueError("Select a client before saving the 837 filename format.")
 
@@ -74,13 +57,14 @@ def save_837_filename_format(client, value):
         value or DEFAULT_837_FILENAME_FORMAT,
         fallback=DEFAULT_837_FILENAME_FORMAT,
     )
-    client.edi837_filename_format = template
-    client.save(update_fields=["edi837_filename_format", "updated_at"])
 
-    # Keep the old metadata key in sync where a client DEFAULT SFTP row exists,
-    # but it is no longer authoritative. This is only backward compatibility.
-    row = SFTPConfig.objects.filter(client=client, purpose="DEFAULT").order_by("-updated_at").first()
-    if row:
+    rows = list(SFTPConfig.objects.filter(client=client).order_by("-updated_at"))
+    if not rows:
+        raise ValueError("Save the client's SFTP configuration before saving the 837 filename format.")
+
+    preferred = [row for row in rows if row.purpose in {"DEFAULT", "837_IN", "837_OUT"}]
+    targets = preferred or rows
+    for row in targets:
         paths = dict(row.route_paths or {})
         paths[FORMAT_ROUTE_KEY] = template
         row.route_paths = paths
