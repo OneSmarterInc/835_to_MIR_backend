@@ -85,13 +85,21 @@ def _claim_lifecycle(claim):
         lookup |= Q(claim_control_number__iexact=identifier)
     mir = recon = None
     if lookup:
-        mir = (MIRClaim.objects.select_related("mir_file")
+        mir = (MIRClaim.objects.select_related("mir_file", "mir_file__source_835")
                .filter(lookup, mir_file__client=claim.client)
                .order_by("mir_file__converted_at").first())
         recon = (RECONClaim.objects.select_related("recon_file")
                  .filter(lookup, client=claim.client)
                  .order_by("recon_file__uploaded_at").first())
+    source_835 = mir.mir_file.source_835 if mir else None
     return {
+        "835": {
+            "exists": bool(source_835),
+            "arrived_at": source_835.uploaded_at.isoformat() if source_835 else None,
+            "file_name": source_835.original_filename if source_835 else "",
+            "status": source_835.status if source_835 else "",
+            "source": source_835.ingestion_source if source_835 else "",
+        },
         "mir": {"exists": bool(mir), "arrived_at": mir.mir_file.converted_at.isoformat() if mir else None,
                 "file_name": mir.mir_file.mir_filename if mir else ""},
         "recon": {"exists": bool(recon), "arrived_at": recon.recon_file.uploaded_at.isoformat() if recon else None,

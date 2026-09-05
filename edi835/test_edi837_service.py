@@ -1,9 +1,12 @@
 from types import SimpleNamespace
 
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
+from accounts.models import Client
 from .claim_numbers import split_claim_number
 from .edi837_service import export_single_claim, parse_837, split_x12
+from .edi837_views import _claim_lifecycle
+from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile
 
 
 SAMPLE_837 = (
@@ -89,3 +92,38 @@ class EDI837ParsingTests(SimpleTestCase):
         self.assertIn("NM1*IL*1*MILES*SONIA****MI*MEMBER1", output)
         self.assertIn("NM1*QC*1*MILES*LAYNA*I", output)
         self.assertIn("NM1*PR*2*HIGHMARK", output)
+
+
+class EDI837LifecycleTests(TestCase):
+    def test_835_lifecycle_is_resolved_through_linked_mir_source(self):
+        client = Client.objects.create(
+            name="Lifecycle Client", client_code="LIFE837", email="life@example.com"
+        )
+        source_835 = EDI835File.objects.create(
+            client=client, original_filename="payment.835", stored_filename="payment.835",
+            status="ARCHIVED", ingestion_source="SFTP",
+        )
+        mir_file = MIRFile.objects.create(
+            source_835=source_835, client=client, mir_filename="payment.MIR",
+            original_835_filename="payment.835", file_content="", file_hash="a" * 64,
+        )
+        MIRClaim.objects.create(
+            mir_file=mir_file, claim_sequence=1, claim_control_number="123456789QYN071",
+            header_raw=" " * 334,
+        )
+        edi_file = EDI837File.objects.create(
+            client=client, original_filename="claim.837", stored_filename="claim.837",
+            file_content="", file_hash="b" * 64,
+        )
+        claim = EDI837Claim.objects.create(
+            edi_file=edi_file, client=client, claim_sequence=1,
+            claim_control_number="123456789QYN071",
+        )
+
+        lifecycle = _claim_lifecycle(claim)
+
+        self.assertTrue(lifecycle["835"]["exists"])
+        self.assertEqual(lifecycle["835"]["file_name"], "payment.835")
+        self.assertEqual(lifecycle["835"]["source"], "SFTP")
+        self.assertEqual(lifecycle["835"]["status"], "ARCHIVED")
+        self.assertTrue(lifecycle["mir"]["exists"])
