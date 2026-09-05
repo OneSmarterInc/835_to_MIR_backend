@@ -57,11 +57,17 @@ def _visible_claim(request, claim_id):
 
 def _claim_row(claim):
     patient = " ".join(part for part in (claim.patient_first_name, claim.patient_last_name) if part)
+    identifiers = split_claim_number(claim.claim_control_number)
+    identifiers["highmark_claim_number"] = (
+        claim.highmark_claim_number or identifiers["highmark_claim_number"]
+    )
+    identifiers["internal_claim_number"] = (
+        claim.reference_9c or claim.internal_claim_number or identifiers["internal_claim_number"]
+    )
     return {
         "id": claim.id,
         "claim_number": claim.claim_control_number,
-        "highmark_claim_number": claim.highmark_claim_number,
-        "internal_claim_number": claim.internal_claim_number,
+        **identifiers,
         "reference_9c": claim.reference_9c,
         "patient_control_number": claim.patient_control_number,
         "member_id": claim.member_id,

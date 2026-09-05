@@ -15,7 +15,7 @@ from project835.decorators import authenticated_api_required, json_api_errors
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .edi837_service import export_single_claim
 from .edi837_transfer import _normalize_folder, _open_sftp, edi837_sftp_transfer as _legacy_sftp_transfer
-from .edi837_views import _client_for_request, _safe_837_filename, _visible_claim
+from .edi837_views import _claim_row, _client_for_request, _safe_837_filename, _visible_claim
 from .models import SFTPConfig
 
 
@@ -202,11 +202,14 @@ def edi837_claim_push_sftp_named(request, claim_id):
         temporary_path = ""
         sftp.stat(target_path)
 
+        claim_identity = _claim_row(claim)
         return JsonResponse({
             "success": True,
             "filename_format": str(template),
             "filename": filename,
             "claim_number": claim.claim_control_number,
+            "highmark_claim_number": claim_identity["highmark_claim_number"],
+            "internal_claim_number": claim_identity["internal_claim_number"],
             "remote_path": target_path,
             "pushed_at": timezone.now().isoformat(),
             "message": f"Sliced claim {claim.claim_control_number} was pushed as {filename}.",

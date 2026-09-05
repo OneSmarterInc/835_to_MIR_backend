@@ -2,9 +2,9 @@ import re
 
 
 def split_claim_number(value):
-    """Split a combined claim key at its first alphabetic character."""
+    """Return the canonical Highmark and internal portions of a claim key."""
     claim = str(value or "").strip()
-    match = re.match(r"^(\d+)([A-Za-z].*)$", claim)
+    match = re.match(r"^(\d+)[^A-Za-z0-9]*([A-Za-z].*)$", claim)
     if match:
         return {
             "highmark_claim_number": match.group(1),

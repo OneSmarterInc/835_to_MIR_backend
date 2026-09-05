@@ -403,7 +403,8 @@ def reconciliation_results(request):
     sort_direction = request.GET.get("sort_direction", "asc")
     status_filter = request.GET.get("status", "")
     allowed_sorts = {
-        "", "claim_id", "patient_name", "mir_filename", "recon_filename",
+        "", "claim_id", "highmark_claim_number", "internal_claim_number",
+        "patient_name", "mir_filename", "recon_filename",
         "amount_to_pay", "recon_paid_amount", "difference_amount", "status",
     }
     allowed_statuses = {
@@ -689,7 +690,8 @@ def reconciliation_export(request):
     sort_direction = request.GET.get("sort_direction", "asc")
     status_filter = request.GET.get("status", "")
     allowed_sorts = {
-        "", "claim_id", "patient_name", "mir_filename", "recon_filename",
+        "", "claim_id", "highmark_claim_number", "internal_claim_number",
+        "patient_name", "mir_filename", "recon_filename",
         "amount_to_pay", "recon_paid_amount", "difference_amount", "status",
     }
     allowed_statuses = {
