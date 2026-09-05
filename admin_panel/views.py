@@ -2421,68 +2421,6 @@ def api_admin_client_documents_upload(request, client_id):
 
 
 @csrf_exempt
-def api_admin_document_preview_url(request, doc_id):
-    """Return a short-lived URL so the browser can stream a document preview."""
-    if request.method != "GET":
-        return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
-    try:
-        doc = ClientDocument.objects.only("id", "original_filename").get(id=doc_id)
-    except ClientDocument.DoesNotExist:
-        return JsonResponse({"success": False, "error": "Document not found"}, status=404)
-
-    import mimetypes
-    from urllib.parse import quote
-    from django.core import signing
-
-    content_type, _ = mimetypes.guess_type(doc.original_filename)
-    content_type = content_type or "application/octet-stream"
-    token = signing.dumps({"document_id": str(doc.id)}, salt="admin-document-preview")
-    preview_url = f"/admin-panel/api/documents/{doc.id}/preview/?token={quote(token)}"
-    return JsonResponse({
-        "success": True,
-        "preview_url": preview_url,
-        "filename": doc.original_filename,
-        "content_type": content_type,
-    })
-
-
-@csrf_exempt
-def api_admin_document_preview(request, doc_id):
-    """Stream a document using a signed URL that expires after five minutes."""
-    if request.method != "GET":
-        return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
-
-    from django.core import signing
-    token = request.GET.get("token", "")
-    try:
-        payload = signing.loads(token, salt="admin-document-preview", max_age=300)
-        if payload.get("document_id") != str(doc_id):
-            raise signing.BadSignature("Document mismatch")
-    except (signing.BadSignature, signing.SignatureExpired):
-        return JsonResponse({"success": False, "error": "Preview link is invalid or expired."}, status=403)
-
-    try:
-        doc = ClientDocument.objects.only("id", "original_filename", "file").get(id=doc_id)
-    except ClientDocument.DoesNotExist:
-        return JsonResponse({"success": False, "error": "Document not found"}, status=404)
-
-    import mimetypes
-    from django.http import FileResponse
-    from django.utils.cache import patch_cache_control
-
-    content_type, _ = mimetypes.guess_type(doc.original_filename)
-    response = FileResponse(
-        doc.file.open("rb"),
-        content_type=content_type or "application/octet-stream",
-        as_attachment=False,
-        filename=doc.original_filename,
-    )
-    response["X-Content-Type-Options"] = "nosniff"
-    patch_cache_control(response, private=True, max_age=300)
-    return response
-
-
-@csrf_exempt
 def api_admin_document_download(request, doc_id):
     """ GET /admin-panel/api/documents/<doc_id>/download/ """
     try:
