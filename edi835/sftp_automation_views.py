@@ -4,6 +4,7 @@ from datetime import date, time
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
 
+from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
 from django.utils import timezone
@@ -122,13 +123,23 @@ def sftp_automation(request):
             except (TypeError, ValueError, ValidationError):
                 return JsonResponse({"success": False, "error": "Invalid client identifier."}, status=400)
         try:
-            limit = min(500, max(25, int(request.GET.get("limit", "100"))))
+            page_number = max(1, int(request.GET.get("page", "1")))
+            page_size = min(100, max(10, int(request.GET.get("page_size", "25"))))
         except ValueError:
-            return JsonResponse({"success": False, "error": "Invalid run limit."}, status=400)
+            return JsonResponse({"success": False, "error": "Invalid history page."}, status=400)
+        run_page = Paginator(runs.order_by("-scheduled_for", "-created_at"), page_size).get_page(page_number)
         return JsonResponse({
             "success": True,
             "schedules": [_schedule_data(item) for item in schedules],
-            "runs": [_run_data(item) for item in runs[:limit]],
+            "runs": [_run_data(item) for item in run_page.object_list],
+            "run_pagination": {
+                "page": run_page.number,
+                "page_size": page_size,
+                "total": run_page.paginator.count,
+                "total_pages": run_page.paginator.num_pages,
+                "has_previous": run_page.has_previous(),
+                "has_next": run_page.has_next(),
+            },
         })
 
     if request.method != "POST":

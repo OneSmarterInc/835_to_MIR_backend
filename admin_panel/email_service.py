@@ -130,17 +130,32 @@ def send_automation_run_notice(run):
         + _detail_table([
             ("Scheduled for", _format_schedule_datetime(run.scheduled_for, getattr(run.schedule, "timezone", "UTC"))),
             ("Direction", run.get_direction_display()),
+            ("Client", run.client.name),
             ("Finished at", _format_schedule_datetime(run.finished_at, getattr(run.schedule, "timezone", "UTC"))),
+            ("Attempt", run.attempt_count),
             ("835 files processed", run.processed_835_count),
             ("837 / RECON files imported", run.recon_file_count),
-            ("Result detail", run.error_message or "Completed without a reported error."),
+            ("Failure reason" if run.status == "FAILED" else "Result detail", run.error_message or "No specific error was reported." if run.status == "FAILED" else "Completed without a reported error."),
         ])
         + (_file_list(input_835_label, input_835_names) if run.automation_type == "835" else "")
         + (_file_list(reference_label, reference_names) if run.automation_type in {"837", "RECON"} else "")
         + (_file_list("Files sent or generated", output_names) if output_names else "")
         + ('<p><strong>Action recommended:</strong> Review the automation run summary and correct the reported condition before the next scheduled run.</p>' if run.status in {"FAILED", "SKIPPED"} else '<p>No action is required. The next run will occur according to the saved schedule.</p>')
     )
-    return send_client_email(run.client, subject, html)
+    recipients = None
+    if run.status == "FAILED":
+        # Failure alerts must reach an accountable person even when nobody is
+        # signed into the portal. Include the client users, primary contact,
+        # and the administrators who created or last changed the schedule.
+        recipients = set(get_client_users(run.client))
+        if getattr(run.client, "email", ""):
+            recipients.add(run.client.email)
+        schedule = getattr(run, "schedule", None)
+        for user in (getattr(schedule, "updated_by", None), getattr(schedule, "created_by", None)):
+            if user and user.is_active and user.email:
+                recipients.add(user.email)
+        recipients = sorted(recipients)
+    return send_client_email(run.client, subject, html, to_emails=recipients)
 
 
 def send_conversion_notice(client, request, *, success, input_files, output_files=None,

@@ -60,7 +60,21 @@ class Command(BaseCommand):
         write_job(job)
         mark_automation_running(job)
         try:
-            user = get_user_model().objects.get(id=job["owner_user_id"])
+            user = None
+            owner_user_id = job.get("owner_user_id")
+            if owner_user_id:
+                user = get_user_model().objects.filter(id=owner_user_id).first()
+            if user is None and not job.get("system_automation"):
+                raise ValueError("The user who started this batch job no longer exists.")
+            if user is None:
+                # Server schedules must run without a signed-in user.  This
+                # principal authorizes tenant selection but is deliberately
+                # unauthenticated so it is never persisted as a human actor.
+                user = SimpleNamespace(
+                    id=None, name="System Automation", email="",
+                    is_staff=True, is_active=True, is_authenticated=False,
+                    client=None, client_id=None,
+                )
             from accounts.models import Client
             client = Client.objects.get(id=job.get("client_id"))
 

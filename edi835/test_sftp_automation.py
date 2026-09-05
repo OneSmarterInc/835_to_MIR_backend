@@ -136,8 +136,43 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(queued["client_id"], str(self.client_record.id))
         self.assertEqual(queued["automation_run_id"], str(run.id))
         self.assertEqual(queued["automation_type"], "835")
+        self.assertTrue(queued["system_automation"])
         schedule.refresh_from_db()
         self.assertGreater(schedule.next_run_at, now)
+
+    @patch("edi835.sftp_automation.write_job")
+    @patch("edi835.sftp_automation.active_job_for", return_value=None)
+    def test_due_schedule_does_not_require_a_user(self, _active, write_job):
+        now = datetime(2026, 8, 31, 16, 0, tzinfo=dt_timezone.utc)
+        schedule = SFTPAutomationSchedule.objects.create(
+            client=self.client_record, automation_type="RECON", direction="INCOMING",
+            run_time=time(12), timezone="America/New_York", next_run_at=now,
+        )
+        self.assertEqual(enqueue_due_automations(now=now), 1)
+        queued = write_job.call_args.args[0]
+        self.assertEqual(queued["owner_user_id"], "")
+        self.assertTrue(queued["system_automation"])
+        self.assertEqual(SFTPAutomationRun.objects.get(schedule=schedule).status, "QUEUED")
+
+    def test_history_is_paginated(self):
+        schedule = SFTPAutomationSchedule.objects.create(
+            client=self.client_record, run_time=time(9), timezone="UTC",
+        )
+        for index in range(31):
+            SFTPAutomationRun.objects.create(
+                schedule=schedule, client=self.client_record,
+                scheduled_for=datetime(2026, 9, 1, 9, index, tzinfo=dt_timezone.utc),
+            )
+        response = self.client.get(
+            f"/edi835/api/admin/sftp-automation/?client_id={self.client_record.id}&page=2&page_size=25"
+        )
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(len(payload["runs"]), 6)
+        self.assertEqual(payload["run_pagination"]["total"], 31)
+        self.assertEqual(payload["run_pagination"]["total_pages"], 2)
+        self.assertTrue(payload["run_pagination"]["has_previous"])
+        self.assertFalse(payload["run_pagination"]["has_next"])
 
     @patch("edi835.sftp_automation.send_automation_run_notice", return_value=True)
     def test_completed_job_persists_full_run_summary(self, run_email):
@@ -236,6 +271,8 @@ class SFTPAutomationTestCase(TestCase):
         self.assertNotIn("Validation Completed", subject)
         self.assertIn("835 input files involved", html)
         self.assertIn("invalid.835", html)
+        self.assertIn("Failure reason", html)
+        self.assertIn("transaction is malformed", html)
 
     @patch("edi835.views.write_job")
     @patch("edi835.views.active_job_for", return_value=None)

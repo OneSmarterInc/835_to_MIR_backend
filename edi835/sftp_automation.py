@@ -6,7 +6,6 @@ import logging
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
-from django.contrib.auth import get_user_model
 from django.db import transaction
 from django.utils import timezone
 
@@ -136,14 +135,6 @@ def next_schedule_run(schedule, now=None):
     return occurrences[0] if occurrences else None
 
 
-def _automation_actor(schedule):
-    if schedule.updated_by_id:
-        return schedule.updated_by
-    if schedule.created_by_id:
-        return schedule.created_by
-    return get_user_model().objects.filter(is_staff=True, is_active=True).order_by("date_joined", "id").first()
-
-
 def enqueue_due_automations(now=None):
     """Queue each due schedule once and advance it to the next local day."""
     now = now or timezone.now()
@@ -189,7 +180,6 @@ def enqueue_due_automations(now=None):
                 run.save(update_fields=["status", "finished_at", "error_message"])
                 terminal_run_ids.append(run.id)
                 continue
-            actor = _automation_actor(schedule)
             scope_key = f"{schedule.client_id}:{schedule.automation_type}:{schedule.direction}"
             active = active_job_for(scope_key)
             if active and schedule.overlap_policy == "SKIP":
@@ -199,20 +189,16 @@ def enqueue_due_automations(now=None):
                 run.save(update_fields=["status", "finished_at", "error_message"])
                 terminal_run_ids.append(run.id)
                 continue
-            if not actor:
-                run.status = "FAILED"
-                run.finished_at = now
-                run.error_message = "No active administrator is available to execute this schedule."
-                run.save(update_fields=["status", "finished_at", "error_message"])
-                terminal_run_ids.append(run.id)
-                continue
-
             job_id = str(uuid.uuid4())
             run.job_id = job_id
             run.save(update_fields=["job_id"])
             write_job({
                 "id": job_id,
-                "owner_user_id": str(actor.id),
+                # Scheduled jobs are owned by the server, not by a browser
+                # session.  The optional user id is retained only as audit
+                # attribution when the administrator still exists.
+                "owner_user_id": str(schedule.updated_by_id or schedule.created_by_id or ""),
+                "system_automation": True,
                 "client_id": str(schedule.client_id),
                 "automation_type": schedule.automation_type,
                 "automation_direction": schedule.direction,
