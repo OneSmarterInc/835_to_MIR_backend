@@ -449,18 +449,18 @@ class RECONResultAPITestCase(TestCase):
         from .recon_views import _cash_summary
 
         rows = [
-            {"amount_to_pay": "100.00", "recon_paid_amount": "100.00"},
-            {"amount_to_pay": "50.00", "recon_paid_amount": "70.00"},
-            {"amount_to_pay": "80.00", "recon_paid_amount": "40.00"},
-            {"amount_to_pay": "30.00", "recon_paid_amount": "0.00"},
-            {"amount_to_pay": "0.00", "recon_paid_amount": "10.00"},
+            {"mir_claim_id": 1, "recon_filename": "a.recon", "amount_to_pay": "100.00", "recon_paid_amount": "100.00"},
+            {"mir_claim_id": 2, "recon_filename": "a.recon", "amount_to_pay": "50.00", "recon_paid_amount": "70.00"},
+            {"mir_claim_id": 3, "recon_filename": "a.recon", "amount_to_pay": "80.00", "recon_paid_amount": "40.00"},
+            {"mir_claim_id": 4, "recon_filename": "", "amount_to_pay": "30.00", "recon_paid_amount": "0.00"},
+            {"mir_claim_id": None, "recon_filename": "a.recon", "amount_to_pay": "0.00", "recon_paid_amount": "10.00"},
         ]
 
         self.assertEqual(_cash_summary(rows), {
             "total_amount_in_mir": "260.00",
             "total_amount_in_recon": "220.00",
-            "overpaid": "30.00",
-            "underpaid": "70.00",
+            "overpaid": "20.00",
+            "underpaid": "40.00",
         })
 
     def test_reconciliation_review_action_is_persisted_for_client_claim(self):

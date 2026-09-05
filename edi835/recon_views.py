@@ -37,16 +37,20 @@ def _cash_summary(rows):
 
     total_mir = sum((amount(row, "amount_to_pay") for row in rows), Decimal("0"))
     total_recon = sum((amount(row, "recon_paid_amount") for row in rows), Decimal("0"))
+    matched_rows = [
+        row for row in rows
+        if row.get("mir_claim_id") and (row.get("recon_filename") or row.get("recon_matches"))
+    ]
     return {
         "total_amount_in_mir": str(total_mir),
         "total_amount_in_recon": str(total_recon),
         "overpaid": str(sum((
             max(amount(row, "recon_paid_amount") - amount(row, "amount_to_pay"), Decimal("0"))
-            for row in rows
+            for row in matched_rows
         ), Decimal("0"))),
         "underpaid": str(sum((
             max(amount(row, "amount_to_pay") - amount(row, "recon_paid_amount"), Decimal("0"))
-            for row in rows
+            for row in matched_rows
         ), Decimal("0"))),
     }
 
