@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime
 from pathlib import Path
 
 from django.conf import settings
@@ -53,6 +54,13 @@ def queued_jobs() -> list[dict]:
         except (OSError, json.JSONDecodeError):
             continue
         if job.get("state") == "QUEUED":
+            not_before = job.get("not_before")
+            if not_before:
+                try:
+                    if datetime.fromisoformat(not_before) > timezone.now():
+                        continue
+                except (TypeError, ValueError):
+                    pass
             jobs.append(job)
     return sorted(jobs, key=lambda item: item.get("started_at") or "")
 

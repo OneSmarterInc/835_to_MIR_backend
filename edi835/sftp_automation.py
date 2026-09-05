@@ -1,6 +1,7 @@
 """Persistent daily scheduling around the existing SFTP batch/Test pipeline."""
 
-from datetime import datetime, timedelta, timezone as dt_timezone
+from calendar import monthrange
+from datetime import date, datetime, timedelta, timezone as dt_timezone
 import logging
 import uuid
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -52,6 +53,89 @@ def next_daily_run(run_time, timezone_name, now=None):
     return candidate.astimezone(dt_timezone.utc)
 
 
+def _local_candidate(day, run_time, zone):
+    return datetime.combine(day, run_time, tzinfo=zone)
+
+
+def schedule_occurrences(schedule, count=5, now=None):
+    """Calculate future UTC occurrences for every supported trigger type."""
+    zone = ZoneInfo(validated_timezone(schedule.timezone))
+    now = now or timezone.now()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, dt_timezone.utc)
+    local_now = now.astimezone(zone)
+    start = schedule.start_date or local_now.date()
+    end = schedule.end_date
+    schedule_type = str(schedule.schedule_type or "DAILY").upper()
+    interval = max(1, int(schedule.interval_value or 1))
+    results = []
+
+    def include(day):
+        if day < start or (end and day > end):
+            return False
+        candidate = _local_candidate(day, schedule.run_time, zone)
+        if candidate > local_now:
+            results.append(candidate.astimezone(dt_timezone.utc))
+        return len(results) >= count
+
+    if schedule_type == "ONCE":
+        day = schedule.one_time_date
+        if day and include(day):
+            return results
+        return results
+
+    if schedule_type == "DAILY":
+        elapsed = max(0, (local_now.date() - start).days)
+        step = elapsed // interval
+        day = start + timedelta(days=step * interval)
+        if day < local_now.date() or _local_candidate(day, schedule.run_time, zone) <= local_now:
+            day += timedelta(days=interval)
+        while len(results) < count and (not end or day <= end):
+            include(day)
+            day += timedelta(days=interval)
+        return results
+
+    if schedule_type == "WEEKLY":
+        selected = sorted({int(value) for value in (schedule.weekdays or []) if str(value).isdigit() and 0 <= int(value) <= 6})
+        if not selected:
+            return results
+        anchor_monday = start - timedelta(days=start.weekday())
+        day = max(start, local_now.date())
+        for _ in range(0, 3700):
+            week_index = (day - anchor_monday).days // 7
+            if week_index % interval == 0 and day.weekday() in selected and include(day):
+                break
+            day += timedelta(days=1)
+            if end and day > end:
+                break
+        return results
+
+    if schedule_type == "MONTHLY":
+        selected_days = sorted({int(value) for value in (schedule.month_days or []) if str(value).isdigit() and 1 <= int(value) <= 31})
+        if not selected_days:
+            return results
+        year, month = start.year, start.month
+        current_index = local_now.year * 12 + local_now.month - (year * 12 + month)
+        period = max(0, current_index // interval) * interval
+        for _ in range(0, 240):
+            absolute = year * 12 + (month - 1) + period
+            target_year, target_month = absolute // 12, absolute % 12 + 1
+            last_day = monthrange(target_year, target_month)[1]
+            for number in selected_days:
+                if number <= last_day and include(date(target_year, target_month, number)):
+                    return results
+            period += interval
+            if end and date(target_year, target_month, last_day) > end:
+                break
+        return results
+    return results
+
+
+def next_schedule_run(schedule, now=None):
+    occurrences = schedule_occurrences(schedule, count=1, now=now)
+    return occurrences[0] if occurrences else None
+
+
 def _automation_actor(schedule):
     if schedule.updated_by_id:
         return schedule.updated_by
@@ -79,10 +163,10 @@ def enqueue_due_automations(now=None):
         for schedule in due:
             scheduled_for = schedule.next_run_at
             schedule.last_run_at = scheduled_for
-            schedule.next_run_at = next_daily_run(
-                schedule.run_time, schedule.timezone, now=scheduled_for + timedelta(seconds=1)
-            )
-            schedule.save(update_fields=["last_run_at", "next_run_at", "updated_at"])
+            schedule.next_run_at = next_schedule_run(schedule, now=scheduled_for + timedelta(seconds=1))
+            if schedule.schedule_type == "ONCE" and schedule.next_run_at is None:
+                schedule.enabled = False
+            schedule.save(update_fields=["last_run_at", "next_run_at", "enabled", "updated_at"])
 
             run = SFTPAutomationRun.objects.create(
                 schedule=schedule,
@@ -91,6 +175,13 @@ def enqueue_due_automations(now=None):
                 direction=schedule.direction,
                 scheduled_for=scheduled_for,
             )
+            if schedule.misfire_policy == "SKIP" and now - scheduled_for > timedelta(minutes=5):
+                run.status = "SKIPPED"
+                run.finished_at = now
+                run.error_message = "This run was missed by more than five minutes and the schedule is configured to skip missed runs."
+                run.save(update_fields=["status", "finished_at", "error_message"])
+                terminal_run_ids.append(run.id)
+                continue
             if schedule.client.status != "ACTIVE" or schedule.client.stage == "offboarded":
                 run.status = "SKIPPED"
                 run.finished_at = now
@@ -101,7 +192,7 @@ def enqueue_due_automations(now=None):
             actor = _automation_actor(schedule)
             scope_key = f"{schedule.client_id}:{schedule.automation_type}:{schedule.direction}"
             active = active_job_for(scope_key)
-            if active:
+            if active and schedule.overlap_policy == "SKIP":
                 run.status = "SKIPPED"
                 run.finished_at = now
                 run.error_message = "A batch conversion was already queued or running for this client."
@@ -133,6 +224,10 @@ def enqueue_due_automations(now=None):
                 "finished_at": None,
                 "status_code": None,
                 "result": None,
+                "attempt_count": 0,
+                "retry_count": schedule.retry_count,
+                "retry_delay_minutes": schedule.retry_delay_minutes,
+                "not_before": None,
             })
             queued += 1
     for run in SFTPAutomationRun.objects.select_related("client", "schedule").filter(id__in=terminal_run_ids):
@@ -191,6 +286,7 @@ def finish_automation_run(job):
         input_recon_files=reference_names,
         mir_output_files=[mir_name] if mir_name else [],
         sent_files=[str(value) for value in (result.get("sent_files") or [])],
+        attempt_count=max(1, int(job.get("attempt_count") or 1)),
         processed_835_count=max(0, int(result.get("processed_count") or 0)) if automation_type == "835" else 0,
         recon_file_count=reference_count,
         error_message=str(error or ""),

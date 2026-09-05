@@ -100,7 +100,9 @@ def send_automation_schedule_notice(schedule, created=False):
         + _detail_table([
             ("Automation", schedule.get_automation_type_display()),
             ("Status", state),
-            ("Daily run time", schedule.run_time.strftime("%I:%M %p")),
+            ("Operation", schedule.get_direction_display()),
+            ("Schedule type", schedule.get_schedule_type_display()),
+            ("Run time", schedule.run_time.strftime("%I:%M %p")),
             ("Timezone", schedule.timezone),
             ("Next scheduled run", _format_schedule_datetime(schedule.next_run_at, schedule.timezone)),
         ])
@@ -119,7 +121,7 @@ def send_automation_run_notice(run):
     status_badge = f'<span style="display:inline-block;padding:5px 10px;border-radius:999px;background:{background};color:{foreground};font-size:12px;font-weight:700;letter-spacing:.4px">{escape(run.status)}</span>'
     input_835_names = list(run.input_835_files or [])
     reference_names = list(run.input_recon_files or [])
-    output_names = list(run.mir_output_files or [])
+    output_names = list(run.sent_files or run.mir_output_files or [])
     reference_label = "837 reference files imported" if run.automation_type == "837" else "RECON files imported"
     input_835_label = "835 input files processed" if run.status == "SUCCESS" else "835 input files involved"
     html = (
@@ -127,6 +129,7 @@ def send_automation_run_notice(run):
         f'<p>The scheduled <strong>{escape(run.get_automation_type_display())}</strong> operation has reached a final status: {status_badge}</p>'
         + _detail_table([
             ("Scheduled for", _format_schedule_datetime(run.scheduled_for, getattr(run.schedule, "timezone", "UTC"))),
+            ("Direction", run.get_direction_display()),
             ("Finished at", _format_schedule_datetime(run.finished_at, getattr(run.schedule, "timezone", "UTC"))),
             ("835 files processed", run.processed_835_count),
             ("837 / RECON files imported", run.recon_file_count),
@@ -134,7 +137,7 @@ def send_automation_run_notice(run):
         ])
         + (_file_list(input_835_label, input_835_names) if run.automation_type == "835" else "")
         + (_file_list(reference_label, reference_names) if run.automation_type in {"837", "RECON"} else "")
-        + (_file_list("MIR output files generated", output_names) if run.automation_type == "835" else "")
+        + (_file_list("Files sent or generated", output_names) if output_names else "")
         + ('<p><strong>Action recommended:</strong> Review the automation run summary and correct the reported condition before the next scheduled run.</p>' if run.status in {"FAILED", "SKIPPED"} else '<p>No action is required. The next run will occur according to the saved schedule.</p>')
     )
     return send_client_email(run.client, subject, html)

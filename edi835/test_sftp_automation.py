@@ -1,4 +1,4 @@
-from datetime import datetime, time, timezone as dt_timezone
+from datetime import date, datetime, time, timezone as dt_timezone
 import io
 import json
 import stat
@@ -9,7 +9,7 @@ from django.test import RequestFactory, TestCase
 
 from accounts.models import Client, User
 from .models import RECONFile, SFTPAutomationRun, SFTPAutomationSchedule
-from .sftp_automation import enqueue_due_automations, finish_automation_run, next_daily_run
+from .sftp_automation import enqueue_due_automations, finish_automation_run, next_daily_run, schedule_occurrences
 from .views import _execute_batch_conversion
 from admin_panel.email_service import send_automation_run_notice
 
@@ -29,6 +29,28 @@ class SFTPAutomationTestCase(TestCase):
         now = datetime(2026, 8, 31, 16, 0, tzinfo=dt_timezone.utc)
         next_run = next_daily_run(time(13, 0), "America/New_York", now=now)
         self.assertEqual(next_run, datetime(2026, 8, 31, 17, 0, tzinfo=dt_timezone.utc))
+
+    def test_every_two_days_uses_start_date_as_stable_anchor(self):
+        trigger = SimpleNamespace(
+            timezone="UTC", run_time=time(9), schedule_type="DAILY", interval_value=2,
+            start_date=date(2026, 9, 1), end_date=None, one_time_date=None,
+            weekdays=[], month_days=[],
+        )
+        runs = schedule_occurrences(trigger, 3, now=datetime(2026, 9, 2, 12, tzinfo=dt_timezone.utc))
+        self.assertEqual(runs, [
+            datetime(2026, 9, 3, 9, tzinfo=dt_timezone.utc),
+            datetime(2026, 9, 5, 9, tzinfo=dt_timezone.utc),
+            datetime(2026, 9, 7, 9, tzinfo=dt_timezone.utc),
+        ])
+
+    def test_weekly_trigger_obeys_selected_days(self):
+        trigger = SimpleNamespace(
+            timezone="UTC", run_time=time(10), schedule_type="WEEKLY", interval_value=1,
+            start_date=date(2026, 9, 1), end_date=None, one_time_date=None,
+            weekdays=[0, 2, 4], month_days=[],
+        )
+        runs = schedule_occurrences(trigger, 3, now=datetime(2026, 9, 1, 12, tzinfo=dt_timezone.utc))
+        self.assertEqual([value.weekday() for value in runs], [2, 4, 0])
 
     @patch("edi835.sftp_automation_views.send_automation_schedule_notice", return_value=True)
     def test_india_standard_time_alias_is_accepted_and_canonicalized(self, _schedule_email):

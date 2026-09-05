@@ -55,6 +55,7 @@ class Command(BaseCommand):
 
     def _process(self, job):
         job["state"] = "RUNNING"
+        job["attempt_count"] = int(job.get("attempt_count") or 0) + 1
         job["worker_started_at"] = timezone.now().isoformat()
         write_job(job)
         mark_automation_running(job)
@@ -85,6 +86,13 @@ class Command(BaseCommand):
                 job["state"] = "COMPLETED" if directional.get("success") else "FAILED"
                 job["status_code"] = 200 if directional.get("success") else 400
                 job["result"] = directional
+                if job["state"] == "FAILED" and job["attempt_count"] <= int(job.get("retry_count") or 0):
+                    from datetime import timedelta
+                    job["state"] = "QUEUED"
+                    job["not_before"] = (timezone.now() + timedelta(minutes=max(1, int(job.get("retry_delay_minutes") or 5)))).isoformat()
+                    job["worker_started_at"] = None
+                    write_job(job)
+                    return
                 job["finished_at"] = timezone.now().isoformat()
                 write_job(job)
                 finish_automation_run(job)
@@ -106,6 +114,13 @@ class Command(BaseCommand):
             job["state"] = "FAILED"
             job["status_code"] = 500
             job["result"] = {"success": False, "error": f"Batch worker failed: {exc}"}
+        if job.get("state") == "FAILED" and job["attempt_count"] <= int(job.get("retry_count") or 0):
+            from datetime import timedelta
+            job["state"] = "QUEUED"
+            job["not_before"] = (timezone.now() + timedelta(minutes=max(1, int(job.get("retry_delay_minutes") or 5)))).isoformat()
+            job["worker_started_at"] = None
+            write_job(job)
+            return
         job["finished_at"] = timezone.now().isoformat()
         write_job(job)
         finish_automation_run(job)

@@ -154,6 +154,14 @@ class SFTPAutomationSchedule(models.Model):
         ("PROCESSING", "Processing"),
         ("OUTGOING", "Outgoing"),
     ]
+    SCHEDULE_TYPES = [
+        ("ONCE", "One time"),
+        ("DAILY", "Every N days"),
+        ("WEEKLY", "Selected weekdays"),
+        ("MONTHLY", "Monthly"),
+    ]
+    MISFIRE_POLICIES = [("RUN_ASAP", "Run as soon as possible"), ("SKIP", "Skip missed run")]
+    OVERLAP_POLICIES = [("SKIP", "Skip new run"), ("QUEUE", "Queue one run")]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey(
@@ -163,6 +171,17 @@ class SFTPAutomationSchedule(models.Model):
     direction = models.CharField(max_length=12, choices=DIRECTIONS, default="INCOMING")
     run_time = models.TimeField()
     timezone = models.CharField(max_length=64, default="America/New_York")
+    schedule_type = models.CharField(max_length=12, choices=SCHEDULE_TYPES, default="DAILY")
+    interval_value = models.PositiveSmallIntegerField(default=1)
+    weekdays = models.JSONField(default=list, blank=True)
+    month_days = models.JSONField(default=list, blank=True)
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+    one_time_date = models.DateField(null=True, blank=True)
+    misfire_policy = models.CharField(max_length=12, choices=MISFIRE_POLICIES, default="RUN_ASAP")
+    overlap_policy = models.CharField(max_length=8, choices=OVERLAP_POLICIES, default="SKIP")
+    retry_count = models.PositiveSmallIntegerField(default=0)
+    retry_delay_minutes = models.PositiveSmallIntegerField(default=5)
     enabled = models.BooleanField(default=True)
     next_run_at = models.DateTimeField(null=True, blank=True, db_index=True)
     last_run_at = models.DateTimeField(null=True, blank=True)
@@ -219,6 +238,7 @@ class SFTPAutomationRun(models.Model):
     recon_file_count = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")
     result = models.JSONField(default=dict, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=1)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
