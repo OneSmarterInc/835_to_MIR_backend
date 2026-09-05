@@ -11,8 +11,8 @@ from .views import (
     api_verify_sftp_paths,
     api_push_to_sftp,
     api_browse_sftp,
-    api_start_batch_conversion,
 )
+from .batch_test_837 import api_start_batch_conversion_with_837
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
@@ -41,7 +41,7 @@ api_sftp_connect = authenticated_api(api_sftp_connect)
 api_verify_sftp_paths = authenticated_api(api_verify_sftp_paths)
 api_push_to_sftp = authenticated_api(api_push_to_sftp)
 api_browse_sftp = authenticated_api(api_browse_sftp)
-api_start_batch_conversion = authenticated_api(api_start_batch_conversion)
+api_start_batch_conversion = authenticated_api(api_start_batch_conversion_with_837)
 api_download_archive_zip = authenticated_api(api_download_archive_zip)
 recon_files = authenticated_api(recon_files)
 recon_download = authenticated_api(recon_download)
