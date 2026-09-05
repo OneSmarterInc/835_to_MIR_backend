@@ -26,8 +26,9 @@ from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
 from .edi837_views import (
     edi837_claim_detail, edi837_claim_export, edi837_claim_push_sftp, edi837_files, edi837_search,
-    edi837_sftp_batch_rename, edi837_upload_process,
+    edi837_upload_process,
 )
+from .edi837_transfer import edi837_sftp_transfer
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list)
@@ -58,7 +59,7 @@ sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
 sftp_automation = authenticated_api(sftp_automation)
 edi837_upload_process = authenticated_api(edi837_upload_process)
-edi837_sftp_batch_rename = authenticated_api(edi837_sftp_batch_rename)
+edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer)
 edi837_search = authenticated_api(edi837_search)
 edi837_files = authenticated_api(edi837_files)
 edi837_claim_detail = authenticated_api(edi837_claim_detail)
@@ -95,7 +96,7 @@ urlpatterns = [
     path("api/sftp/837-files/", sftp_837_files, name="sftp_837_files"),
     path("api/sftp/837-ingest/", sftp_837_ingest, name="sftp_837_ingest"),
     path("api/837/upload-process/", edi837_upload_process, name="edi837_upload_process"),
-    path("api/837/sftp-rename/", edi837_sftp_batch_rename, name="edi837_sftp_batch_rename"),
+    path("api/837/sftp-rename/", edi837_sftp_transfer, name="edi837_sftp_transfer"),
     path("api/837/search/", edi837_search, name="edi837_search"),
     path("api/837/files/", edi837_files, name="edi837_files"),
     path("api/837/claims/<int:claim_id>/", edi837_claim_detail, name="edi837_claim_detail"),
