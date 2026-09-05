@@ -144,9 +144,15 @@ class SFTPAutomationSchedule(models.Model):
     """One independently scheduled SFTP ingestion operation per client/type."""
 
     AUTOMATION_TYPES = [
-        ("835", "835 to MIR"),
         ("837", "837 Reference"),
+        ("835", "835 to MIR"),
+        ("MIR", "MIR"),
         ("RECON", "RECON"),
+    ]
+    DIRECTIONS = [
+        ("INCOMING", "Incoming"),
+        ("PROCESSING", "Processing"),
+        ("OUTGOING", "Outgoing"),
     ]
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
@@ -154,6 +160,7 @@ class SFTPAutomationSchedule(models.Model):
         "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_schedules"
     )
     automation_type = models.CharField(max_length=10, choices=AUTOMATION_TYPES, default="835")
+    direction = models.CharField(max_length=12, choices=DIRECTIONS, default="INCOMING")
     run_time = models.TimeField()
     timezone = models.CharField(max_length=64, default="America/New_York")
     enabled = models.BooleanField(default=True)
@@ -172,10 +179,10 @@ class SFTPAutomationSchedule(models.Model):
 
     class Meta:
         db_table = "sftp_automation_schedule"
-        ordering = ["client__name", "automation_type"]
+        ordering = ["client__name", "automation_type", "direction"]
         constraints = [
             models.UniqueConstraint(
-                fields=["client", "automation_type"], name="uniq_sftp_auto_client_type"
+                fields=["client", "automation_type", "direction"], name="uniq_sftp_auto_client_type_dir"
             )
         ]
 
@@ -198,6 +205,7 @@ class SFTPAutomationRun(models.Model):
         "accounts.Client", on_delete=models.CASCADE, related_name="sftp_automation_runs"
     )
     automation_type = models.CharField(max_length=10, choices=SFTPAutomationSchedule.AUTOMATION_TYPES, default="835")
+    direction = models.CharField(max_length=12, choices=SFTPAutomationSchedule.DIRECTIONS, default="INCOMING")
     scheduled_for = models.DateTimeField(db_index=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
@@ -206,6 +214,7 @@ class SFTPAutomationRun(models.Model):
     input_835_files = models.JSONField(default=list, blank=True)
     input_recon_files = models.JSONField(default=list, blank=True)
     mir_output_files = models.JSONField(default=list, blank=True)
+    sent_files = models.JSONField(default=list, blank=True)
     processed_835_count = models.PositiveIntegerField(default=0)
     recon_file_count = models.PositiveIntegerField(default=0)
     error_message = models.TextField(blank=True, default="")

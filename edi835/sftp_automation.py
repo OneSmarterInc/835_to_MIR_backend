@@ -88,6 +88,7 @@ def enqueue_due_automations(now=None):
                 schedule=schedule,
                 client=schedule.client,
                 automation_type=schedule.automation_type,
+                direction=schedule.direction,
                 scheduled_for=scheduled_for,
             )
             if schedule.client.status != "ACTIVE" or schedule.client.stage == "offboarded":
@@ -98,7 +99,8 @@ def enqueue_due_automations(now=None):
                 terminal_run_ids.append(run.id)
                 continue
             actor = _automation_actor(schedule)
-            active = active_job_for(f"{schedule.client_id}:{schedule.automation_type}")
+            scope_key = f"{schedule.client_id}:{schedule.automation_type}:{schedule.direction}"
+            active = active_job_for(scope_key)
             if active:
                 run.status = "SKIPPED"
                 run.finished_at = now
@@ -122,7 +124,8 @@ def enqueue_due_automations(now=None):
                 "owner_user_id": str(actor.id),
                 "client_id": str(schedule.client_id),
                 "automation_type": schedule.automation_type,
-                "scope_key": f"{schedule.client_id}:{schedule.automation_type}",
+                "automation_direction": schedule.direction,
+                "scope_key": scope_key,
                 "automation_run_id": str(run.id),
                 "state": "QUEUED",
                 "started_at": now.isoformat(),
@@ -151,6 +154,7 @@ def finish_automation_run(job):
         return
     result = job.get("result") or {}
     automation_type = str(job.get("automation_type") or result.get("automation_type") or "835").upper()
+    direction = str(job.get("automation_direction") or result.get("direction") or "INCOMING").upper()
 
     def result_items(key):
         return [item for item in (result.get(key) or []) if isinstance(item, dict)]
@@ -178,6 +182,7 @@ def finish_automation_run(job):
     error = result.get("error") or (errors[-1] if errors else "")
     SFTPAutomationRun.objects.filter(id=run_id).update(
         status="SUCCESS" if success else "FAILED",
+        direction=direction,
         started_at=job.get("worker_started_at") or timezone.now(),
         finished_at=job.get("finished_at") or timezone.now(),
         input_835_files=input_835_names,
@@ -185,6 +190,7 @@ def finish_automation_run(job):
         # exposes separate 837 and RECON fields based on automation_type.
         input_recon_files=reference_names,
         mir_output_files=[mir_name] if mir_name else [],
+        sent_files=[str(value) for value in (result.get("sent_files") or [])],
         processed_835_count=max(0, int(result.get("processed_count") or 0)) if automation_type == "835" else 0,
         recon_file_count=reference_count,
         error_message=str(error or ""),

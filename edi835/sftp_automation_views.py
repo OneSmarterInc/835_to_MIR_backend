@@ -28,6 +28,7 @@ def _schedule_data(schedule):
         "client_name": schedule.client.name,
         "client_code": schedule.client.client_code,
         "automation_type": schedule.automation_type,
+        "direction": schedule.direction,
         "run_time": schedule.run_time.strftime("%H:%M"),
         "timezone": schedule.timezone,
         "enabled": schedule.enabled,
@@ -47,12 +48,15 @@ def _run_data(run):
         else input_recon_files
     )
     processed_count = run.processed_835_count if automation_type == "835" else run.recon_file_count
+    if run.direction == "OUTGOING":
+        processed_count = len(run.sent_files or [])
     return {
         "id": str(run.id),
         "client_id": str(run.client_id),
         "client_name": run.client.name,
         "client_code": run.client.client_code,
         "automation_type": automation_type,
+        "direction": run.direction,
         "automation_label": run.get_automation_type_display(),
         "scheduled_for": run.scheduled_for.isoformat(),
         "started_at": run.started_at.isoformat() if run.started_at else None,
@@ -64,6 +68,7 @@ def _run_data(run):
         "input_recon_files": input_recon_files,
         "input_files": input_files,
         "mir_output_files": run.mir_output_files,
+        "sent_files": run.sent_files,
         "processed_835_count": run.processed_835_count,
         "recon_file_count": run.recon_file_count,
         "files_found_count": len(input_files),
@@ -86,6 +91,7 @@ def sftp_automation(request):
         runs = SFTPAutomationRun.objects.select_related("client")
         if selected_client_id:
             try:
+                schedules = schedules.filter(client_id=selected_client_id)
                 runs = runs.filter(client_id=selected_client_id)
                 runs.exists()
             except (TypeError, ValueError, ValidationError):
@@ -110,10 +116,13 @@ def sftp_automation(request):
 
     client_id = str(payload.get("client_id") or "").strip()
     automation_type = str(payload.get("automation_type") or "").strip().upper()
+    direction = str(payload.get("direction") or ("PROCESSING" if automation_type == "835" else "INCOMING")).strip().upper()
     raw_time = str(payload.get("run_time") or "").strip()
     valid_types = {value for value, _label in SFTPAutomationSchedule.AUTOMATION_TYPES}
-    if not client_id or not raw_time or automation_type not in valid_types:
-        return JsonResponse({"success": False, "error": "Client, automation type, and run time are required."}, status=400)
+    allowed = {("837", "INCOMING"), ("837", "OUTGOING"), ("835", "INCOMING"),
+               ("835", "PROCESSING"), ("MIR", "OUTGOING"), ("RECON", "INCOMING")}
+    if not client_id or not raw_time or automation_type not in valid_types or (automation_type, direction) not in allowed:
+        return JsonResponse({"success": False, "error": "Select a supported automation operation, run time, and client."}, status=400)
     try:
         hour, minute = [int(value) for value in raw_time.split(":", 1)]
         run_time = time(hour=hour, minute=minute)
@@ -139,7 +148,7 @@ def sftp_automation(request):
         return JsonResponse({"success": False, "error": "Automation cannot be enabled for an inactive client."}, status=409)
 
     schedule, created = SFTPAutomationSchedule.objects.get_or_create(
-        client=client, automation_type=automation_type,
+        client=client, automation_type=automation_type, direction=direction,
         defaults={"created_by": request.user, "run_time": run_time},
     )
     schedule.run_time = run_time

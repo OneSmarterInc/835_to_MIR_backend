@@ -60,6 +60,21 @@ class Command(BaseCommand):
         mark_automation_running(job)
         try:
             user = get_user_model().objects.get(id=job["owner_user_id"])
+            from accounts.models import Client
+            from edi835.sftp_automation_operations import execute_directional_operation
+            client = Client.objects.get(id=job.get("client_id"))
+            directional = execute_directional_operation(
+                client, user, job.get("automation_type") or "835",
+                job.get("automation_direction") or "INCOMING",
+            )
+            if directional is not None:
+                job["state"] = "COMPLETED" if directional.get("success") else "FAILED"
+                job["status_code"] = 200 if directional.get("success") else 400
+                job["result"] = directional
+                job["finished_at"] = timezone.now().isoformat()
+                write_job(job)
+                finish_automation_run(job)
+                return
             body = json.dumps({
                 "client_id": job.get("client_id") or "",
                 "automation_type": job.get("automation_type") or "ALL",

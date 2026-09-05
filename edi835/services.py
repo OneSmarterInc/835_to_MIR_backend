@@ -530,6 +530,7 @@ def process_multiple_edi835_files(
     ingestion_source="SFTP",
     client=None,
     outbound_config=None,
+    deliver_outbound=True,
 ):
     """
     Takes a list of file items: [ {"filename": "f1.835", "content": "..."}, {"filename": "f2.835", "content": "..."} ]
@@ -649,13 +650,18 @@ def process_multiple_edi835_files(
         mir_filename=delivery_mir_filename,
         mir_text=mir_text,
     )
-    sftp_uploaded = upload_mir_to_sftp(
-        output_mir_path,
-        delivery_mir_filename,
-        client=client,
-        sftp_config=outbound_config,
-    )
+    sftp_uploaded = False
+    if deliver_outbound:
+        sftp_uploaded = upload_mir_to_sftp(
+            output_mir_path,
+            delivery_mir_filename,
+            client=client,
+            sftp_config=outbound_config,
+        )
     set_mir_push_status(stored_mir, sftp_uploaded)
+    if not deliver_outbound:
+        stored_mir.status = "GENERATED"
+        stored_mir.save(update_fields=["status", "updated_at"])
     if sftp_uploaded:
         remove_delivered_outbound(client, "mir", output_mir_path)
 
@@ -663,7 +669,7 @@ def process_multiple_edi835_files(
     # boolean. This is especially important for direct execution where the
     # admin page must distinguish conversion success from delivery failure.
     sftp_error = ""
-    if not sftp_uploaded:
+    if deliver_outbound and not sftp_uploaded:
         try:
             cfg_for_error = outbound_config or resolve_sftp_config(
                 client=client,
