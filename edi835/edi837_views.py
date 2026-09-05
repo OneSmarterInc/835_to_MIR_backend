@@ -89,6 +89,18 @@ def _load_private_key(paramiko, key_text, password=None):
     raise ValueError(f"Unable to load the configured SFTP private key: {last_error}")
 
 
+def _safe_837_filename(value, fallback="837.837"):
+    raw = os.path.basename(str(value or "").strip())
+    if not raw:
+        return fallback
+    safe = "".join(char if char.isalnum() or char in "-_." else "_" for char in raw)
+    if not safe:
+        return fallback
+    if not safe.lower().endswith(".837"):
+        safe = f"{safe}.837"
+    return safe[:120]
+
+
 @csrf_exempt
 @authenticated_api_required
 @json_api_errors
@@ -145,17 +157,12 @@ def edi837_sftp_batch_rename(request):
     if str(client.stage or "").lower() == "offboarded":
         return JsonResponse({"success": False, "error": "This client is offboarded; SFTP changes are locked."}, status=409)
 
-    prefix = str(body.get("prefix") or "").strip()
-    if not prefix:
-        return JsonResponse({"success": False, "error": "A filename prefix is required."}, status=400)
-    if len(prefix) > 80 or any(char not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_." for char in prefix):
-        return JsonResponse({
-            "success": False,
-            "error": "The prefix may contain only letters, numbers, dash, underscore, and period, up to 80 characters.",
-        }, status=400)
-    prefix = prefix.rstrip(".")
-    if not prefix:
-        return JsonResponse({"success": False, "error": "Enter a valid filename prefix."}, status=400)
+    filename = _safe_837_filename(body.get("filename"), fallback="")
+    if not filename:
+        return JsonResponse({"success": False, "error": "A valid 837 filename is required."}, status=400)
+    stem, extension = os.path.splitext(filename)
+    if not stem:
+        return JsonResponse({"success": False, "error": "Enter a valid filename before renaming 837 files."}, status=400)
 
     config = resolve_sftp_config(client=client, outbound=False, purpose="837_IN")
     if not config:
@@ -215,13 +222,14 @@ def edi837_sftp_batch_rename(request):
             and has_valid_file_extension(entry.filename, "837")
         )
         if not candidates:
-            return JsonResponse({"success": True, "renamed_count": 0, "renamed": [], "message": "No valid 837 files were found to rename."})
+            return JsonResponse({"success": True, "renamed_count": 0, "renamed": [], "filename": filename,
+                                 "message": "No valid 837 files were found to rename."})
 
         rename_plan = []
         target_names = set()
+        multiple = len(candidates) > 1
         for index, old_name in enumerate(candidates, start=1):
-            extension = os.path.splitext(old_name)[1]
-            new_name = f"{prefix}_{index:03d}{extension}"
+            new_name = f"{stem}_{index:03d}{extension}" if multiple else filename
             if new_name in target_names:
                 return JsonResponse({"success": False, "error": f"The rename plan would create duplicate filename {new_name}."}, status=409)
             if new_name in existing_names and new_name not in candidates:
@@ -229,7 +237,6 @@ def edi837_sftp_batch_rename(request):
             target_names.add(new_name)
             rename_plan.append((old_name, new_name))
 
-        # Use temporary names first so swaps/reordering cannot overwrite another source file.
         temporary_plan = []
         for index, (old_name, new_name) in enumerate(rename_plan, start=1):
             temp_name = f".__837rename_{timezone.now().strftime('%Y%m%d%H%M%S%f')}_{index}"
@@ -244,7 +251,6 @@ def edi837_sftp_batch_rename(request):
                 sftp.rename(posixpath.join(resolved_folder, temp_name), posixpath.join(resolved_folder, new_name))
                 renamed.append({"from": old_name, "to": new_name})
         except Exception:
-            # Best-effort rollback for any temporary names that have not yet reached their final target.
             completed_targets = {item["to"] for item in renamed}
             for temp_name, new_name, old_name in temporary_plan:
                 if new_name in completed_targets:
@@ -255,11 +261,15 @@ def edi837_sftp_batch_rename(request):
                     pass
             raise
 
+        message = f"Renamed {len(renamed)} 837 file(s) in the selected client's SFTP folder using {filename}."
+        if multiple:
+            message += " Numbered suffixes were added because more than one 837 file was present."
         return JsonResponse({
             "success": True,
             "renamed_count": len(renamed),
             "renamed": renamed,
-            "message": f"Renamed {len(renamed)} 837 file(s) in the selected client's SFTP folder.",
+            "filename": filename,
+            "message": message,
         })
     except Exception as exc:
         return JsonResponse({"success": False, "error": f"837 SFTP rename failed: {exc}"}, status=400)
@@ -337,8 +347,12 @@ def edi837_claim_export(request, claim_id):
     if claim is None:
         return JsonResponse({"success": False, "error": "837 claim was not found."}, status=404)
     content = export_single_claim(claim)
-    safe_claim = "".join(char for char in claim.claim_control_number if char.isalnum() or char in "-_") or str(claim.id)
-    filename = f"837_{safe_claim}.837"
+    requested_filename = str(request.GET.get("filename") or "").strip()
+    if requested_filename:
+        filename = _safe_837_filename(requested_filename)
+    else:
+        safe_claim = "".join(char for char in claim.claim_control_number if char.isalnum() or char in "-_") or str(claim.id)
+        filename = f"837_{safe_claim}.837"
     response = HttpResponse(content, content_type="application/edi-x12; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["X-OneSmarter-Filename"] = filename
