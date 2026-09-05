@@ -193,6 +193,68 @@ def send_conversion_notice(client, request, *, success, input_files, output_file
     recipient = getattr(getattr(request, "user", None), "email", "")
     return send_client_email(client, subject, html, to_emails=[recipient] if recipient else None)
 
+
+def send_batch_validation_refusal_notice(
+    client, request, *, refused_files, accepted_files=None, output_files=None
+):
+    """Report every refused 835 in a mixed batch without hiding valid output."""
+    refused_files = list(refused_files or [])
+    if not refused_files:
+        return False
+    accepted_files = [str(name) for name in (accepted_files or []) if name]
+    output_files = [str(name) for name in (output_files or []) if name]
+    detail_blocks = []
+    for refused in refused_files:
+        name = escape(str(refused.get("filename") or "Unknown file"))
+        engine = escape(str(refused.get("validator_engine") or "OneSmarter validation"))
+        findings = refused.get("findings") or []
+        if not findings:
+            findings = [{"message": value} for value in (refused.get("errors") or [])]
+        rows = []
+        for finding in findings:
+            if not isinstance(finding, dict):
+                finding = {"message": str(finding)}
+            location = "/".join(str(value) for value in (
+                finding.get("segment"), finding.get("element")
+            ) if value) or "File"
+            line = finding.get("line") or finding.get("row_number")
+            if line:
+                location += f" · line {line}"
+            code = finding.get("code") or finding.get("rule_code") or "VALIDATION_FAILED"
+            message = finding.get("message") or finding.get("what_found") or finding.get("reason") or "Validation failed."
+            rows.append(
+                "<tr>"
+                f'<td style="padding:8px;border:1px solid #d7e0ea">{escape(str(code))}</td>'
+                f'<td style="padding:8px;border:1px solid #d7e0ea">{escape(location)}</td>'
+                f'<td style="padding:8px;border:1px solid #d7e0ea">{escape(str(message))}</td>'
+                "</tr>"
+            )
+        detail_blocks.append(
+            f'<h4 style="margin:20px 0 6px">{name}</h4>'
+            f'<p style="margin:0 0 8px"><strong>Decision:</strong> REFUSE · <strong>Validator:</strong> {engine}</p>'
+            '<table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse">'
+            '<tr><th style="padding:8px;border:1px solid #d7e0ea;text-align:left">Code</th>'
+            '<th style="padding:8px;border:1px solid #d7e0ea;text-align:left">Location</th>'
+            '<th style="padding:8px;border:1px solid #d7e0ea;text-align:left">Finding</th></tr>'
+            + "".join(rows) + "</table>"
+        )
+    html = (
+        "<h3>835 batch validation refusal</h3>"
+        f"<p>{len(refused_files)} file(s) were refused and excluded from conversion. "
+        f"{len(accepted_files)} valid file(s) continued through the batch into one MIR output.</p>"
+        + _file_list("Accepted 835 files", accepted_files)
+        + _file_list("MIR output", output_files)
+        + "".join(detail_blocks)
+        + "<p><strong>Action required:</strong> Correct and resubmit only the refused files.</p>"
+    )
+    recipient = getattr(getattr(request, "user", None), "email", "")
+    return send_client_email(
+        client,
+        f"OneSmarter: {len(refused_files)} 835 file(s) refused during batch conversion",
+        html,
+        to_emails=[recipient] if recipient else None,
+    )
+
 def get_client_users(client):
     """Return a list of user emails belonging to the client."""
     users = User.objects.filter(client=client, is_active=True)

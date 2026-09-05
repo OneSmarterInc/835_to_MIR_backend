@@ -32,7 +32,28 @@ logger = logging.getLogger("edi835")
 def validate_835_content(edi_text):
     """Run the authoritative validation gate used by every 835 ingestion path."""
     report = EDI835Validator().validate(edi_text)
-    is_valid = report.get("valid", report.get("is_valid", False))
+    errors = list(report.get("errors") or [])
+    warnings = list(report.get("warnings") or [])
+    findings = []
+    for issue in errors:
+        findings.append({
+            **(issue if isinstance(issue, dict) else {"message": str(issue)}),
+            "severity": "REFUSE",
+            "decision": "REFUSE",
+        })
+    for issue in warnings:
+        findings.append({
+            **(issue if isinstance(issue, dict) else {"message": str(issue)}),
+            "severity": "WARN",
+            "decision": "WARN",
+        })
+    is_valid = not errors and report.get("valid", report.get("is_valid", False))
+    report.update({
+        "valid": is_valid,
+        "is_valid": is_valid,
+        "findings": findings,
+        "decision": "REFUSE" if not is_valid else ("WARN" if warnings else "ACCEPT"),
+    })
     return is_valid, report
 
 
@@ -520,6 +541,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         return {
             "success": False,
+            "decision": "REFUSE",
             "db_record": db_record,
             "error": err_str,
         }
@@ -557,18 +579,102 @@ def process_multiple_edi835_files(
         return {"success": False, "error": "No files provided for batch conversion."}
 
     first_archive_rel_path = None
+    refused_files = []
+    warning_findings = []
+    normalized_items = []
+
+    # Validation is file-scoped. A refused file never reaches the parser, but
+    # it also never prevents the remaining valid files from producing one MIR.
+    for idx, item in enumerate(files_list):
+        fname = os.path.basename(
+            item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
+        )
+        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
+        report = None
+        parsed_claims = []
+        refusal_reasons = []
+        if not has_valid_file_extension(fname, "835"):
+            refusal_reasons = [file_extension_error("835")]
+        elif not content:
+            refusal_reasons = ["File is empty."]
+        else:
+            valid, report = validate_835_content(content)
+            if not valid:
+                refusal_reasons = report.get("errors") or ["835 validation failed."]
+            warning_findings.extend([
+                {**finding, "filename": fname}
+                for finding in (report.get("findings") or [])
+                if finding.get("severity") == "WARN"
+            ])
+            if valid:
+                try:
+                    parsed_claims = parse_835(content)
+                    if not parsed_claims:
+                        raise ValueError("No CLP claim segments were parsed.")
+                except Exception as exc:
+                    refusal_reasons = [str(exc)]
+                    report = {
+                        "validator_engine": "OneSmarter 835 parser",
+                        "findings": [{
+                            "severity": "REFUSE",
+                            "decision": "REFUSE",
+                            "message": str(exc),
+                        }],
+                    }
+
+        if refusal_reasons:
+            findings = (report or {}).get("findings") or [
+                {"severity": "REFUSE", "decision": "REFUSE", "message": str(reason)}
+                for reason in refusal_reasons
+            ]
+            refused = {
+                "filename": fname,
+                "decision": "REFUSE",
+                "validator_engine": (report or {}).get("validator_engine", "OneSmarter intake validation"),
+                "errors": refusal_reasons,
+                "findings": findings,
+            }
+            refused_files.append(refused)
+            stored_fname = f"{uuid.uuid4().hex}_{idx}_{fname}"
+            supplied_path = item.get("local_path")
+            inbound_path = Path(supplied_path) if supplied_path else None
+            expected_in = dirs["835_in"].resolve()
+            if not (
+                inbound_path
+                and inbound_path.is_file()
+                and inbound_path.resolve().parent == expected_in
+            ):
+                inbound_path = stage_inbound(client, "835", stored_fname, content)
+            archived_path = archive_inbound(client, "835", inbound_path)
+            EDI835File.objects.create(
+                client=client,
+                original_filename=fname,
+                stored_filename=stored_fname,
+                input_file_content=content,
+                status="ERROR",
+                error_message=json.dumps(refused, default=str),
+                archive_path=relative_media_path(archived_path),
+                present_in_archive_folder=True,
+                ingestion_source=ingestion_source,
+                processing_completed_at=timezone.now(),
+            )
+            continue
+        normalized_items.append((item, fname, content, parsed_claims))
+
+    if not normalized_items:
+        return {
+            "success": False,
+            "decision": "REFUSE",
+            "error": "Every supplied 835 file was refused by validation. No MIR was created.",
+            "errors": refused_files,
+            "refused_files": refused_files,
+            "accepted_files": [],
+            "warnings": warning_findings,
+        }
 
     file_uuid = uuid.uuid4()
-    for idx, item in enumerate(files_list):
-        fname = item.get("filename") or item.get("original_filename") or f"file_{idx+1}.835"
-        fname = os.path.basename(fname)
-        if not has_valid_file_extension(fname, "835"):
-            return {"success": False, "error": file_extension_error("835")}
+    for idx, (item, fname, content, parsed_claims) in enumerate(normalized_items):
         file_names.append(fname)
-
-        content = (item.get("content") or item.get("edi_text") or "").lstrip("\ufeff").strip()
-        if not content:
-            continue
         input_contents.append(content)
 
         # Prefix with UUID to avoid overwrites in batch mode
@@ -591,11 +697,7 @@ def process_multiple_edi835_files(
         if not first_archive_rel_path:
             first_archive_rel_path = rel_archive_path
 
-        try:
-            claims = parse_835(content)
-            all_claims.extend(claims)
-        except Exception as e:
-            errors.append(f"{fname}: {str(e)}")
+        all_claims.extend(parsed_claims)
 
     if not all_claims:
         return {
@@ -687,10 +789,15 @@ def process_multiple_edi835_files(
 
     return {
         "success": True,
+        "decision": "WARN" if refused_files or warning_findings else "ACCEPT",
         "mir_text": mir_text,
         "combined_filename": delivery_mir_filename,
         "stored_filename": stored_mir_filename,
         "files_count": len(file_names),
+        "total_files_count": len(files_list),
+        "accepted_files": file_names,
+        "refused_files": refused_files,
+        "warnings": warning_findings,
         "claims_count": claims_count,
         "services_count": services_count,
         "records_count": records_count,

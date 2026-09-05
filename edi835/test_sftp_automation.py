@@ -11,7 +11,10 @@ from accounts.models import Client, User
 from .models import RECONFile, SFTPAutomationRun, SFTPAutomationSchedule
 from .sftp_automation import enqueue_due_automations, finish_automation_run, next_daily_run, schedule_occurrences
 from .views import _execute_batch_conversion
-from admin_panel.email_service import send_automation_run_notice
+from admin_panel.email_service import (
+    send_automation_run_notice,
+    send_batch_validation_refusal_notice,
+)
 
 
 class SFTPAutomationTestCase(TestCase):
@@ -318,6 +321,32 @@ class SFTPAutomationTestCase(TestCase):
         self.assertIn("invalid.835", html)
         self.assertIn("Failure reason", html)
         self.assertIn("transaction is malformed", html)
+
+    @patch("admin_panel.email_service.send_client_email", return_value=True)
+    def test_mixed_batch_refusal_email_lists_detailed_findings_and_valid_output(self, send_email):
+        request = SimpleNamespace(user=self.admin)
+        sent = send_batch_validation_refusal_notice(
+            self.client_record,
+            request,
+            refused_files=[{
+                "filename": "bad.835",
+                "validator_engine": "PyX12",
+                "findings": [{
+                    "code": "ENV-004", "segment": "ST", "element": "ST02",
+                    "line": 3, "message": "ST/SE control numbers do not match.",
+                    "severity": "REFUSE",
+                }],
+            }],
+            accepted_files=["good-one.835", "good-two.835"],
+            output_files=["combined.MIR"],
+        )
+
+        self.assertTrue(sent)
+        subject = send_email.call_args.args[1]
+        html = send_email.call_args.args[2]
+        self.assertIn("1 835 file(s) refused", subject)
+        for value in ("bad.835", "good-one.835", "good-two.835", "combined.MIR", "ENV-004", "ST/ST02", "line 3"):
+            self.assertIn(value, html)
 
     @patch("edi835.views.write_job")
     @patch("edi835.views.active_job_for", return_value=None)

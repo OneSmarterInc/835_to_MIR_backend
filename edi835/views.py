@@ -2365,7 +2365,7 @@ def _execute_batch_conversion(request):
                     f"{upload_reason}. Inbound SFTP files were retained so the batch can be retried safely."
                 )
             else:
-                processed_files.extend([item["filename"] for item in combined_items])
+                processed_files.extend(batch_res.get("accepted_files", []))
             # Clean up SFTP remote files if SFTP client is available or reconnect if needed
             if (
                 batch_res.get("sftp_uploaded")
@@ -2403,7 +2403,11 @@ def _execute_batch_conversion(request):
                     sftp_del = ssh_del.open_sftp()
                     deleted_835_files = []
                     retained_835_files = []
+                    accepted_names = set(batch_res.get("accepted_files", []))
                     for item in sftp_batch_items:
+                        if item["filename"] not in accepted_names:
+                            retained_835_files.append(item["filename"])
+                            continue
                         deleted, del_err = _remove_sftp_file_with_retry(
                             sftp_del, item["remote_path"]
                         )
@@ -2489,6 +2493,33 @@ def _execute_batch_conversion(request):
     if not batch_mir_filename and combined_items and 'batch_res' in locals():
         batch_mir_filename = batch_res.get("combined_filename") or ""
 
+    refused_files = (
+        batch_res.get("refused_files", [])
+        if combined_items and 'batch_res' in locals()
+        else []
+    )
+    accepted_files = (
+        batch_res.get("accepted_files", [])
+        if combined_items and 'batch_res' in locals()
+        else []
+    )
+    if client and refused_files:
+        errors.append(
+            f"{len(refused_files)} 835 file(s) were refused by validation and excluded; "
+            f"{len(accepted_files)} valid file(s) continued into the combined MIR."
+        )
+        try:
+            from admin_panel.email_service import send_batch_validation_refusal_notice
+            send_batch_validation_refusal_notice(
+                client,
+                request,
+                refused_files=refused_files,
+                accepted_files=accepted_files,
+                output_files=[batch_mir_filename] if batch_mir_filename else [],
+            )
+        except Exception:
+            logger.exception("Failed to send mixed-batch 835 validation refusal email")
+
     return JsonResponse({
         "success": not batch_failed,
         "processed_count": len(processed_files),
@@ -2508,6 +2539,8 @@ def _execute_batch_conversion(request):
         "sftp_recon_files": sftp_recon_results,
         "automation_type": automation_type,
         "mir_filename": batch_mir_filename,
+        "accepted_files": accepted_files,
+        "refused_files": refused_files,
         "errors": errors,
         "warnings": errors if not batch_failed else [],
         "message": errors[-1] if batch_failed and errors else msg,

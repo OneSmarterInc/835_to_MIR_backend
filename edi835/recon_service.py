@@ -239,6 +239,8 @@ def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
                     "error_code": "UNRECOGNIZED_RECON_LAYOUT",
                     "error_message": "Row does not match the supported fixed-width RECON layout; no values were inferred.",
                     "raw_record": raw,
+                    "severity": "WARN",
+                    "decision": "WARN",
                 })
                 continue
             output.extend(_mir_fixed_width_rows(raw, number, data))
@@ -272,6 +274,8 @@ def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
                 "error_code": "MISSING_CLAIM_IDENTIFIER",
                 "error_message": "RECON row has no claim identifier; no synthetic identifier was created.",
                 "raw_record": original,
+                "severity": "REFUSE",
+                "decision": "REFUSE",
             })
             continue
         invalid_money = next((
@@ -288,8 +292,10 @@ def parse_recon_rows(text: str, known_claim_ids=None, include_findings=False):
                 "row_number": row_number,
                 "claim_control_number": canonical["claim_control_number"],
                 "error_code": "INVALID_MONEY_VALUE",
-                "error_message": f"RECON field {invalid_money} is not a valid monetary value; the row was held.",
+                "error_message": f"RECON field {invalid_money} is not a valid monetary value; the file was refused.",
                 "raw_record": original,
+                "severity": "REFUSE",
+                "decision": "REFUSE",
             })
             continue
         output.append({
@@ -331,6 +337,48 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         rows, parsing_findings = parse_recon_rows(
             recon_file.file_content, known_claim_ids, include_findings=True
         )
+        blocking_findings = [
+            finding for finding in parsing_findings
+            if finding.get("severity") == "REFUSE"
+        ]
+        warning_findings = [
+            finding for finding in parsing_findings
+            if finding.get("severity") == "WARN"
+        ]
+        if blocking_findings:
+            # RECON is an all-or-nothing file boundary. A malformed claim/row
+            # refuses this file; no subset is allowed into reconciliation.
+            recon_file.claims.all().delete()
+            now = timezone.now()
+            archived_path = archive_inbound(recon_file.client, "recon", inbound_path)
+            recon_file.status = "FAILED"
+            recon_file.record_count = 0
+            recon_file.claim_count = 0
+            recon_file.service_count = 0
+            recon_file.held_record_count = len(blocking_findings)
+            recon_file.parsing_findings = blocking_findings + warning_findings
+            recon_file.processing_error = (
+                f"RECON file refused: {len(blocking_findings)} blocking validation finding(s)."
+            )
+            recon_file.processed_at = now
+            recon_file.archive_path = relative_media_path(archived_path)
+            recon_file.save()
+            run.status = "FAILED"
+            run.claims_created = 0
+            run.services_created = 0
+            run.invalid_records = len(blocking_findings)
+            run.error_message = recon_file.processing_error
+            run.completed_at = now
+            run.save()
+            RECONProcessingError.objects.bulk_create([
+                RECONProcessingError(
+                    processing_run=run,
+                    recon_file=recon_file,
+                    **{key: value for key, value in finding.items() if key not in {"severity", "decision"}},
+                )
+                for finding in blocking_findings
+            ])
+            return run
         recon_file.claims.all().delete()
         grouped: OrderedDict[str, list[dict]] = OrderedDict()
         for row in rows:
@@ -429,44 +477,25 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         # around their claim rows.  Those non-claim physical lines are retained
         # as findings for audit, but they must not downgrade a file whose every
         # identifiable claim row was parsed successfully.
-        blocking_findings = [
-            finding for finding in parsing_findings
-            if finding.get("error_code") != "UNRECOGNIZED_RECON_LAYOUT"
-        ]
-        recon_file.status = (
-            "FAILED" if parsing_findings and not rows
-            else "PARTIAL" if blocking_findings
-            else "PROCESSED"
-        )
+        recon_file.status = "PROCESSED"
         recon_file.record_count = len(rows)
         recon_file.claim_count = len(grouped)
         recon_file.service_count = service_total
-        recon_file.held_record_count = len(blocking_findings)
-        recon_file.parsing_findings = blocking_findings
-        recon_file.processing_error = (
-            f"{len(blocking_findings)} RECON record(s) held for review."
-            if blocking_findings else ""
-        )
+        recon_file.held_record_count = 0
+        recon_file.parsing_findings = warning_findings
+        recon_file.processing_error = ""
         recon_file.total_charge_amount = total_charge
         recon_file.total_paid_amount = total_paid
         recon_file.processed_at = now
         archived_path = archive_inbound(recon_file.client, "recon", inbound_path)
         recon_file.archive_path = relative_media_path(archived_path)
         recon_file.save()
-        run.status = (
-            "FAILED" if parsing_findings and not rows
-            else "PARTIAL" if blocking_findings
-            else "COMPLETED"
-        )
+        run.status = "COMPLETED"
         run.claims_created = len(grouped)
         run.services_created = service_total
-        run.invalid_records = len(blocking_findings)
+        run.invalid_records = 0
         run.completed_at = now
         run.save()
-        RECONProcessingError.objects.bulk_create([
-            RECONProcessingError(processing_run=run, recon_file=recon_file, **finding)
-            for finding in blocking_findings
-        ])
         return run
     except Exception as exc:
         now = timezone.now()

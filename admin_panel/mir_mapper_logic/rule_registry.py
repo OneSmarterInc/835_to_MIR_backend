@@ -190,7 +190,7 @@ RULE_REGISTRY.register(RuleDefinition(
     code="MP003",
     name="Claim cross-foot",
     source=MPL_SOURCE,
-    severity=RuleSeverity.HOLD,
+    severity=RuleSeverity.REFUSE,
     scope="service",
     description=(
         "BCBS Allowance (MIR1017) must equal Approved to Pay (MIR1018) "
@@ -202,7 +202,7 @@ RULE_REGISTRY.register(RuleDefinition(
     code="MP011",
     name="Timely filing",
     source=MPL_SOURCE,
-    severity=RuleSeverity.HOLD,
+    severity=RuleSeverity.REFUSE,
     scope="claim",
     description=(
         "A Timely Filing claim must have all lines denied and Fund/Patient "
@@ -214,7 +214,7 @@ RULE_REGISTRY.register(RuleDefinition(
     code="MP013",
     name="Group/Sub-Group Number",
     source=MPL_SOURCE,
-    severity=RuleSeverity.HOLD,
+    severity=RuleSeverity.REFUSE,
     scope="claim",
     description="Required MIR group/sub-group number must be populated unless the PR31 exception applies.",
     evaluator=_mp013_group_number,

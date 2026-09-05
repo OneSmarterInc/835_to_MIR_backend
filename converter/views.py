@@ -85,7 +85,8 @@ def _validate_835_for_conversion(content):
             "rule": "PyX12 validation",
             "what_found": issue.get("message") or "PyX12 validation failed.",
             "source": "PyX12",
-            "severity": "Hold",
+            "severity": "REFUSE",
+            "decision": "REFUSE",
         })
     for check in structural_errors:
         label = str(check.get("label") or "Validation rule")
@@ -97,16 +98,24 @@ def _validate_835_for_conversion(content):
             "rule": label,
             "what_found": str(check.get("detail") or "Validation failed."),
             "source": source,
-            "severity": "Hold",
+            "severity": "REFUSE",
+            "decision": "REFUSE",
         })
 
     total_segments = pyx12_report.get("total_segments", 0)
     claims = pyx12_report.get("claims", 0)
     is_valid = not errors and structural_valid
 
+    normalized_warnings = [
+        {**warning, "severity": "WARN", "decision": "WARN"}
+        for warning in (list(pyx12_report.get("warnings", [])) + ignored_pyx12_warnings)
+    ]
+    findings.extend(normalized_warnings)
+
     return {
         "valid": is_valid,
         "is_valid": is_valid,
+        "decision": "REFUSE" if not is_valid else ("WARN" if normalized_warnings else "ACCEPT"),
         "validator_engine": "Validated using PyX12 + OneSmarter structural validation",
         "status_message": (
             "Validated using PyX12 + structural validation: File is valid."
@@ -117,7 +126,7 @@ def _validate_835_for_conversion(content):
         "claims": claims,
         "claims_found": claims,
         "errors": errors,
-        "warnings": list(pyx12_report.get("warnings", [])) + ignored_pyx12_warnings,
+        "warnings": normalized_warnings,
         "checks": checks,
         "findings": findings,
     }
@@ -242,9 +251,6 @@ def api_convert(request):
         file_objs = request.FILES.getlist('edi_files') or request.FILES.getlist('edi_file')
         if file_objs and len(file_objs) > 1:
             for fobj in file_objs:
-                invalid = _invalid_835_response(fobj.name)
-                if invalid:
-                    return invalid
                 try:
                     content = fobj.read().decode('utf-8', errors='ignore')
                     files_list.append({'filename': fobj.name, 'content': content})
@@ -281,15 +287,17 @@ def api_convert(request):
         return offboarded
 
     if files_list and len(files_list) > 0:
-        invalid = _invalid_835_batch_response(files_list)
-        if invalid:
-            return invalid
         batch_res = process_multiple_edi835_files(files_list, client=client)
         if not batch_res.get("success"):
             if client:
                 try:
-                    from admin_panel.email_service import send_conversion_notice
+                    from admin_panel.email_service import send_batch_validation_refusal_notice, send_conversion_notice
                     err_msg = batch_res.get("error", "Multi-file conversion failed.")
+                    send_batch_validation_refusal_notice(
+                        client, request,
+                        refused_files=batch_res.get("refused_files", []),
+                        accepted_files=batch_res.get("accepted_files", []),
+                    )
                     send_conversion_notice(
                         client, request, success=False, batch=True,
                         input_files=[item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
@@ -313,10 +321,16 @@ def api_convert(request):
 
         if client:
             try:
-                from admin_panel.email_service import send_conversion_notice
+                from admin_panel.email_service import send_batch_validation_refusal_notice, send_conversion_notice
+                send_batch_validation_refusal_notice(
+                    client, request,
+                    refused_files=batch_res.get("refused_files", []),
+                    accepted_files=batch_res.get("accepted_files", []),
+                    output_files=[canonical_mir_filename or batch_res.get('combined_filename')],
+                )
                 send_conversion_notice(
                     client, request, success=True, batch=True,
-                    input_files=[item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
+                    input_files=batch_res.get('accepted_files', []),
                     output_files=[canonical_mir_filename or batch_res.get('combined_filename')],
                     claims=batch_res.get('claims_count', 0),
                     services=batch_res.get('services_count', 0),
@@ -349,6 +363,8 @@ def api_convert(request):
             'mir_filename': canonical_mir_filename or batch_res.get('combined_filename'),
             'sftp_uploaded': batch_res.get('sftp_uploaded', False),
             'errors': batch_res.get('errors', []),
+            'accepted_files': batch_res.get('accepted_files', []),
+            'refused_files': batch_res.get('refused_files', []),
             'partial': batch_res.get('partial', False),
             'delivered_claims_count': getattr(primary_rec, 'delivered_claims_count', 0),
             'held_claims_count': getattr(primary_rec, 'held_claims_count', 0),

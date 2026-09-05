@@ -188,6 +188,32 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         self.assertIn("file_a.835", db_rec.original_filename)
         self.assertIn("file_b.835", db_rec.original_filename)
 
+    def test_mixed_batch_refuses_invalid_file_and_converts_valid_files_into_one_mir(self):
+        from .services import process_multiple_edi835_files
+
+        result = process_multiple_edi835_files([
+            {"filename": "valid-one.835", "content": SAMPLE_835_VALID},
+            {"filename": "invalid.835", "content": SAMPLE_835_INVALID},
+            {
+                "filename": "valid-two.835",
+                "content": SAMPLE_835_VALID.replace(
+                    "CLM_PAYP_20260807", "CLM_PAYP_BATCH_VALID_2"
+                ),
+            },
+        ])
+
+        self.assertTrue(result["success"])
+        self.assertEqual(result["files_count"], 2)
+        self.assertEqual(result["total_files_count"], 3)
+        self.assertEqual(result["accepted_files"], ["valid-one.835", "valid-two.835"])
+        self.assertEqual([item["filename"] for item in result["refused_files"]], ["invalid.835"])
+        self.assertEqual(result["refused_files"][0]["decision"], "REFUSE")
+        self.assertEqual(result["claims_count"], 2)
+        self.assertEqual(
+            EDI835File.objects.filter(status="ERROR", original_filename="invalid.835").count(),
+            1,
+        )
+
     @patch("admin_panel.mir_mapper_logic.edi835_parser.parse_835")
     def test_sftp_batch_validation_failure_never_reaches_parser(self, parse_835):
         from .services import process_multiple_edi835_files
@@ -197,9 +223,9 @@ class EDI835PipelineLifecycleTestCase(TestCase):
         ], ingestion_source="SFTP")
 
         self.assertFalse(result["success"])
-        self.assertIn("validation failed", result["error"].lower())
+        self.assertIn("refused", result["error"].lower())
         parse_835.assert_not_called()
-        record = result["db_record"]
+        record = EDI835File.objects.get(original_filename="invalid.835")
         self.assertEqual(record.status, "ERROR")
         self.assertEqual(record.ingestion_source, "SFTP")
 
@@ -622,7 +648,7 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(sheet["H11"].value, "-")
         self.assertEqual(sheet["I11"].value, "Not In Mir")
 
-    def test_invalid_recon_row_is_held_without_inventing_financial_data(self):
+    def test_invalid_recon_row_refuses_entire_file_without_partial_data(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
 
         content = (
@@ -638,14 +664,10 @@ class RECONResultAPITestCase(TestCase):
 
         self.assertEqual(response.status_code, 200)
         recon = RECONFile.objects.get(id=upload["file"]["id"])
-        self.assertEqual(recon.status, "PARTIAL")
-        self.assertEqual(recon.claim_count, 1)
+        self.assertEqual(recon.status, "FAILED")
+        self.assertEqual(recon.claim_count, 0)
         self.assertEqual(recon.held_record_count, 1)
-        claim = recon.claims.get()
-        self.assertEqual(claim.claim_control_number, "CLAIM-VALID")
-        self.assertEqual(claim.mir904_bluecard_fee, Decimal("5.00"))
-        self.assertEqual(claim.mir905_aea, Decimal("10.00"))
-        self.assertEqual(claim.mpl920_pca_fee, Decimal("3.00"))
+        self.assertFalse(recon.claims.exists())
         self.assertFalse(recon.claims.filter(claim_control_number__startswith="ROW-").exists())
         self.assertEqual(recon.processing_errors.get().error_code, "MISSING_CLAIM_IDENTIFIER")
         detail = self.client.get(f"/edi835/api/recon/files/{recon.id}/")
@@ -654,6 +676,7 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(held["claim_control_number"], "")
         self.assertEqual(held["error_code"], "MISSING_CLAIM_IDENTIFIER")
         self.assertIn("MEMBER-2", held["raw_record"])
+        self.assertEqual(recon.parsing_findings[0]["severity"], "REFUSE")
 
     def test_unrecognized_fixed_width_row_does_not_guess_last_money_token(self):
         from .recon_service import parse_recon_rows

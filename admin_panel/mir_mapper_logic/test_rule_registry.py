@@ -23,9 +23,9 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
     def test_registry_has_required_rules_and_severity_vocabulary(self):
         definitions = {rule.code: rule for rule in RULE_REGISTRY.definitions()}
         self.assertTrue({"MP003", "MP011", "MP013", "DUPLICATE_ICN"}.issubset(definitions))
-        self.assertEqual(definitions["MP003"].severity, RuleSeverity.HOLD)
-        self.assertEqual(definitions["MP011"].severity, RuleSeverity.HOLD)
-        self.assertEqual(definitions["MP013"].severity, RuleSeverity.HOLD)
+        self.assertEqual(definitions["MP003"].severity, RuleSeverity.REFUSE)
+        self.assertEqual(definitions["MP011"].severity, RuleSeverity.REFUSE)
+        self.assertEqual(definitions["MP013"].severity, RuleSeverity.REFUSE)
         self.assertEqual(definitions["DUPLICATE_ICN"].severity, RuleSeverity.WARN)
         self.assertEqual({severity.value for severity in RuleSeverity}, {"REFUSE", "HOLD", "WARN"})
 
@@ -35,7 +35,7 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
             finding for finding in evaluate_preventive_rules(claim)
             if finding["rule_code"] == "MP013"
         )
-        self.assertEqual(finding["severity"], "HOLD")
+        self.assertEqual(finding["severity"], "REFUSE")
         self.assertEqual(finding["claim_control_number"], "ABC123")
         self.assertEqual(finding["provenance"]["rule_code"], "MP013")
         self.assertIn("MPL_Exception-Codes-List", finding["source"])
@@ -49,7 +49,7 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
         claim = Claim(status="1", group_number="G1", services=[service])
         self.assertNotIn("MP003", codes(evaluate_preventive_rules(claim)))
 
-    def test_mp011_holds_improper_timely_filing_claim(self):
+    def test_mp011_refuses_improper_timely_filing_claim(self):
         service = ServiceLine(
             charge=Decimal("100"),
             paid=Decimal("10"),
@@ -59,10 +59,10 @@ class PreventiveRuleRegistryTests(unittest.TestCase):
         findings = evaluate_preventive_rules(claim)
         self.assertIn("MP011", codes(findings))
         finding = next(finding for finding in findings if finding["rule_code"] == "MP011")
-        self.assertEqual(finding["severity"], "HOLD")
+        self.assertEqual(finding["severity"], "REFUSE")
         self.assertEqual(finding["evidence"]["violating_lines"][0]["fund_amount"], "10")
 
-    def test_mp013_holds_missing_group_number(self):
+    def test_mp013_refuses_missing_group_number(self):
         claim = Claim(claim_number="A", group_number="")
         self.assertIn("MP013", codes(evaluate_preventive_rules(claim)))
 
