@@ -1,7 +1,7 @@
 from django.urls import path
 from .views import api_convert, api_validate, download_mir, api_get_file_content, api_download_archive_zip
 from edi835.views import api_sftp_connect
-from edi835.batch_test_837_v2 import api_start_batch_conversion_with_837
+from edi835.batch_test_837_v3 import api_start_batch_conversion_with_837
 from project835.drf_compat import authenticated_api
 
 api_convert = authenticated_api(api_convert)
