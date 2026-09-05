@@ -1,4 +1,4 @@
-"""837 file-list API with accurate inbound source for SFTP-relayed files."""
+"""837 file-list API with accurate inbound source and saved naming format."""
 
 from django.core.paginator import Paginator
 from django.db.models import Q
@@ -7,17 +7,11 @@ from django.http import JsonResponse
 from project835.decorators import authenticated_api_required, json_api_errors
 
 from .edi837_views import _client_for_request
+from .edi837_naming_views import get_saved_837_filename_format
 from .models import EDI837File
 
 
 def _is_sftp_inbound(item):
-    """Identify records that actually travelled through the SFTP relay.
-
-    Older records may have been indexed manually before the same bytes later
-    arrived through 837_IN. Those rows can still have import_mode=MANUAL, but
-    the relay replaces outbound_path with the verified remote 837_OUT path.
-    New relay runs also persist import_mode=SFTP and remote_path.
-    """
     if str(item.import_mode or "").upper() == "SFTP":
         return True
     if str(item.remote_path or "").strip():
@@ -48,8 +42,6 @@ def edi837_files(request):
         if source_query in {choice[0] for choice in EDI837File.IMPORT_MODE_CHOICES}:
             filters |= Q(import_mode=source_query)
         if source_query == "SFTP":
-            # Include historical relays that were indexed MANUAL before their
-            # later SFTP arrival. A verified remote SFTP path begins with '/'.
             filters |= Q(remote_path__startswith="/") | Q(outbound_path__startswith="/")
         if "NOT PUSHED" in source_query or "NOT_PUSHED" in status_query:
             filters |= Q(outbound_path="")
@@ -87,13 +79,12 @@ def edi837_files(request):
             "processed_at": item.processed_at.isoformat() if item.processed_at else None,
         })
 
-    # Repair historical duplicate rows lazily so every future API sees the
-    # correct transport source too. This does not create duplicate file rows.
     if stale_sftp_ids:
         EDI837File.objects.filter(id__in=stale_sftp_ids).update(import_mode="SFTP")
 
     return JsonResponse({
         "success": True,
+        "filename_format": get_saved_837_filename_format(client),
         "results": rows,
         "count": paginator.count,
         "page": page.number,
