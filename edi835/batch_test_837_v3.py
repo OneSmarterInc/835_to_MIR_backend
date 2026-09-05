@@ -1,50 +1,95 @@
 """Conversion Test wrapper with strict 837 route resolution.
 
-The shared SFTP resolver mutates route fields on its returned model instance for
-runtime compatibility.  For a DEFAULT/UNIFIED connection that can make the
-837 relay inherit the generic 835 remote_folder.  This module deliberately
-re-reads the persisted row before choosing the 837 route so Test always uses
-the administrator-saved 837_IN / 837_OUT path.
+The generic SFTP resolver is intentionally compatible with older 835/MIR
+configuration rows and may expose ``remote_folder`` as an effective runtime
+folder.  That is unsafe for the 837 relay because a DEFAULT/UNIFIED row can
+carry a legacy 835 path such as ``/835in``.
+
+This module resolves 837_IN and 837_OUT directly from persisted purpose-specific
+configuration.  A 837 Test transfer is never allowed to fall back to an 835 or
+MIR folder.
 """
 
 from . import batch_test_837_v2 as _v2
 from .models import SFTPConfig
 
 
+def _clean(value):
+    return str(value or "").strip()
+
+
+def _route_from_rows(queryset, purpose):
+    """Find one explicit persisted route for purpose in a configuration scope."""
+    # A dedicated purpose row is authoritative when it owns its connection.
+    dedicated = (
+        queryset.filter(purpose=purpose, use_default=False)
+        .order_by("-updated_at")
+        .first()
+    )
+    if dedicated:
+        route = _clean(dedicated.remote_folder)
+        if route:
+            return route
+        route = _clean((dedicated.route_paths or {}).get(purpose))
+        if route:
+            return route
+
+    # For a shared/default server, every transfer route is stored in
+    # route_paths.  Never use DEFAULT.remote_folder here: on legacy installs
+    # that field commonly contains the 835 inbound path.
+    default = queryset.filter(purpose="DEFAULT").order_by("-updated_at").first()
+    if default:
+        route = _clean((default.route_paths or {}).get(purpose))
+        if route:
+            return route
+
+    # Some transitional records carried route_paths on non-default rows.
+    for row in queryset.order_by("-updated_at"):
+        route = _clean((row.route_paths or {}).get(purpose))
+        if route:
+            return route
+
+    return ""
+
+
 def _raw_effective_route_folder(config, purpose, credentials):
-    """Return the persisted purpose-specific route without 835/MIR fallback."""
-    if not config:
-        return ""
+    """Resolve 837 route from persisted purpose data only; no 835/MIR fallback."""
+    if purpose not in {"837_IN", "837_OUT"}:
+        return _clean((credentials or {}).get("remote_folder"))
 
-    try:
-        raw = SFTPConfig.objects.get(pk=config.pk)
-    except (SFTPConfig.DoesNotExist, ValueError, TypeError):
-        raw = config
+    client_id = getattr(config, "client_id", None) if config else None
 
-    route_paths = getattr(raw, "route_paths", None) or {}
-    routed = str(route_paths.get(purpose) or "").strip()
-    if routed:
-        return routed
+    # First use the selected client's own configuration.
+    if client_id:
+        route = _route_from_rows(SFTPConfig.objects.filter(client_id=client_id), purpose)
+        if route:
+            return route
 
-    row_purpose = str(getattr(raw, "purpose", "") or "").upper()
-    if row_purpose == purpose:
-        dedicated = str(getattr(raw, "remote_folder", "") or "").strip()
-        if dedicated:
-            return dedicated
+    # Then allow the administrator-managed global/default SFTP configuration.
+    route = _route_from_rows(SFTPConfig.objects.filter(client__isnull=True), purpose)
+    if route:
+        return route
 
-    # Legacy/default rows have a dedicated inbound 837 field.  Read it from
-    # the fresh DB object so resolve_sftp_config cannot overwrite it in memory.
-    if purpose == "837_IN":
-        legacy = str(getattr(raw, "inbound_837_folder", "") or "").strip()
-        if legacy:
-            return legacy
+    # Last chance: an explicitly selected dedicated row.  This supports a
+    # detached config object without ever accepting a DEFAULT remote_folder.
+    if config:
+        try:
+            raw = SFTPConfig.objects.get(pk=config.pk)
+        except (SFTPConfig.DoesNotExist, ValueError, TypeError):
+            raw = config
+        if _clean(getattr(raw, "purpose", "")).upper() == purpose:
+            route = _clean(getattr(raw, "remote_folder", ""))
+            if route:
+                return route
+        route = _clean((getattr(raw, "route_paths", None) or {}).get(purpose))
+        if route:
+            return route
 
-    # 837_OUT intentionally has no MIR fallback.  It must be present in
-    # route_paths or on a purpose-specific 837_OUT row.
-    if purpose == "837_OUT":
-        return ""
-
-    return str((credentials or {}).get("remote_folder") or "").strip()
+    # Deliberately do NOT use inbound_837_folder, remote_folder,
+    # inbound_835_folder, or outbound_mir_folder as a compatibility fallback.
+    # If the 837 route was not explicitly saved, Test must report that instead
+    # of silently polling the wrong folder.
+    return ""
 
 
 # _relay_837_for_test resolves this symbol from the v2 module at call time.
