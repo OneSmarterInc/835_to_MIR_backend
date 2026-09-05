@@ -1,5 +1,7 @@
 """837 file-list API with accurate inbound source and saved naming format."""
 
+import os
+
 from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import JsonResponse
@@ -20,6 +22,16 @@ def _is_sftp_inbound(item):
     return outbound.startswith("/")
 
 
+def _display_filename(item):
+    """Show the actual filename delivered to 837_OUT when available."""
+    outbound = str(item.outbound_path or "").strip()
+    if outbound:
+        pushed_name = os.path.basename(outbound.rstrip("/"))
+        if pushed_name:
+            return pushed_name
+    return item.original_filename
+
+
 @authenticated_api_required
 @json_api_errors
 def edi837_files(request):
@@ -36,7 +48,12 @@ def edi837_files(request):
     if query:
         status_query = query.upper().replace(" ", "_")
         source_query = query.upper()
-        filters = Q(original_filename__icontains=query) | Q(stored_filename__icontains=query)
+        filters = (
+            Q(original_filename__icontains=query)
+            | Q(stored_filename__icontains=query)
+            | Q(remote_path__icontains=query)
+            | Q(outbound_path__icontains=query)
+        )
         if status_query in {choice[0] for choice in EDI837File.STATUS_CHOICES}:
             filters |= Q(status=status_query)
         if source_query in {choice[0] for choice in EDI837File.IMPORT_MODE_CHOICES}:
@@ -64,14 +81,19 @@ def edi837_files(request):
         sftp_inbound = _is_sftp_inbound(item)
         if sftp_inbound and item.import_mode != "SFTP":
             stale_sftp_ids.append(item.id)
+        outbound_path = str(item.outbound_path or "").strip()
         rows.append({
             "id": str(item.id),
-            "file_name": item.original_filename,
+            "file_name": _display_filename(item),
+            "original_file_name": item.original_filename,
+            "outbound_file_name": os.path.basename(outbound_path.rstrip("/")) if outbound_path else "",
+            "inbound_path": str(item.remote_path or ""),
+            "outbound_path": outbound_path,
             "status": item.status,
             "inbound_source": "SFTP" if sftp_inbound else item.get_import_mode_display(),
             "inbound_status": "Received",
-            "outbound_status": "Pushed" if item.outbound_path else "Not pushed",
-            "outbound_ready": bool(item.outbound_path),
+            "outbound_status": "Pushed" if outbound_path else "Not pushed",
+            "outbound_ready": bool(outbound_path),
             "claim_count": item.claim_count,
             "service_count": item.service_count,
             "total_charge_amount": str(item.total_charge_amount),
