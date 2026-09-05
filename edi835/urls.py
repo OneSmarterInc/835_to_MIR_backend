@@ -25,9 +25,10 @@ from .recon_views import (
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
 from .edi837_views import (
-    edi837_claim_detail, edi837_claim_export, edi837_claim_push_sftp, edi837_files, edi837_search,
+    edi837_claim_detail, edi837_claim_export, edi837_claim_push_sftp, edi837_search,
     edi837_upload_process,
 )
+from .edi837_files_v2 import edi837_files
 from .edi837_transfer import edi837_sftp_transfer
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
