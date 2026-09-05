@@ -9,22 +9,17 @@ from pathlib import Path
 
 from django.utils import timezone
 
-from project835.field_crypto import get_sftp_runtime_credentials
-
+from .admin_sftp_routes import resolve_admin_sftp_route
 from .edi837_transfer import _normalize_folder, _open_sftp
 from .file_types import has_valid_file_extension
 from .models import EDI835File, EDI837File, MIRFile
-from .services import process_multiple_edi835_files, resolve_sftp_config, validate_835_content
+from .services import process_multiple_edi835_files, validate_835_content
 from .storage import archive_inbound, client_storage_dirs, relative_media_path, remove_delivered_outbound, stage_inbound
 
 
 def _connected(client, purpose, outbound=False):
-    config = resolve_sftp_config(client=client, outbound=outbound, purpose=purpose)
-    if not config or config.status != "CONNECTED":
-        raise ValueError(f"The {purpose.replace('_', ' ')} SFTP route is not connected.")
-    credentials = get_sftp_runtime_credentials(config, outbound=outbound)
-    if not credentials.get("host") or not credentials.get("username") or not credentials.get("remote_folder"):
-        raise ValueError(f"The {purpose.replace('_', ' ')} SFTP route is incomplete.")
+    """Return the exact administrator-configured connection and folder."""
+    config, credentials, _folder = resolve_admin_sftp_route(client, purpose)
     return config, credentials
 
 
@@ -143,8 +138,7 @@ def execute_directional_operation(client, actor, automation_type, direction):
 
     # Manual Conversion -> Test uses automation_type=ALL. It is not a single
     # directional scheduler operation; returning None tells the worker to run
-    # the existing complete batch pipeline instead. Keep this guard here as a
-    # second line of defense even if an older worker supplies INCOMING.
+    # the existing complete batch pipeline instead.
     if key[0] == "ALL":
         return None
 
@@ -157,5 +151,5 @@ def execute_directional_operation(client, actor, automation_type, direction):
     if key == ("MIR", "OUTGOING"):
         return push_local_outbound(client, "mir")
     if key in {("837", "INCOMING"), ("RECON", "INCOMING")}:
-        return None  # Existing mature inbound batch pipeline handles these.
+        return None
     raise ValueError("Unsupported SFTP automation operation.")
