@@ -4,7 +4,7 @@ from django.test import SimpleTestCase, TestCase
 
 from accounts.models import Client
 from .claim_numbers import split_claim_number
-from .edi837_service import export_single_claim, parse_837, split_x12
+from .edi837_service import _837_claim_numbers, export_single_claim, parse_837, split_x12
 from .edi837_views import _claim_lifecycle
 from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile
 
@@ -35,6 +35,18 @@ DEPENDENT_837 = (
 
 
 class EDI837ParsingTests(SimpleTestCase):
+    def test_ref_9c_is_the_authoritative_internal_claim_number(self):
+        self.assertEqual(_837_claim_numbers("123456789QYN071", "H100001346867370"), {
+            "highmark_claim_number": "123456789",
+            "internal_claim_number": "H100001346867370",
+        })
+
+    def test_combined_clm_suffix_is_used_only_without_ref_9c(self):
+        self.assertEqual(_837_claim_numbers("123456789QYN071", ""), {
+            "highmark_claim_number": "123456789",
+            "internal_claim_number": "QYN071",
+        })
+
     def test_claims_and_service_lines_are_normalized(self):
         parsed = parse_837(SAMPLE_837)
         self.assertEqual(len(parsed["claims"]), 2)

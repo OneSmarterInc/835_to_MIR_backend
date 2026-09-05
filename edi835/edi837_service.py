@@ -24,6 +24,17 @@ def _decimal(value):
         return Decimal("0")
 
 
+def _837_claim_numbers(clm01, reference_9c):
+    """Resolve Highmark and internal identifiers from their authoritative fields."""
+    split = split_claim_number(clm01)
+    return {
+        "highmark_claim_number": split["highmark_claim_number"] or str(clm01 or "").strip(),
+        # REF*9C is Highmark's internal claim identifier. Only fall back to a
+        # combined CLM01 suffix for files that genuinely omit REF*9C.
+        "internal_claim_number": str(reference_9c or "").strip() or split["internal_claim_number"],
+    }
+
+
 def split_x12(text):
     content = (text or "").strip()
     if not content:
@@ -218,9 +229,7 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
     service_total = 0
     claim_models = []
     for sequence, data in enumerate(parsed["claims"], start=1):
-        split = split_claim_number(data["claim_control_number"])
-        if not split["internal_claim_number"] and data["reference_9c"]:
-            split["internal_claim_number"] = data["reference_9c"]
+        split = _837_claim_numbers(data["claim_control_number"], data["reference_9c"])
         claim_models.append(EDI837Claim(
             edi_file=edi_file, client=client, claim_sequence=sequence,
             claim_control_number=data["claim_control_number"], **split,
