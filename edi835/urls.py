@@ -30,7 +30,8 @@ from .edi837_views import (
     edi837_upload_process,
 )
 from .edi837_files_v2 import edi837_files
-from .edi837_naming_views import edi837_claim_push_sftp_named, edi837_sftp_transfer_named
+from .edi837_naming_views import edi837_claim_push_sftp_named
+from .edi837_search_transfer import edi837_sftp_transfer_for_search
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list)
@@ -62,7 +63,7 @@ sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
 sftp_automation = authenticated_api(sftp_automation)
 edi837_upload_process = authenticated_api(edi837_upload_process)
-edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer_named)
+edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer_for_search)
 edi837_search = authenticated_api(edi837_search)
 edi837_files = authenticated_api(edi837_files)
 edi837_claim_detail = authenticated_api(edi837_claim_detail)
