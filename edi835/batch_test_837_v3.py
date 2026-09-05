@@ -1,97 +1,226 @@
-"""Conversion Test wrapper with strict 837 route resolution.
+"""Conversion Test wrapper using the administrator's exact SFTP routes."""
 
-The generic SFTP resolver is intentionally compatible with older 835/MIR
-configuration rows and may expose ``remote_folder`` as an effective runtime
-folder.  That is unsafe for the 837 relay because a DEFAULT/UNIFIED row can
-carry a legacy 835 path such as ``/835in``.
+import io
+import json
+import os
+import posixpath
+import stat
+import uuid
 
-This module resolves 837_IN and 837_OUT directly from persisted purpose-specific
-configuration.  A 837 Test transfer is never allowed to fall back to an 835 or
-MIR folder.
-"""
+from django.http import JsonResponse
+from django.utils import timezone
 
-from . import batch_test_837_v2 as _v2
-from .models import SFTPConfig
-
-
-def _clean(value):
-    return str(value or "").strip()
-
-
-def _route_from_rows(queryset, purpose):
-    """Find one explicit persisted route for purpose in a configuration scope."""
-    # A dedicated purpose row is authoritative when it owns its connection.
-    dedicated = (
-        queryset.filter(purpose=purpose, use_default=False)
-        .order_by("-updated_at")
-        .first()
-    )
-    if dedicated:
-        route = _clean(dedicated.remote_folder)
-        if route:
-            return route
-        route = _clean((dedicated.route_paths or {}).get(purpose))
-        if route:
-            return route
-
-    # For a shared/default server, every transfer route is stored in
-    # route_paths.  Never use DEFAULT.remote_folder here: on legacy installs
-    # that field commonly contains the 835 inbound path.
-    default = queryset.filter(purpose="DEFAULT").order_by("-updated_at").first()
-    if default:
-        route = _clean((default.route_paths or {}).get(purpose))
-        if route:
-            return route
-
-    # Some transitional records carried route_paths on non-default rows.
-    for row in queryset.order_by("-updated_at"):
-        route = _clean((row.route_paths or {}).get(purpose))
-        if route:
-            return route
-
-    return ""
+from .admin_sftp_routes import resolve_admin_sftp_route
+from .batch_test_837_v2 import _default_837_filename, _selected_client
+from .edi837_service import ingest_837
+from .edi837_transfer import _normalize_folder, _open_sftp
+from .file_types import has_valid_file_extension
+from .views import api_start_batch_conversion as _original_api_start_batch_conversion
 
 
-def _raw_effective_route_folder(config, purpose, credentials):
-    """Resolve 837 route from persisted purpose data only; no 835/MIR fallback."""
-    if purpose not in {"837_IN", "837_OUT"}:
-        return _clean((credentials or {}).get("remote_folder"))
+def _relay_837_for_test(request, client):
+    if client is None:
+        return {
+            "success": True,
+            "transferred_count": 0,
+            "transferred": [],
+            "message": "No client-scoped 837 relay was requested.",
+        }
 
-    client_id = getattr(config, "client_id", None) if config else None
+    try:
+        _in_config, inbound_credentials, inbound_folder = resolve_admin_sftp_route(client, "837_IN")
+        _out_config, outbound_credentials, outbound_folder = resolve_admin_sftp_route(client, "837_OUT")
+    except Exception as exc:
+        return {"success": False, "error": str(exc)}
 
-    # First use the selected client's own configuration.
-    if client_id:
-        route = _route_from_rows(SFTPConfig.objects.filter(client_id=client_id), purpose)
-        if route:
-            return route
+    import paramiko
 
-    # Then allow the administrator-managed global/default SFTP configuration.
-    route = _route_from_rows(SFTPConfig.objects.filter(client__isnull=True), purpose)
-    if route:
-        return route
+    inbound_ssh = inbound_sftp = outbound_ssh = outbound_sftp = None
+    temp_paths = []
+    try:
+        inbound_ssh, inbound_sftp = _open_sftp(paramiko, inbound_credentials)
+        outbound_ssh, outbound_sftp = _open_sftp(paramiko, outbound_credentials)
 
-    # Last chance: an explicitly selected dedicated row.  This supports a
-    # detached config object without ever accepting a DEFAULT remote_folder.
-    if config:
+        resolved_inbound = _normalize_folder(inbound_sftp, inbound_folder)
+        resolved_outbound = _normalize_folder(outbound_sftp, outbound_folder)
+
+        entries = inbound_sftp.listdir_attr(resolved_inbound)
+        candidates = sorted(
+            entry.filename
+            for entry in entries
+            if not stat.S_ISDIR(entry.st_mode)
+            and not entry.filename.startswith(".")
+            and has_valid_file_extension(entry.filename, "837")
+        )
+
+        if not candidates:
+            return {
+                "success": True,
+                "transferred_count": 0,
+                "transferred": [],
+                "inbound_folder": resolved_inbound,
+                "outbound_folder": resolved_outbound,
+                "message": f"No inbound 837 files were found in the admin-configured folder {resolved_inbound}.",
+            }
+
+        outbound_names = {
+            entry.filename
+            for entry in outbound_sftp.listdir_attr(resolved_outbound)
+            if not stat.S_ISDIR(entry.st_mode)
+        }
+
+        base_filename = _default_837_filename()
+        stem, extension = os.path.splitext(base_filename)
+        multiple = len(candidates) > 1
+        plan = []
+        for index, source_name in enumerate(candidates, start=1):
+            target_name = f"{stem}_{index:03d}{extension}" if multiple else base_filename
+            if target_name in outbound_names:
+                return {
+                    "success": False,
+                    "error": f"Cannot relay 837 because {target_name} already exists in the admin-configured 837 outbound folder {resolved_outbound}.",
+                }
+            plan.append((source_name, target_name))
+
+        transferred = []
+        for source_name, target_name in plan:
+            source_path = posixpath.join(resolved_inbound, source_name)
+            target_path = posixpath.join(resolved_outbound, target_name)
+            temp_path = posixpath.join(
+                resolved_outbound,
+                f".{target_name}.{uuid.uuid4().hex}.uploading",
+            )
+
+            with inbound_sftp.open(source_path, "rb") as source_file:
+                payload = source_file.read()
+            if not payload:
+                raise ValueError(f"{source_name} is empty.")
+
+            edi_file, duplicate = ingest_837(
+                client,
+                request.user,
+                source_name,
+                payload,
+                import_mode="SFTP",
+            )
+
+            outbound_sftp.putfo(
+                io.BytesIO(payload),
+                temp_path,
+                file_size=len(payload),
+                confirm=True,
+            )
+            temp_paths.append(temp_path)
+            outbound_sftp.rename(temp_path, target_path)
+            temp_paths.remove(temp_path)
+            outbound_sftp.stat(target_path)
+
+            try:
+                inbound_sftp.remove(source_path)
+            except Exception as exc:
+                try:
+                    outbound_sftp.remove(target_path)
+                except Exception:
+                    pass
+                raise RuntimeError(
+                    f"{source_name} reached 837 outbound but could not be removed from inbound; outbound was rolled back: {exc}"
+                )
+
+            if hasattr(edi_file, "outbound_path"):
+                edi_file.outbound_path = target_path
+                edi_file.save(update_fields=["outbound_path"])
+
+            transferred.append({
+                "from": source_name,
+                "to": target_name,
+                "inbound_path": source_path,
+                "outbound_path": target_path,
+                "already_indexed": bool(duplicate),
+            })
+
+        return {
+            "success": True,
+            "transferred_count": len(transferred),
+            "transferred": transferred,
+            "filename": base_filename,
+            "inbound_folder": resolved_inbound,
+            "outbound_folder": resolved_outbound,
+            "message": f"Moved {len(transferred)} 837 file(s) using the admin-configured 837_IN and 837_OUT routes before the normal Test batch.",
+        }
+    except Exception as exc:
+        return {"success": False, "error": f"837 Test relay failed: {exc}"}
+    finally:
+        if outbound_sftp:
+            for temp_path in temp_paths:
+                try:
+                    outbound_sftp.remove(temp_path)
+                except Exception:
+                    pass
+            try:
+                outbound_sftp.close()
+            except Exception:
+                pass
+        if outbound_ssh:
+            try:
+                outbound_ssh.close()
+            except Exception:
+                pass
+        if inbound_sftp:
+            try:
+                inbound_sftp.close()
+            except Exception:
+                pass
+        if inbound_ssh:
+            try:
+                inbound_ssh.close()
+            except Exception:
+                pass
+
+
+def api_start_batch_conversion_with_837(request):
+    if request.method == "POST":
         try:
-            raw = SFTPConfig.objects.get(pk=config.pk)
-        except (SFTPConfig.DoesNotExist, ValueError, TypeError):
-            raw = config
-        if _clean(getattr(raw, "purpose", "")).upper() == purpose:
-            route = _clean(getattr(raw, "remote_folder", ""))
-            if route:
-                return route
-        route = _clean((getattr(raw, "route_paths", None) or {}).get(purpose))
-        if route:
-            return route
+            body = json.loads(request.body.decode("utf-8")) if request.body else {}
+        except (TypeError, ValueError, UnicodeDecodeError):
+            body = {}
 
-    # Deliberately do NOT use inbound_837_folder, remote_folder,
-    # inbound_835_folder, or outbound_mir_folder as a compatibility fallback.
-    # If the 837 route was not explicitly saved, Test must report that instead
-    # of silently polling the wrong folder.
-    return ""
+        client = _selected_client(request, body)
+        requested_client = body.get("client_id") or body.get("client")
+        if requested_client and client is None:
+            return JsonResponse(
+                {"success": False, "error": "The selected client was not found or is not authorized."},
+                status=403,
+            )
+        if client and str(client.stage or "").lower() == "offboarded":
+            return JsonResponse(
+                {
+                    "success": False,
+                    "code": "CLIENT_OFFBOARDED",
+                    "offboarded": True,
+                    "error": "This client has been permanently offboarded. SFTP transfers are locked.",
+                },
+                status=409,
+            )
 
+        relay_result = _relay_837_for_test(request, client)
+        if not relay_result.get("success"):
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": relay_result.get("error") or "837 inbound-to-outbound relay failed.",
+                    "sftp_837_transfer": relay_result,
+                },
+                status=400,
+            )
 
-# _relay_837_for_test resolves this symbol from the v2 module at call time.
-_v2._effective_route_folder = _raw_effective_route_folder
-api_start_batch_conversion_with_837 = _v2.api_start_batch_conversion_with_837
+        response = _original_api_start_batch_conversion(request)
+        try:
+            response_data = json.loads(response.content.decode("utf-8"))
+            response_data["sftp_837_transfer"] = relay_result
+            response.content = json.dumps(response_data).encode("utf-8")
+            response["Content-Length"] = str(len(response.content))
+        except Exception:
+            pass
+        return response
+
+    return _original_api_start_batch_conversion(request)
