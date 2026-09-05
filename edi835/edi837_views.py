@@ -163,15 +163,24 @@ def edi837_upload_process(request):
     if not uploads:
         return JsonResponse({"success": False, "error": "Select one or more 837 files."}, status=400)
     max_bytes = getattr(settings, "EDI837_MAX_UPLOAD_BYTES", 100 * 1024 * 1024)
+    from .edi837_naming_views import get_saved_837_filename_format, resolve_837_filename_format
+    resolved_base = resolve_837_filename_format(get_saved_837_filename_format(client))
+    stem, extension = os.path.splitext(resolved_base)
+    multiple = len(uploads) > 1
     results, errors = [], []
-    for upload in uploads:
+    for index, upload in enumerate(uploads, start=1):
         try:
             if not has_valid_file_extension(upload.name, "837"):
                 raise ValueError("Unsupported file extension.")
             if upload.size > max_bytes:
                 raise ValueError("File exceeds the 100 MB limit.")
-            edi_file, duplicate = ingest_837(client, request.user, upload.name, upload.read(), import_mode="MANUAL")
+            storage_name = f"{stem}_{index:03d}{extension}" if multiple else resolved_base
+            edi_file, duplicate = ingest_837(
+                client, request.user, upload.name, upload.read(),
+                import_mode="MANUAL", storage_filename=storage_name,
+            )
             results.append({"id": str(edi_file.id), "name": edi_file.original_filename,
+                            "stored_name": edi_file.stored_filename,
                             "status": edi_file.status, "already_exists": duplicate,
                             "claim_count": edi_file.claim_count, "service_count": edi_file.service_count,
                             "total_charge_amount": str(edi_file.total_charge_amount)})

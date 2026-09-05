@@ -152,7 +152,10 @@ def _relay_837_for_test(request, client):
             if not payload:
                 raise ValueError(f"{source_name} is empty.")
 
-            edi_file, duplicate = ingest_837(client, request.user, source_name, payload, import_mode="SFTP")
+            edi_file, duplicate = ingest_837(
+                client, request.user, source_name, payload, import_mode="SFTP",
+                remote_path=source_path, storage_filename=target_name,
+            )
             outbound_sftp.putfo(io.BytesIO(payload), temp_path, file_size=len(payload), confirm=True)
             uploaded_temp_paths.append(temp_path)
             outbound_sftp.rename(temp_path, target_path)

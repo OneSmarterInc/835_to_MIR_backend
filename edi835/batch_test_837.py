@@ -145,6 +145,8 @@ def _relay_837_for_test(request, client):
                 source_name,
                 payload,
                 import_mode="SFTP",
+                remote_path=source_path,
+                storage_filename=target_name,
             )
 
             outbound_sftp.putfo(io.BytesIO(payload), temp_path, file_size=len(payload), confirm=True)

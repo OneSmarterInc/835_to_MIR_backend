@@ -119,6 +119,7 @@ def _relay_837_for_test(request, client):
                 payload,
                 import_mode="SFTP",
                 remote_path=source_path,
+                storage_filename=target_name,
             )
             if edi_file.status != "PROCESSED":
                 raise RuntimeError(

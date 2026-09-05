@@ -624,9 +624,11 @@ def ingest_837_reference(client, actor, filename, remote_path, raw, text):
     # Compatibility entry point used by the batch and scheduled SFTP workers.
     # New 837 data is normalized into dedicated 837 tables, not RECON tables.
     from .edi837_service import ingest_837
+    from .edi837_naming_views import get_saved_837_filename_format, resolve_837_filename_format
+    storage_filename = resolve_837_filename_format(get_saved_837_filename_format(client))
     edi_file, already_exists = ingest_837(
         client=client, actor=actor, filename=filename, remote_path=remote_path,
-        raw=raw, text=text, import_mode="SFTP",
+        raw=raw, text=text, import_mode="SFTP", storage_filename=storage_filename,
     )
     return {"already_exists": already_exists, "file": {
         "id": str(edi_file.id), "original_filename": edi_file.original_filename,

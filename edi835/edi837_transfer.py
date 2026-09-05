@@ -184,6 +184,8 @@ def edi837_sftp_transfer(request):
                 source_name,
                 payload,
                 import_mode="SFTP",
+                remote_path=source_path,
+                storage_filename=target_name,
             )
 
             outbound_sftp.putfo(

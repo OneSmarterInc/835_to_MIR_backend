@@ -175,10 +175,41 @@ def parse_837(text):
     return {"element_sep": element_sep, "segment_sep": segment_sep, "prefix": transaction_prefix, "claims": claims}
 
 
+def _numbered_837_filename(filename, sequence):
+    stem, extension = os.path.splitext(safe_filename(filename))
+    extension = extension or ".837"
+    suffix = f"_{sequence:03d}"
+    return f"{stem[:255 - len(extension) - len(suffix)]}{suffix}{extension}"
+
+
+def _available_837_storage_name(client, filename):
+    """Keep the configured business filename; use numeric collision suffixes only."""
+    requested = safe_filename(filename or "837.837")[:255]
+    if not requested.lower().endswith(".837"):
+        requested = f"{requested[:251]}.837"
+    dirs = client_storage_dirs(client)
+
+    def occupied(candidate):
+        return (
+            EDI837File.objects.filter(client=client, stored_filename=candidate).exists()
+            or any((dirs[key] / candidate).exists() for key in ("837_in", "837_archive", "837_out"))
+        )
+
+    if not occupied(requested):
+        return requested
+    sequence = 2
+    while occupied(_numbered_837_filename(requested, sequence)):
+        sequence += 1
+    return _numbered_837_filename(requested, sequence)
+
+
 def _write_outbound_copy(client, archived_path):
     out_path = client_storage_dirs(client)["837_out"] / archived_path.name
     if out_path.exists():
-        out_path = out_path.with_name(f"{out_path.stem}_{uuid.uuid4().hex[:12]}{out_path.suffix}")
+        sequence = 2
+        while out_path.exists():
+            out_path = out_path.with_name(_numbered_837_filename(archived_path.name, sequence))
+            sequence += 1
     temporary = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copy2(archived_path, temporary)
@@ -190,7 +221,10 @@ def _write_outbound_copy(client, archived_path):
 
 
 @transaction.atomic
-def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", remote_path=""):
+def ingest_837(
+    client, actor, filename, raw, text=None, import_mode="MANUAL",
+    remote_path="", storage_filename=None,
+):
     if client is None:
         raise ValueError("Select a client before processing an 837 file.")
     raw = bytes(raw or b"")
@@ -203,7 +237,10 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
     # traceability but is never used to deduplicate 837 files or claims.
     parsed = parse_837(text)
     original_name = safe_filename(filename)[:255]
-    stored_name = f"{uuid.uuid4().hex}_{original_name}"[:255]
+    stored_name = _available_837_storage_name(
+        client,
+        storage_filename or original_name,
+    )
     edi_file = EDI837File.objects.create(
         client=client, uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
         original_filename=original_name, stored_filename=stored_name, file_content=text,

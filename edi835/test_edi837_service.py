@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from pathlib import Path
 
 from django.test import SimpleTestCase, TestCase
 
@@ -122,6 +123,31 @@ class EDI837LifecycleTests(TestCase):
         self.assertEqual(EDI837Claim.objects.filter(client=client).count(), 4)
         self.assertEqual(first.file_hash, second.file_hash)
         self.assertNotEqual(first.archive_path, second.archive_path)
+        self.assertEqual(first.stored_filename, "claims.837")
+        self.assertEqual(second.stored_filename, "claims_002.837")
+        self.assertEqual(Path(first.archive_path).name, "claims.837")
+        self.assertEqual(Path(second.archive_path).name, "claims_002.837")
+        self.assertNotRegex(first.stored_filename, r"^[0-9a-f]{32}_")
+
+    def test_requested_rename_is_used_for_archive_and_local_outbound(self):
+        client = Client.objects.create(
+            name="Named Intake Client", client_code="NAME837", email="named@example.com"
+        )
+
+        edi_file, _ = ingest_837(
+            client,
+            None,
+            "IP7A260904P",
+            SAMPLE_837.encode(),
+            import_mode="SFTP",
+            remote_path="/in/IP7A260904P",
+            storage_filename="2026_09_05.837",
+        )
+
+        self.assertEqual(edi_file.original_filename, "IP7A260904P")
+        self.assertEqual(edi_file.stored_filename, "2026_09_05.837")
+        self.assertEqual(Path(edi_file.archive_path).name, "2026_09_05.837")
+        self.assertEqual(Path(edi_file.outbound_path).name, "2026_09_05.837")
 
     def test_835_lifecycle_is_resolved_through_linked_mir_source(self):
         client = Client.objects.create(
