@@ -118,12 +118,6 @@ class Client(models.Model):
         help_text="Preferred MIR filename format",
     )
 
-    edi837_filename_format = models.CharField(
-        max_length=255,
-        default="YYYYMMDDhhmmss.837",
-        help_text="Preferred 837 outbound filename format",
-    )
-
     timezone = models.CharField(
         max_length=64,
         default="America/New_York",
