@@ -10,8 +10,8 @@ from .views import (
     api_sftp_connect,
     api_verify_sftp_paths,
     api_push_to_sftp,
-    api_browse_sftp,
 )
+from .sftp_browse_admin_routes import api_browse_sftp_admin_routes
 from .batch_test_837_v3 import api_start_batch_conversion_with_837
 
 from converter.views import api_download_archive_zip
@@ -40,7 +40,7 @@ api_delete_sftp_config = authenticated_api(api_delete_sftp_config)
 api_sftp_connect = authenticated_api(api_sftp_connect)
 api_verify_sftp_paths = authenticated_api(api_verify_sftp_paths)
 api_push_to_sftp = authenticated_api(api_push_to_sftp)
-api_browse_sftp = authenticated_api(api_browse_sftp)
+api_browse_sftp = authenticated_api(api_browse_sftp_admin_routes)
 api_start_batch_conversion = authenticated_api(api_start_batch_conversion_with_837)
 api_download_archive_zip = authenticated_api(api_download_archive_zip)
 recon_files = authenticated_api(recon_files)
