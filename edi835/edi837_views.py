@@ -3,6 +3,7 @@ import json
 import os
 import posixpath
 import stat
+import uuid
 
 from django.conf import settings
 from django.core.paginator import Paginator
@@ -17,7 +18,7 @@ from project835.field_crypto import SFTPCredentialError, get_sftp_runtime_creden
 
 from .edi837_service import export_single_claim, ingest_837
 from .file_types import has_valid_file_extension
-from .models import EDI837Claim, EDI837File
+from .models import EDI837Claim, EDI837File, MIRClaim, RECONClaim
 from .services import resolve_sftp_config
 
 
@@ -71,6 +72,30 @@ def _claim_row(claim):
         "file_name": claim.edi_file.original_filename,
         "processed_at": claim.edi_file.processed_at.isoformat() if claim.edi_file.processed_at else None,
         "import_mode": claim.edi_file.import_mode,
+    }
+
+
+def _claim_lifecycle(claim):
+    identifiers = {str(value or "").strip() for value in (
+        claim.claim_control_number, claim.highmark_claim_number,
+        claim.internal_claim_number, claim.reference_9c, claim.patient_control_number,
+    ) if str(value or "").strip()}
+    lookup = Q()
+    for identifier in identifiers:
+        lookup |= Q(claim_control_number__iexact=identifier)
+    mir = recon = None
+    if lookup:
+        mir = (MIRClaim.objects.select_related("mir_file")
+               .filter(lookup, mir_file__client=claim.client)
+               .order_by("mir_file__converted_at").first())
+        recon = (RECONClaim.objects.select_related("recon_file")
+                 .filter(lookup, client=claim.client)
+                 .order_by("recon_file__uploaded_at").first())
+    return {
+        "mir": {"exists": bool(mir), "arrived_at": mir.mir_file.converted_at.isoformat() if mir else None,
+                "file_name": mir.mir_file.mir_filename if mir else ""},
+        "recon": {"exists": bool(recon), "arrived_at": recon.recon_file.uploaded_at.isoformat() if recon else None,
+                  "file_name": recon.recon_file.original_filename if recon else ""},
     }
 
 
@@ -381,7 +406,7 @@ def edi837_claim_detail(request, claim_id):
         "payer": claim.payer_name, "claim_type": claim.claim_type,
         "place_of_service": claim.place_of_service, "claim_frequency_code": claim.claim_frequency_code,
         "original_claim_number": claim.original_claim_number, "diagnosis_codes": claim.diagnosis_codes,
-        "services": services,
+        "services": services, "lifecycle": _claim_lifecycle(claim),
     }})
 
 
@@ -404,3 +429,76 @@ def edi837_claim_export(request, claim_id):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["X-OneSmarter-Filename"] = filename
     return response
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def edi837_claim_push_sftp(request, claim_id):
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
+    claim = _visible_claim(request, claim_id)
+    if claim is None:
+        return JsonResponse({"success": False, "error": "837 claim was not found."}, status=404)
+    if str(claim.client.stage or "").lower() == "offboarded":
+        return JsonResponse({"success": False, "error": "This client is offboarded; SFTP transfers are locked."}, status=409)
+    try:
+        body = json.loads(request.body.decode("utf-8")) if request.body else {}
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return JsonResponse({"success": False, "error": "Invalid JSON request."}, status=400)
+    filename = _safe_837_filename(body.get("filename"), fallback=f"837_{claim.claim_control_number or claim.id}.837")
+    config = resolve_sftp_config(client=claim.client, outbound=True, purpose="837_OUT")
+    if not config:
+        return JsonResponse({"success": False, "error": "No 837 outbound SFTP configuration is available for this client."}, status=400)
+    if config.status != "CONNECTED":
+        return JsonResponse({"success": False, "error": "The selected client's 837 outbound SFTP connection is not connected."}, status=400)
+    try:
+        credentials = get_sftp_runtime_credentials(config, outbound=True)
+    except SFTPCredentialError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    remote_folder = str(credentials.get("remote_folder") or "").strip()
+    if not remote_folder:
+        return JsonResponse({"success": False, "error": "The 837 outbound SFTP folder is not configured."}, status=400)
+    import paramiko
+    ssh = paramiko.SSHClient()
+    if credentials.get("trust_unknown_key"):
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    else:
+        ssh.load_system_host_keys()
+    auth_method, password = credentials.get("auth_method"), credentials.get("password")
+    pkey = _load_private_key(paramiko, credentials.get("ssh_key"), password=password) if auth_method in ["SSH Key", "SSH Key + Password"] else None
+    pass_val = password if auth_method in ["Password", "SSH Key + Password"] else None
+    sftp, temporary_path = None, ""
+    try:
+        ssh.connect(hostname=credentials.get("host"), port=int(credentials.get("port") or 22),
+                    username=credentials.get("username"), password=pass_val, pkey=pkey,
+                    timeout=10, banner_timeout=10, auth_timeout=10, look_for_keys=False, allow_agent=False)
+        sftp = ssh.open_sftp()
+        try:
+            resolved_folder = sftp.normalize(remote_folder)
+        except Exception:
+            resolved_folder = remote_folder
+        target_path = posixpath.join(resolved_folder, filename)
+        try:
+            sftp.stat(target_path)
+        except FileNotFoundError:
+            pass
+        else:
+            return JsonResponse({"success": False, "error": f"{filename} already exists in the 837 outbound folder."}, status=409)
+        temporary_path = posixpath.join(resolved_folder, f".{filename}.{uuid.uuid4().hex}.uploading")
+        payload = export_single_claim(claim).encode("utf-8")
+        sftp.putfo(io.BytesIO(payload), temporary_path, file_size=len(payload), confirm=True)
+        sftp.rename(temporary_path, target_path)
+        temporary_path = ""
+        return JsonResponse({"success": True, "filename": filename, "remote_path": target_path,
+                             "pushed_at": timezone.now().isoformat(),
+                             "message": f"{filename} was pushed to the client's 837 outbound SFTP folder."})
+    finally:
+        if sftp:
+            if temporary_path:
+                try:
+                    sftp.remove(temporary_path)
+                except Exception:
+                    pass
+            sftp.close()
+        ssh.close()
