@@ -8,10 +8,10 @@ import stat
 import uuid
 
 from django.http import JsonResponse
-from django.utils import timezone
 
 from .admin_sftp_routes import resolve_admin_sftp_route
-from .batch_test_837_v2 import _default_837_filename, _selected_client
+from .batch_test_837_v2 import _selected_client
+from .edi837_naming_views import get_saved_837_filename_format, resolve_837_filename_format
 from .edi837_service import ingest_837
 from .edi837_transfer import _normalize_folder, _open_sftp
 from .file_types import has_valid_file_extension
@@ -19,10 +19,17 @@ from .views import api_start_batch_conversion as _original_api_start_batch_conve
 
 
 def _relay_837_for_test(request, client):
+    """Process each 837 from 837_IN, then rename and deliver it to 837_OUT.
+
+    Processing is intentionally completed before the outbound upload.  A file
+    is only removed from 837_IN after it has been parsed/indexed, uploaded to
+    837_OUT, and the outbound object has been verified with stat().
+    """
     if client is None:
         return {
             "success": True,
             "transferred_count": 0,
+            "processed_count": 0,
             "transferred": [],
             "message": "No client-scoped 837 relay was requested.",
         }
@@ -53,11 +60,17 @@ def _relay_837_for_test(request, client):
             and has_valid_file_extension(entry.filename, "837")
         )
 
+        filename_format = get_saved_837_filename_format(client)
+        resolved_base = resolve_837_filename_format(filename_format)
+
         if not candidates:
             return {
                 "success": True,
                 "transferred_count": 0,
+                "processed_count": 0,
                 "transferred": [],
+                "filename_format": filename_format,
+                "resolved_filename": resolved_base,
                 "inbound_folder": resolved_inbound,
                 "outbound_folder": resolved_outbound,
                 "message": f"No inbound 837 files were found in the admin-configured folder {resolved_inbound}.",
@@ -69,12 +82,12 @@ def _relay_837_for_test(request, client):
             if not stat.S_ISDIR(entry.st_mode)
         }
 
-        base_filename = _default_837_filename()
-        stem, extension = os.path.splitext(base_filename)
+        stem, extension = os.path.splitext(resolved_base)
+        extension = extension or ".837"
         multiple = len(candidates) > 1
         plan = []
         for index, source_name in enumerate(candidates, start=1):
-            target_name = f"{stem}_{index:03d}{extension}" if multiple else base_filename
+            target_name = f"{stem}_{index:03d}{extension}" if multiple else resolved_base
             if target_name in outbound_names:
                 return {
                     "success": False,
@@ -96,6 +109,9 @@ def _relay_837_for_test(request, client):
             if not payload:
                 raise ValueError(f"{source_name} is empty.")
 
+            # Parse and index before anything is sent to 837_OUT.  ingest_837
+            # also marks duplicate records as SFTP when the same bytes had
+            # previously been indexed through a manual workflow.
             edi_file, duplicate = ingest_837(
                 client,
                 request.user,
@@ -104,6 +120,12 @@ def _relay_837_for_test(request, client):
                 import_mode="SFTP",
                 remote_path=source_path,
             )
+            if edi_file.status != "PROCESSED":
+                raise RuntimeError(
+                    f"{source_name} was not fully processed; current database status is {edi_file.status}."
+                )
+            if int(edi_file.claim_count or 0) <= 0:
+                raise RuntimeError(f"{source_name} was not pushed because no 837 claims were indexed.")
 
             outbound_sftp.putfo(
                 io.BytesIO(payload),
@@ -127,26 +149,38 @@ def _relay_837_for_test(request, client):
                     f"{source_name} reached 837 outbound but could not be removed from inbound; outbound was rolled back: {exc}"
                 )
 
-            if hasattr(edi_file, "outbound_path"):
-                edi_file.outbound_path = target_path
-                edi_file.save(update_fields=["outbound_path"])
+            # Persist the exact SFTP lifecycle used by the Search tables.
+            edi_file.import_mode = "SFTP"
+            edi_file.remote_path = source_path
+            edi_file.outbound_path = target_path
+            edi_file.save(update_fields=["import_mode", "remote_path", "outbound_path"])
 
             transferred.append({
+                "file_id": str(edi_file.id),
                 "from": source_name,
                 "to": target_name,
                 "inbound_path": source_path,
                 "outbound_path": target_path,
+                "status": edi_file.status,
+                "inbound_source": "SFTP",
+                "claim_count": edi_file.claim_count,
+                "service_count": edi_file.service_count,
                 "already_indexed": bool(duplicate),
             })
 
         return {
             "success": True,
             "transferred_count": len(transferred),
+            "processed_count": len(transferred),
             "transferred": transferred,
-            "filename": base_filename,
+            "filename_format": filename_format,
+            "resolved_filename": resolved_base,
             "inbound_folder": resolved_inbound,
             "outbound_folder": resolved_outbound,
-            "message": f"Moved {len(transferred)} 837 file(s) using the admin-configured 837_IN and 837_OUT routes before the normal Test batch.",
+            "message": (
+                f"Processed, indexed, renamed and moved {len(transferred)} 837 file(s) "
+                "using the saved client naming format and admin-configured 837_IN/837_OUT routes."
+            ),
         }
     except Exception as exc:
         return {"success": False, "error": f"837 Test relay failed: {exc}"}
