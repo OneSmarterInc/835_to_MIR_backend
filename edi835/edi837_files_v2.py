@@ -16,19 +16,26 @@ from .models import EDI837File
 def _is_sftp_inbound(item):
     if str(item.import_mode or "").upper() == "SFTP":
         return True
-    if str(item.remote_path or "").strip():
-        return True
-    outbound = str(item.outbound_path or "").strip()
-    return outbound.startswith("/")
+    return bool(str(item.remote_path or "").strip())
 
 
-def _display_filename(item):
-    """Show the actual filename delivered to 837_OUT when available."""
+def _confirmed_remote_outbound(item):
+    """Only an absolute remote SFTP path counts as a successful push.
+
+    ingest_837 also creates a local 837_out working copy and stores that local
+    relative path in outbound_path.  That local copy must never be displayed as
+    a successful SFTP delivery.
+    """
     outbound = str(item.outbound_path or "").strip()
-    if outbound:
-        pushed_name = os.path.basename(outbound.rstrip("/"))
-        if pushed_name:
-            return pushed_name
+    return outbound if outbound.startswith("/") else ""
+
+
+def _inbound_filename(item, sftp_inbound):
+    remote = str(item.remote_path or "").strip()
+    if sftp_inbound and remote:
+        name = os.path.basename(remote.rstrip("/"))
+        if name:
+            return name
     return item.original_filename
 
 
@@ -59,11 +66,7 @@ def edi837_files(request):
         if source_query in {choice[0] for choice in EDI837File.IMPORT_MODE_CHOICES}:
             filters |= Q(import_mode=source_query)
         if source_query == "SFTP":
-            filters |= Q(remote_path__startswith="/") | Q(outbound_path__startswith="/")
-        if "NOT PUSHED" in source_query or "NOT_PUSHED" in status_query:
-            filters |= Q(outbound_path="")
-        elif "OUTBOUND" in source_query or "PUSHED" in source_query:
-            filters |= ~Q(outbound_path="")
+            filters |= Q(remote_path__startswith="/")
         files = files.filter(filters)
 
     try:
@@ -81,19 +84,24 @@ def edi837_files(request):
         sftp_inbound = _is_sftp_inbound(item)
         if sftp_inbound and item.import_mode != "SFTP":
             stale_sftp_ids.append(item.id)
-        outbound_path = str(item.outbound_path or "").strip()
+
+        remote_outbound = _confirmed_remote_outbound(item)
+        inbound_name = _inbound_filename(item, sftp_inbound)
+        outbound_name = os.path.basename(remote_outbound.rstrip("/")) if remote_outbound else ""
+
         rows.append({
             "id": str(item.id),
-            "file_name": _display_filename(item),
-            "original_file_name": item.original_filename,
-            "outbound_file_name": os.path.basename(outbound_path.rstrip("/")) if outbound_path else "",
+            "file_name": inbound_name,
+            "original_file_name": inbound_name,
+            "stored_file_name": item.stored_filename,
+            "outbound_file_name": outbound_name,
             "inbound_path": str(item.remote_path or ""),
-            "outbound_path": outbound_path,
+            "outbound_path": remote_outbound,
             "status": item.status,
             "inbound_source": "SFTP" if sftp_inbound else item.get_import_mode_display(),
             "inbound_status": "Received",
-            "outbound_status": "Pushed" if outbound_path else "Not pushed",
-            "outbound_ready": bool(outbound_path),
+            "outbound_status": "Pushed" if remote_outbound else "Not pushed",
+            "outbound_ready": bool(remote_outbound),
             "claim_count": item.claim_count,
             "service_count": item.service_count,
             "total_charge_amount": str(item.total_charge_amount),
