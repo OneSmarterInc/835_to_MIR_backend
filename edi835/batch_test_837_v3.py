@@ -102,6 +102,7 @@ def _relay_837_for_test(request, client):
                 source_name,
                 payload,
                 import_mode="SFTP",
+                remote_path=source_path,
             )
 
             outbound_sftp.putfo(
