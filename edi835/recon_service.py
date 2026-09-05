@@ -142,8 +142,8 @@ def _fixed_width_data(raw: str, row_number: int, known_claim_ids=None) -> dict |
     # and never associates a partial identifier with a claim.
     compact_raw = _claim_key(raw)
     candidates = re.findall(
-        r"(?<![A-Za-z0-9])\d{17}[A-Za-z0-9]{6}(?![A-Za-z0-9])",
-        raw,
+        r"\d{17}[A-Z][A-Z0-9]{5}",
+        compact_raw,
     )
     claim_id = candidates[0] if candidates else ""
     if not claim_id:
@@ -425,19 +425,27 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         RECONServiceLine.objects.bulk_create(services, batch_size=2000)
 
         now = timezone.now()
+        # Fixed-width P7A reports contain page headings, separators and totals
+        # around their claim rows.  Those non-claim physical lines are retained
+        # as findings for audit, but they must not downgrade a file whose every
+        # identifiable claim row was parsed successfully.
+        blocking_findings = [
+            finding for finding in parsing_findings
+            if finding.get("error_code") != "UNRECOGNIZED_RECON_LAYOUT"
+        ]
         recon_file.status = (
             "FAILED" if parsing_findings and not rows
-            else "PARTIAL" if parsing_findings
+            else "PARTIAL" if blocking_findings
             else "PROCESSED"
         )
         recon_file.record_count = len(rows)
         recon_file.claim_count = len(grouped)
         recon_file.service_count = service_total
-        recon_file.held_record_count = len(parsing_findings)
-        recon_file.parsing_findings = parsing_findings
+        recon_file.held_record_count = len(blocking_findings)
+        recon_file.parsing_findings = blocking_findings
         recon_file.processing_error = (
-            f"{len(parsing_findings)} RECON record(s) held for review."
-            if parsing_findings else ""
+            f"{len(blocking_findings)} RECON record(s) held for review."
+            if blocking_findings else ""
         )
         recon_file.total_charge_amount = total_charge
         recon_file.total_paid_amount = total_paid
@@ -447,17 +455,17 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         recon_file.save()
         run.status = (
             "FAILED" if parsing_findings and not rows
-            else "PARTIAL" if parsing_findings
+            else "PARTIAL" if blocking_findings
             else "COMPLETED"
         )
         run.claims_created = len(grouped)
         run.services_created = service_total
-        run.invalid_records = len(parsing_findings)
+        run.invalid_records = len(blocking_findings)
         run.completed_at = now
         run.save()
         RECONProcessingError.objects.bulk_create([
             RECONProcessingError(processing_run=run, recon_file=recon_file, **finding)
-            for finding in parsing_findings
+            for finding in blocking_findings
         ])
         return run
     except Exception as exc:
@@ -491,43 +499,27 @@ def ingest_sftp_recon_file(*, client, actor, filename, remote_path, raw, text):
     produce the same normalized claims, services, totals, and Result-page data.
     """
     file_hash = hashlib.sha256(raw).hexdigest()
-    recon = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
-    already_exists = recon is not None
-
-    if recon is None:
-        recon = RECONFile.objects.create(
-            client=client,
-            uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
-            original_filename=filename[:255],
-            stored_filename=(
-                f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{filename}"
-            )[:255],
-            file_content=text,
-            file_hash=file_hash,
-            file_size=len(raw),
-            import_mode="SFTP",
-        )
-        stage_inbound(client, "recon", recon.stored_filename, raw, binary=True)
-    else:
-        # The latest ingestion source is SFTP. This also ensures a file first
-        # uploaded manually is shown as SFTP after the Test pipeline fetches it.
-        updates = []
-        if recon.import_mode != "SFTP":
-            recon.import_mode = "SFTP"
-            updates.append("import_mode")
-        if not recon.file_content:
-            recon.file_content = text
-            updates.append("file_content")
-        if updates:
-            updates.append("updated_at")
-            recon.save(update_fields=updates)
-
-    if recon.status != "PROCESSED":
-        process_recon_file(recon, actor)
-        recon.refresh_from_db()
+    # Each remote file is an independent operational event. Do not collapse
+    # separate SFTP files merely because their bytes are identical; doing so
+    # removed all three remote files while displaying only one database row.
+    recon = RECONFile.objects.create(
+        client=client,
+        uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
+        original_filename=filename[:255],
+        stored_filename=(
+            f"{getattr(client, 'client_code', 'GLOBAL')}_{uuid.uuid4()}_{filename}"
+        )[:255],
+        file_content=text,
+        file_hash=file_hash,
+        file_size=len(raw),
+        import_mode="SFTP",
+    )
+    stage_inbound(client, "recon", recon.stored_filename, raw, binary=True)
+    process_recon_file(recon, actor)
+    recon.refresh_from_db()
 
     return {
-        "already_exists": already_exists,
+        "already_exists": False,
         "file": {
             "id": str(recon.id),
             "original_filename": recon.original_filename,

@@ -87,6 +87,19 @@ def process_staged_835(client):
     if result.get("success"):
         EDI835File.objects.filter(id__in=[item.id for item in records]).update(
             status="ARCHIVED", processing_completed_at=timezone.now())
+    # Service-layer results include live Django objects for synchronous callers.
+    # Durable worker jobs are JSON, so expose identifiers and names instead of
+    # attempting to serialize a model instance (and omit the large MIR body).
+    generated_record = result.pop("db_record", None)
+    result.pop("mir_text", None)
+    if generated_record is not None:
+        result["edi835_file_id"] = str(generated_record.id)
+        mir_file = getattr(generated_record, "mir_file", None)
+        if mir_file is not None:
+            result["mir_file_id"] = str(mir_file.id)
+            result["mir_filename"] = mir_file.mir_filename or ""
+    if not result.get("mir_filename"):
+        result["mir_filename"] = result.get("combined_filename") or ""
     result.update({"automation_type": "835", "direction": "PROCESSING", "files": [item.original_filename for item in records],
                    "processed_count": len(records) if result.get("success") else 0})
     return result

@@ -682,6 +682,69 @@ class RECONResultAPITestCase(TestCase):
         self.assertEqual(rows[0]["data"]["paid_amount"], "98.25")
         self.assertEqual(rows[0]["data"]["fixed_width_legacy_p7a"], "1")
 
+    def test_legacy_p7a_claim_key_is_found_inside_compact_fixed_width_row(self):
+        from .recon_service import parse_recon_rows
+
+        claim_id = "12345678901234567ABC123"
+        rows, findings = parse_recon_rows(
+            f"PREFIX{claim_id}SUFFIX     125.00     98.25",
+            include_findings=True,
+        )
+
+        self.assertEqual(findings, [])
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["data"]["claim_control_number"], claim_id)
+        self.assertEqual(rows[0]["data"]["paid_amount"], "98.25")
+
+    def test_fixed_width_report_framing_does_not_make_complete_file_partial(self):
+        from .recon_service import process_recon_file
+
+        claim_id = "12345678901234567ABC123"
+        content = (
+            "P7A RECON CLAIM REPORT\n"
+            f"PREFIX {claim_id} PAID 98.25\n"
+            "END OF REPORT\n"
+        )
+        recon = RECONFile.objects.create(
+            client=self.tenant,
+            uploaded_by=self.user,
+            original_filename="complete.P7A",
+            stored_filename="complete.P7A",
+            file_content=content,
+            file_hash="a" * 64,
+            file_size=len(content.encode()),
+        )
+
+        run = process_recon_file(recon, self.user)
+        recon.refresh_from_db()
+
+        self.assertEqual(recon.status, "PROCESSED")
+        self.assertEqual(recon.claim_count, 1)
+        self.assertEqual(recon.held_record_count, 0)
+        self.assertEqual(recon.processing_error, "")
+        self.assertEqual(run.status, "COMPLETED")
+
+    def test_separate_sftp_recon_files_are_not_collapsed_by_content_hash(self):
+        from .recon_service import ingest_sftp_recon_file
+
+        content = b"Claim ID,Paid Amount\nCLAIM-1,10.00\n"
+        for filename in ("recon-one.csv", "recon-two.csv", "recon-three.csv"):
+            result = ingest_sftp_recon_file(
+                client=self.tenant,
+                actor=self.user,
+                filename=filename,
+                remote_path=f"/in/recon/{filename}",
+                raw=content,
+                text=content.decode(),
+            )
+            self.assertFalse(result["already_exists"])
+            self.assertEqual(result["file"]["status"], "PROCESSED")
+
+        files = RECONFile.objects.filter(client=self.tenant)
+        self.assertEqual(files.count(), 3)
+        self.assertEqual(files.values("file_hash").distinct().count(), 1)
+        self.assertTrue(all(item.claim_count == 1 for item in files))
+
     def test_legacy_fixed_width_row_without_full_claim_key_is_held(self):
         from .recon_service import parse_recon_rows
 

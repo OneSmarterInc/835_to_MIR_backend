@@ -174,6 +174,51 @@ class SFTPAutomationTestCase(TestCase):
         self.assertTrue(payload["run_pagination"]["has_previous"])
         self.assertFalse(payload["run_pagination"]["has_next"])
 
+    @patch("edi835.sftp_automation_operations.process_multiple_edi835_files")
+    def test_835_processing_result_is_safe_for_durable_json_job(self, process_files):
+        from .models import EDI835File, MIRFile
+        from .sftp_automation_operations import process_staged_835
+
+        staged = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="input.835",
+            stored_filename="input.835",
+            input_file_content="ST*835*1~",
+            status="UPLOADED",
+        )
+        generated = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="input.835",
+            stored_filename="generated-input.835",
+            input_file_content="ST*835*1~",
+            status="ARCHIVED",
+        )
+        MIRFile.objects.create(
+            source_835=generated,
+            client=self.client_record,
+            mir_filename="MIROUT_2026_0905.MIR",
+            file_content="MIR",
+            file_hash="b" * 64,
+            file_size=3,
+        )
+        process_files.return_value = {
+            "success": True,
+            "db_record": generated,
+            "mir_text": "MIR" * 100,
+            "combined_filename": "MIROUT_2026_0905.MIR",
+            "errors": [],
+        }
+
+        result = process_staged_835(self.client_record)
+
+        json.dumps(result)
+        self.assertNotIn("db_record", result)
+        self.assertNotIn("mir_text", result)
+        self.assertEqual(result["edi835_file_id"], str(generated.id))
+        self.assertEqual(result["mir_filename"], "MIROUT_2026_0905.MIR")
+        staged.refresh_from_db()
+        self.assertEqual(staged.status, "ARCHIVED")
+
     @patch("edi835.sftp_automation.send_automation_run_notice", return_value=True)
     def test_completed_job_persists_full_run_summary(self, run_email):
         schedule = SFTPAutomationSchedule.objects.create(

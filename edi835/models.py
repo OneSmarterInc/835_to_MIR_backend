@@ -498,7 +498,6 @@ class RECONFile(models.Model):
     class Meta:
         db_table = "recon_file"
         ordering = ["-uploaded_at"]
-        constraints = [models.UniqueConstraint(fields=["client", "file_hash"], name="uniq_client_recon_hash")]
         indexes = [
             models.Index(fields=["client", "-uploaded_at"]),
             models.Index(fields=["client", "status"]),
