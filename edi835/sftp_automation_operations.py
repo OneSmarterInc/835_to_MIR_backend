@@ -140,6 +140,14 @@ def push_local_outbound(client, kind):
 
 def execute_directional_operation(client, actor, automation_type, direction):
     key = (automation_type.upper(), direction.upper())
+
+    # Manual Conversion -> Test uses automation_type=ALL. It is not a single
+    # directional scheduler operation; returning None tells the worker to run
+    # the existing complete batch pipeline instead. Keep this guard here as a
+    # second line of defense even if an older worker supplies INCOMING.
+    if key[0] == "ALL":
+        return None
+
     if key == ("835", "INCOMING"):
         return ingest_835_incoming(client, actor)
     if key == ("835", "PROCESSING"):
