@@ -54,8 +54,6 @@ def parse_837(text):
 
     for index, seg in enumerate(segments):
         tag = (seg[0] if seg else "").upper()
-        # An HL after CLM always starts the next claim hierarchy. Finalize first,
-        # otherwise the following subscriber/provider names leak into this claim.
         if tag == "HL" and current is not None:
             current["end_index"] = index
             claims.append(current)
@@ -138,8 +136,6 @@ def parse_837(text):
                 if len(parts) > 1 and parts[1]:
                     current["diagnosis_codes"].append(parts[1])
         elif current and tag == "REF" and len(seg) > 2 and seg[1].upper() == "9C":
-            # Highmark files commonly carry the adjudication-facing claim key
-            # in REF*9C while CLM01 remains the submitter's patient-control ID.
             current["reference_9c"] = seg[2].strip()
         elif current and tag == "REF" and len(seg) > 2 and seg[1].upper() == "F8":
             current["original_claim_number"] = seg[2].strip()
@@ -193,6 +189,21 @@ def ingest_837(client, actor, filename, raw, text=None, import_mode="MANUAL", re
     digest = hashlib.sha256(raw).hexdigest()
     existing = EDI837File.objects.filter(client=client, file_hash=digest).first()
     if existing:
+        # A file may have been indexed earlier by a manual/admin workflow and
+        # later actually arrive through the configured 837_IN SFTP route. The
+        # Search table should reflect the real inbound transport. Promote the
+        # existing record to SFTP instead of leaving a stale MANUAL source.
+        if str(import_mode or "").upper() == "SFTP":
+            update_fields = []
+            if existing.import_mode != "SFTP":
+                existing.import_mode = "SFTP"
+                update_fields.append("import_mode")
+            normalized_remote = str(remote_path or "").strip()
+            if normalized_remote and existing.remote_path != normalized_remote:
+                existing.remote_path = normalized_remote
+                update_fields.append("remote_path")
+            if update_fields:
+                existing.save(update_fields=update_fields)
         return existing, True
     parsed = parse_837(text)
     original_name = safe_filename(filename)[:255]
@@ -274,68 +285,24 @@ def export_single_claim(claim):
         st_index = next(i for i, seg in enumerate(segments) if seg[0] == "ST" and len(seg) > 1 and seg[1] == "837")
         first_hl = next(i for i in range(st_index, len(segments)) if segments[i][0] == "HL")
     except StopIteration as exc:
-        raise ValueError("The stored source is missing the required ISA/GS/ST/HL 837 envelope.") from exc
-
-    matched = None
-    for index, seg in enumerate(segments):
-        if seg[0] == "CLM" and len(seg) > 1 and seg[1].strip() == claim.patient_control_number:
-            matched = index
-            break
-        if seg[0] == "REF" and len(seg) > 2 and seg[1] == "9C" and seg[2].strip() == claim.claim_control_number:
-            matched = index
-            break
-    if matched is None:
-        raise ValueError("The selected claim could not be located in its stored 837 source.")
-
-    provider_start = None
-    for index in range(matched, -1, -1):
-        seg = segments[index]
-        if seg[0] == "HL" and len(seg) > 3 and seg[3] == "20":
-            provider_start = index
-            break
-    if provider_start is None:
-        raise ValueError("The selected claim has no enclosing billing-provider HL loop.")
-    block_end = next((i for i in range(provider_start + 1, len(segments))
-                      if (segments[i][0] == "HL" and len(segments[i]) > 3 and segments[i][3] == "20")
-                      or segments[i][0] in {"SE", "GE", "IEA"}), len(segments))
-    block = [list(seg) for seg in segments[provider_start:block_end]]
-
-    # A provider block may contain multiple claims. Retain the selected claim's
-    # subscriber context and claim segments, excluding sibling subscriber loops.
-    subscriber_start = next((i for i in range(matched - provider_start, -1, -1)
-                             if block[i][0] == "HL" and len(block[i]) > 3 and block[i][3] in {"22", "23"}), None)
-    # A dependent claim begins at HL*23, but its subscriber, SBR, member ID,
-    # and payer live in the parent HL*22 loop and must be exported with it.
-    if subscriber_start is not None and block[subscriber_start][3] == "23":
-        parent_id = block[subscriber_start][2] if len(block[subscriber_start]) > 2 else ""
-        parent_start = next((i for i in range(subscriber_start - 1, -1, -1)
-                             if block[i][0] == "HL" and len(block[i]) > 3
-                             and block[i][3] == "22" and block[i][1] == parent_id), None)
-        if parent_start is not None:
-            subscriber_start = parent_start
-    if subscriber_start is not None:
-        first_subscriber = next((i for i, seg in enumerate(block)
-                                 if seg[0] == "HL" and len(seg) > 3 and seg[3] in {"22", "23"}), subscriber_start)
-        relative_claim = matched - provider_start
-        first_claim = next((i for i in range(subscriber_start, len(block)) if block[i][0] == "CLM"), relative_claim)
-        claim_end = next((i for i in range(relative_claim + 1, len(block))
-                          if block[i][0] == "CLM" or (block[i][0] == "HL" and len(block[i]) > 3 and block[i][3] in {"22", "23"})), len(block))
-        block = block[:first_subscriber] + block[subscriber_start:first_claim] + block[relative_claim:claim_end]
-
-    old_ids = [seg[1] for seg in block if seg[0] == "HL" and len(seg) > 1]
-    remap = {old: str(index + 1) for index, old in enumerate(old_ids)}
-    for seg in block:
-        if seg[0] == "HL":
-            seg[1] = remap.get(seg[1], seg[1])
-            if len(seg) > 2 and seg[2]:
-                seg[2] = remap.get(seg[2], seg[2])
-
-    isa = list(segments[isa_index]); gs = list(segments[gs_index]); st = list(segments[st_index])
-    isa13, gs06, st02 = _control_number(9, claim.pk), _control_number(9, claim.claim_control_number), "0001"
+        raise ValueError("The source 837 is missing required transaction envelope segments.") from exc
+    prefix = raw[isa_index:first_hl]
+    claim_parts = [part for part in claim.raw_claim.split(separator) if part.strip()]
+    isa = prefix[0].split(element)
+    gs = prefix[1].split(element)
+    st = next((segment.split(element) for segment in prefix if segment.startswith("ST" + element)), None)
+    if st is None:
+        raise ValueError("The source 837 is missing ST.")
+    isa13, gs06, st02 = _control_number(9, claim.id), _control_number(9, f"gs-{claim.id}"), _control_number(4, f"st-{claim.id}")
     if len(isa) > 13: isa[13] = isa13
     if len(gs) > 6: gs[6] = gs06
     if len(st) > 2: st[2] = st02
-    header_body = [list(seg) for seg in segments[st_index + 1:first_hl]]
-    st_to_se = [st] + header_body + block
-    out = [isa, gs] + st_to_se + [["SE", str(len(st_to_se) + 1), st02], ["GE", "1", gs06], ["IEA", "1", isa13]]
-    return (separator + "\n").join(element.join(seg) for seg in out) + separator
+    prefix[0], prefix[1] = element.join(isa), element.join(gs)
+    for index, value in enumerate(prefix):
+        if value.startswith("ST" + element):
+            prefix[index] = element.join(st)
+            break
+    body = [value for value in claim_parts if not value.startswith(("ISA" + element, "GS" + element, "ST" + element, "SE" + element, "GE" + element, "IEA" + element))]
+    se_count = 1 + len(body) + 1
+    output = prefix + body + [f"SE{element}{se_count}{element}{st02}", f"GE{element}1{element}{gs06}", f"IEA{element}1{element}{isa13}"]
+    return separator.join(output) + separator
