@@ -12,7 +12,7 @@ from .views import (
     api_push_to_sftp,
     api_browse_sftp,
 )
-from .batch_test_837 import api_start_batch_conversion_with_837
+from .batch_test_837_v3 import api_start_batch_conversion_with_837
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
