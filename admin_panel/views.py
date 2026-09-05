@@ -1288,6 +1288,9 @@ def api_admin_template_download(request, client_id, step_key):
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
 
     import os
+    import tempfile
+    import uuid
+    from pathlib import Path
     from django.conf import settings
     from django.http import HttpResponse
     from django.core.cache import cache
@@ -1311,7 +1314,25 @@ def api_admin_template_download(request, client_id, step_key):
         key = f"admin-template-pdf:{digest}"
         pdf_bytes = cache.get(key)
         if pdf_bytes is None:
-            pdf_bytes = builder(client_obj)
+            # Django's default cache is process-local, so separate Gunicorn
+            # workers otherwise rebuild the same personalized PDF. Keep a
+            # shared, private temporary artifact keyed by all rendered values.
+            cache_dir = Path(tempfile.gettempdir()) / "onesmarter-template-cache"
+            cache_path = cache_dir / f"{digest}.pdf"
+            try:
+                if cache_path.is_file():
+                    pdf_bytes = cache_path.read_bytes()
+                else:
+                    pdf_bytes = builder(client_obj)
+                    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+                    temporary = cache_dir / f".{digest}.{uuid.uuid4().hex}.tmp"
+                    temporary.write_bytes(pdf_bytes)
+                    os.replace(temporary, cache_path)
+            except OSError:
+                # A read-only or periodically cleaned temp directory must not
+                # prevent downloads; retain the existing in-memory fallback.
+                if pdf_bytes is None:
+                    pdf_bytes = builder(client_obj)
             cache.set(key, pdf_bytes, timeout=24 * 60 * 60)
         return pdf_bytes, digest
 

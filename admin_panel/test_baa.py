@@ -1,4 +1,5 @@
 import io
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -75,6 +76,19 @@ class PersonalizedBaaTestCase(TestCase):
         self.assertIn("123 Main Street, Suite 400, Columbus, OH 43215", text)
         self.assertGreaterEqual(text.count(self.client_record.name), 2)
         self.assertRegex(text, r"\w+\s+\d{1,2},\s+\d{4}")
+
+    def test_repeated_baa_download_reuses_shared_generated_pdf(self):
+        self.client.force_login(self.admin)
+        url = f"/admin-panel/api/download/{self.client_record.id}/step_2_baa_executed/"
+        with patch("admin_panel.baa_service.build_client_baa", wraps=build_client_baa) as builder:
+            first = self.client.get(url)
+            second = self.client.get(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertEqual(first["ETag"], second["ETag"])
+        self.assertEqual(builder.call_count, 1)
 
     def test_blank_personalized_baa_is_accepted_while_signature_validation_is_disabled(self):
         ok, checks = validate_signed_baa(build_client_baa(self.client_record), self.client_record)
