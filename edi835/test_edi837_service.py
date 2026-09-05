@@ -6,7 +6,7 @@ from accounts.models import Client
 from .claim_numbers import split_claim_number
 from .edi837_service import _837_claim_numbers, export_single_claim, parse_837, split_x12
 from .edi837_views import _claim_lifecycle
-from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile
+from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, RECONClaim, RECONFile
 
 
 SAMPLE_837 = (
@@ -123,13 +123,22 @@ class EDI837LifecycleTests(TestCase):
             mir_file=mir_file, claim_sequence=1, claim_control_number="123456789QYN071",
             header_raw=" " * 334,
         )
+        recon_file = RECONFile.objects.create(
+            client=client, original_filename="payment.recon", stored_filename="payment.recon",
+            file_content="", file_hash="c" * 64,
+        )
+        RECONClaim.objects.create(
+            recon_file=recon_file, client=client, claim_sequence=1,
+            claim_control_number="123456789QYN071",
+        )
         edi_file = EDI837File.objects.create(
             client=client, original_filename="claim.837", stored_filename="claim.837",
             file_content="", file_hash="b" * 64,
         )
         claim = EDI837Claim.objects.create(
             edi_file=edi_file, client=client, claim_sequence=1,
-            claim_control_number="123456789QYN071",
+            claim_control_number="123456789", highmark_claim_number="123456789",
+            internal_claim_number="H100001346867370", reference_9c="H100001346867370",
         )
 
         lifecycle = _claim_lifecycle(claim)
@@ -139,3 +148,4 @@ class EDI837LifecycleTests(TestCase):
         self.assertEqual(lifecycle["835"]["source"], "SFTP")
         self.assertEqual(lifecycle["835"]["status"], "ARCHIVED")
         self.assertTrue(lifecycle["mir"]["exists"])
+        self.assertTrue(lifecycle["recon"]["exists"])

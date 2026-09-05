@@ -16,6 +16,7 @@ from accounts.models import Client
 from project835.decorators import authenticated_api_required, json_api_errors
 from project835.field_crypto import SFTPCredentialError, get_sftp_runtime_credentials
 
+from .claim_numbers import split_claim_number
 from .edi837_service import export_single_claim, ingest_837
 from .file_types import has_valid_file_extension
 from .models import EDI837Claim, EDI837File, MIRClaim, RECONClaim
@@ -83,13 +84,21 @@ def _claim_lifecycle(claim):
     lookup = Q()
     for identifier in identifiers:
         lookup |= Q(claim_control_number__iexact=identifier)
+    highmark = str(claim.highmark_claim_number or "").strip()
+    if not highmark:
+        highmark = split_claim_number(claim.claim_control_number)["highmark_claim_number"]
+    # MIR and RECON commonly persist the same Highmark number with the legacy
+    # internal suffix appended. Match that combined representation as well as
+    # the separated 837 columns.
+    if highmark:
+        lookup |= Q(claim_control_number__istartswith=highmark)
     mir = recon = None
     if lookup:
         mir = (MIRClaim.objects.select_related("mir_file", "mir_file__source_835")
                .filter(lookup, mir_file__client=claim.client)
                .order_by("mir_file__converted_at").first())
         recon = (RECONClaim.objects.select_related("recon_file")
-                 .filter(lookup, client=claim.client)
+                 .filter(lookup, client=claim.client, recon_file__file_kind="RECON")
                  .order_by("recon_file__uploaded_at").first())
     source_835 = mir.mir_file.source_835 if mir else None
     return {
