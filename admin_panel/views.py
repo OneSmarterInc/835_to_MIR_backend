@@ -1342,6 +1342,10 @@ def api_admin_template_download(request, client_id, step_key):
                 return response
         else:
             return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+    except Client.DoesNotExist:
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
 

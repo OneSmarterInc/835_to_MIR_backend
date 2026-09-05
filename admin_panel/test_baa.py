@@ -104,8 +104,10 @@ class PersonalizedBaaTestCase(TestCase):
         self.client_record.address = ""
         self.client_record.save(update_fields=["address"])
         self.client.force_login(self.admin)
-        response = self.client.get(
-            f"/admin-panel/api/download/{self.client_record.id}/step_2_baa_executed/"
-        )
+        with patch("admin_panel.baa_service.build_client_baa") as builder:
+            response = self.client.get(
+                f"/admin-panel/api/download/{self.client_record.id}/step_2_baa_executed/"
+            )
         self.assertEqual(response.status_code, 400)
         self.assertIn("address", response.json()["error"].lower())
+        builder.assert_not_called()

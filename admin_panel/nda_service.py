@@ -55,6 +55,10 @@ def _fit_text(
 def client_nda_address(client):
     """Use the complete stored address without duplicating state or ZIP."""
     address = " ".join(str(getattr(client, "address", "") or "").split())
+    # State and ZIP supplement a street/mailing address; they are not a valid
+    # client address by themselves for personalized legal documents.
+    if not address:
+        return ""
     normalized_address = _normalized(address)
     extras = []
     for value in (getattr(client, "state", ""), getattr(client, "zip_code", "")):
