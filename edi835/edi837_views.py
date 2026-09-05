@@ -5,6 +5,7 @@ import posixpath
 import stat
 
 from django.conf import settings
+from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
@@ -309,6 +310,52 @@ def edi837_search(request):
         limit = 50
     rows = [_claim_row(claim) for claim in claims.order_by("claim_control_number", "-edi_file__processed_at")[:limit]]
     return JsonResponse({"success": True, "query": query, "count": len(rows), "results": rows})
+
+
+@authenticated_api_required
+@json_api_errors
+def edi837_files(request):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    client = _client_for_request(request, request.GET.get("client_id"))
+    if client is None:
+        return JsonResponse({"success": False, "error": "Select an authorized client."}, status=400)
+    query = str(request.GET.get("q") or "").strip()
+    files = EDI837File.objects.filter(client=client)
+    if query:
+        status_query = query.upper().replace(" ", "_")
+        source_query = query.upper()
+        filters = Q(original_filename__icontains=query) | Q(stored_filename__icontains=query)
+        if status_query in {choice[0] for choice in EDI837File.STATUS_CHOICES}:
+            filters |= Q(status=status_query)
+        if source_query in {choice[0] for choice in EDI837File.IMPORT_MODE_CHOICES}:
+            filters |= Q(import_mode=source_query)
+        if "NOT PUSHED" in source_query or "NOT_PUSHED" in status_query:
+            filters |= Q(outbound_path="")
+        elif "OUTBOUND" in source_query or "PUSHED" in source_query:
+            filters |= ~Q(outbound_path="")
+        files = files.filter(filters)
+    try:
+        page_number = max(1, int(request.GET.get("page", "1")))
+        page_size = min(100, max(10, int(request.GET.get("page_size", "20"))))
+    except ValueError:
+        page_number, page_size = 1, 20
+    paginator = Paginator(files.order_by("-uploaded_at"), page_size)
+    page = paginator.get_page(page_number)
+    rows = [{
+        "id": str(item.id), "file_name": item.original_filename,
+        "status": item.status, "inbound_source": item.get_import_mode_display(),
+        "inbound_status": "Received", "outbound_status": "Pushed" if item.outbound_path else "Not pushed",
+        "outbound_ready": bool(item.outbound_path), "claim_count": item.claim_count,
+        "service_count": item.service_count, "total_charge_amount": str(item.total_charge_amount),
+        "uploaded_at": item.uploaded_at.isoformat(),
+        "processed_at": item.processed_at.isoformat() if item.processed_at else None,
+    } for item in page.object_list]
+    return JsonResponse({
+        "success": True, "results": rows, "count": paginator.count,
+        "page": page.number, "page_size": page_size, "pages": paginator.num_pages,
+        "has_previous": page.has_previous(), "has_next": page.has_next(),
+    })
 
 
 @authenticated_api_required
