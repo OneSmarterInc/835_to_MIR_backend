@@ -473,14 +473,22 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         if ingestion_source and ingestion_source != "MANUAL":
             db_record.ingestion_source = ingestion_source
 
+    # A retry/regeneration must retain the date of the original processing
+    # attempt so date-based MIR fields remain deterministic.
+    processing_started_at = db_record.processing_started_at or timezone.now()
     db_record.status = "PROCESSING"
-    db_record.processing_started_at = timezone.now()
+    db_record.processing_started_at = processing_started_at
     db_record.save()
 
     try:
         # Step 3: Perform 835 parsing and MIR conversion during processing
         client = db_record.client if db_record else None
-        res = parse_835_to_mir(edi_text, filename=stored_filename, client=client)
+        res = parse_835_to_mir(
+            edi_text,
+            filename=stored_filename,
+            client=client,
+            process_date=timezone.localdate(processing_started_at),
+        )
         mir_text = res["text"]
 
         # Step 4: Write converted MIR file to output/ folder

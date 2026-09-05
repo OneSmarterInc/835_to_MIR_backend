@@ -3,9 +3,9 @@ import io
 import json
 import stat
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from django.test import RequestFactory, TestCase
+from django.test import RequestFactory, TestCase, override_settings
 
 from accounts.models import Client, User
 from .models import RECONFile, SFTPAutomationRun, SFTPAutomationSchedule
@@ -17,6 +17,7 @@ from admin_panel.email_service import (
 )
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class SFTPAutomationTestCase(TestCase):
     def setUp(self):
         self.client_record = Client.objects.create(
