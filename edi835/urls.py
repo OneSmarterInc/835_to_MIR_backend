@@ -25,11 +25,11 @@ from .recon_views import (
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
 from .edi837_views import (
-    edi837_claim_detail, edi837_claim_export, edi837_claim_push_sftp, edi837_search,
+    edi837_claim_detail, edi837_claim_export, edi837_search,
     edi837_upload_process,
 )
 from .edi837_files_v2 import edi837_files
-from .edi837_transfer import edi837_sftp_transfer
+from .edi837_naming_views import edi837_claim_push_sftp_named, edi837_sftp_transfer_named
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list)
@@ -60,12 +60,12 @@ sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
 sftp_automation = authenticated_api(sftp_automation)
 edi837_upload_process = authenticated_api(edi837_upload_process)
-edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer)
+edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer_named)
 edi837_search = authenticated_api(edi837_search)
 edi837_files = authenticated_api(edi837_files)
 edi837_claim_detail = authenticated_api(edi837_claim_detail)
 edi837_claim_export = authenticated_api(edi837_claim_export)
-edi837_claim_push_sftp = authenticated_api(edi837_claim_push_sftp)
+edi837_claim_push_sftp = authenticated_api(edi837_claim_push_sftp_named)
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
