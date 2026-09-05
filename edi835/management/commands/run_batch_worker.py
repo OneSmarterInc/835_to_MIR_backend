@@ -61,12 +61,26 @@ class Command(BaseCommand):
         try:
             user = get_user_model().objects.get(id=job["owner_user_id"])
             from accounts.models import Client
-            from edi835.sftp_automation_operations import execute_directional_operation
             client = Client.objects.get(id=job.get("client_id"))
-            directional = execute_directional_operation(
-                client, user, job.get("automation_type") or "835",
-                job.get("automation_direction") or "INCOMING",
-            )
+
+            # Scheduled directional automations explicitly carry an
+            # automation_direction. Manual Conversion -> Test jobs do not;
+            # they use automation_type=ALL and must continue through the
+            # existing full batch pipeline below. Previously the worker
+            # invented INCOMING for those ALL jobs and sent (ALL, INCOMING)
+            # to the directional dispatcher, which raises
+            # "Unsupported SFTP automation operation."
+            direction = job.get("automation_direction")
+            directional = None
+            if direction:
+                from edi835.sftp_automation_operations import execute_directional_operation
+                directional = execute_directional_operation(
+                    client,
+                    user,
+                    job.get("automation_type") or "835",
+                    direction,
+                )
+
             if directional is not None:
                 job["state"] = "COMPLETED" if directional.get("success") else "FAILED"
                 job["status_code"] = 200 if directional.get("success") else 400
@@ -75,6 +89,7 @@ class Command(BaseCommand):
                 write_job(job)
                 finish_automation_run(job)
                 return
+
             body = json.dumps({
                 "client_id": job.get("client_id") or "",
                 "automation_type": job.get("automation_type") or "ALL",
