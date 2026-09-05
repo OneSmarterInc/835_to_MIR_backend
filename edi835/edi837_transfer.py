@@ -69,8 +69,13 @@ def edi837_sftp_transfer(request):
     """
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
-    if not request.user.is_staff:
-        return JsonResponse({"success": False, "error": "Administrator access is required."}, status=403)
+    # Staff may transfer for an explicitly authorized client. Standard client
+    # users may transfer only for the client attached to their own account;
+    # _client_for_request enforces that tenant boundary below.
+    is_staff = bool(getattr(request.user, "is_staff", False))
+    is_client_user = bool(getattr(request.user, "client_id", None)) and not is_staff
+    if not is_staff and not is_client_user:
+        return JsonResponse({"success": False, "error": "Client access is required."}, status=403)
 
     try:
         body = json.loads(request.body.decode("utf-8")) if request.body else {}

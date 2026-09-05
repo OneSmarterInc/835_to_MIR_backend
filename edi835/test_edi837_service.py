@@ -1,12 +1,17 @@
 from types import SimpleNamespace
 from pathlib import Path
+import json
+from unittest.mock import patch
 
-from django.test import SimpleTestCase, TestCase
+from django.http import JsonResponse
+from django.test import RequestFactory, SimpleTestCase, TestCase
 
-from accounts.models import Client
+from accounts.models import Client, User
 from .claim_numbers import split_claim_number
 from .edi837_service import _837_claim_numbers, export_single_claim, ingest_837, parse_837, split_x12
 from .edi837_views import _claim_lifecycle
+from .edi837_search_transfer import edi837_sftp_transfer_for_search
+from .edi837_transfer import edi837_sftp_transfer
 from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, RECONClaim, RECONFile
 
 
@@ -108,6 +113,65 @@ class EDI837ParsingTests(SimpleTestCase):
 
 
 class EDI837LifecycleTests(TestCase):
+    def test_client_837_transfer_never_promotes_user_to_staff(self):
+        client = Client.objects.create(
+            name="Role Safe Client", client_code="ROLE837", email="role@example.com"
+        )
+        user = User.objects.create_user(
+            email="role-user@example.com",
+            name="Role User",
+            mobile="5550008370",
+            password="test-password",
+            client=client,
+        )
+        request = RequestFactory().post(
+            "/edi835/api/837/sftp-rename/",
+            data=json.dumps({"filename": "YYYYMMDDhhmmss.837"}),
+            content_type="application/json",
+        )
+        request.user = user
+
+        def assert_original_role(inner_request):
+            self.assertFalse(inner_request.user.is_staff)
+            return JsonResponse({"success": True})
+
+        with patch(
+            "edi835.edi837_search_transfer.edi837_sftp_transfer_named",
+            side_effect=assert_original_role,
+        ):
+            response = edi837_sftp_transfer_for_search(request)
+
+        self.assertEqual(response.status_code, 200)
+        user.refresh_from_db()
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+
+    def test_client_user_reaches_tenant_scoped_837_transfer_without_staff_role(self):
+        client = Client.objects.create(
+            name="Tenant Transfer Client", client_code="TEN837", email="tenant@example.com"
+        )
+        user = User.objects.create_user(
+            email="tenant-user@example.com",
+            name="Tenant User",
+            mobile="5550008371",
+            password="test-password",
+            client=client,
+        )
+        request = RequestFactory().post(
+            "/edi835/api/837/sftp-rename/",
+            data=json.dumps({}),
+            content_type="application/json",
+        )
+        request.user = user
+
+        response = edi837_sftp_transfer(request)
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("filename", json.loads(response.content)["error"].lower())
+        user.refresh_from_db()
+        self.assertFalse(user.is_staff)
+        self.assertFalse(user.is_superuser)
+
     def test_identical_837_arrivals_are_each_persisted_and_indexed(self):
         client = Client.objects.create(
             name="Duplicate Intake Client", client_code="DUP837", email="duplicate@example.com"
