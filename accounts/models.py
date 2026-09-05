@@ -118,6 +118,12 @@ class Client(models.Model):
         help_text="Preferred MIR filename format",
     )
 
+    edi837_filename_format = models.CharField(
+        max_length=255,
+        default="YYYYMMDDhhmmss.837",
+        help_text="Preferred 837 outbound filename format",
+    )
+
     timezone = models.CharField(
         max_length=64,
         default="America/New_York",
@@ -169,7 +175,6 @@ class UserManager(BaseUserManager):
         password=None,
         **extra_fields,
     ):
-        # Enforce Super Admin flags
         extra_fields["is_staff"] = True
         extra_fields["is_superuser"] = True
         extra_fields.setdefault("is_active", True)
@@ -193,73 +198,20 @@ class UserManager(BaseUserManager):
 
 class User(AbstractBaseUser, PermissionsMixin):
     email = models.EmailField(unique=True)
-
-    name = models.CharField(
-        max_length=150,
-    )
-
-    mobile = models.CharField(
-        max_length=20,
-        unique=True,
-    )
-
-    client = models.ForeignKey(
-        Client,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name="users",
-    )
-
-    # TOTP secret
-    totp_secret = models.CharField(
-        max_length=64,
-        blank=True,
-        null=True,
-    )
-
-    # Whether TOTP setup has been completed
-    totp_enabled = models.BooleanField(
-        default=False,
-    )
-
-    # Recovery codes
-    recovery_codes = models.JSONField(
-        default=list,
-        blank=True,
-    )
-
+    name = models.CharField(max_length=150)
+    mobile = models.CharField(max_length=20, unique=True)
+    client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
+    totp_secret = models.CharField(max_length=64, blank=True, null=True)
+    totp_enabled = models.BooleanField(default=False)
+    recovery_codes = models.JSONField(default=list, blank=True)
     last_totp_counter = models.BigIntegerField(null=True, blank=True)
-
-    is_active = models.BooleanField(
-        default=True,
-    )
-
-    is_staff = models.BooleanField(
-        default=False,
-    )
-
-    admin_screens = models.JSONField(
-        null=True,
-        blank=True,
-        default=None,
-        help_text="Administrative navigation screens explicitly assigned to this administrator.",
-    )
-
-    first_login = models.BooleanField(
-        default=True,
-    )
-
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    updated_at = models.DateTimeField(
-        auto_now=True,
-    )
-
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    admin_screens = models.JSONField(null=True, blank=True, default=None, help_text="Administrative navigation screens explicitly assigned to this administrator.")
+    first_login = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     objects = UserManager()
-
     USERNAME_FIELD = "email"
     REQUIRED_FIELDS = ["name", "mobile"]
 
@@ -268,40 +220,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 
 class ClientContact(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-
-    client = models.ForeignKey(
-        Client,
-        on_delete=models.CASCADE,
-        related_name="contacts",
-    )
-
-    role_name = models.CharField(
-        max_length=100,
-    )
-
-    name = models.CharField(
-        max_length=150,
-    )
-
-    email = models.EmailField(
-        blank=True,
-        null=True,
-    )
-
-    phone = models.CharField(
-        max_length=50,
-        blank=True,
-        null=True,
-    )
-
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="contacts")
+    role_name = models.CharField(max_length=100)
+    name = models.CharField(max_length=150)
+    email = models.EmailField(blank=True, null=True)
+    phone = models.CharField(max_length=50, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "client_contact"
@@ -312,19 +237,9 @@ class ClientContact(models.Model):
 
 
 class EmployeeRole(models.Model):
-    role_name = models.CharField(
-        max_length=255,
-        unique=True,
-    )
-
-    description = models.TextField(
-        blank=True,
-        null=True,
-    )
-
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
+    role_name = models.CharField(max_length=255, unique=True)
+    description = models.TextField(blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
         db_table = "employee_role"
@@ -335,41 +250,14 @@ class EmployeeRole(models.Model):
 
 
 class ClientStepComment(models.Model):
-    id = models.UUIDField(
-        primary_key=True,
-        default=uuid.uuid4,
-        editable=False,
-    )
-
-    client = models.ForeignKey(
-        Client,
-        on_delete=models.CASCADE,
-        related_name="step_comments",
-    )
-
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name="step_comments")
     step_number = models.IntegerField()
-
     comment = models.TextField()
-
-    created_at = models.DateTimeField(
-        auto_now_add=True,
-    )
-
-    author = models.CharField(
-        max_length=100,
-        default="System",
-    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    author = models.CharField(max_length=100, default="System")
 
     class Meta:
         db_table = "client_step_comment"
         ordering = ["-created_at"]
-
-        indexes = [
-            models.Index(
-                fields=[
-                    "client",
-                    "step_number",
-                    "-created_at",
-                ]
-            ),
-        ]
+        indexes = [models.Index(fields=["client", "step_number", "-created_at"])]
