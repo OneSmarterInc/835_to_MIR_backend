@@ -1,7 +1,6 @@
 from django.urls import path
 from .views import (
     api_process_tracked_file,
-    tracked_files_list,
     api_get_metrics,
     api_archive_files_list,
     api_get_sftp_config,
@@ -11,6 +10,7 @@ from .views import (
     api_verify_sftp_paths,
     api_push_to_sftp,
 )
+from .tracked_files_eastern import tracked_files_list_eastern
 from .sftp_browse_admin_routes import api_browse_sftp_admin_routes
 from .batch_test_837_v3 import api_start_batch_conversion_with_837
 from .checks_catalog import api_checks_catalog
@@ -34,7 +34,7 @@ from .edi837_naming_views import edi837_claim_push_sftp_named
 from .edi837_search_transfer import edi837_sftp_transfer_for_search
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
-tracked_files_list = authenticated_api(tracked_files_list)
+tracked_files_list = authenticated_api(tracked_files_list_eastern)
 api_get_metrics = authenticated_api(api_get_metrics)
 api_archive_files_list = authenticated_api(api_archive_files_list)
 api_get_sftp_config = authenticated_api(api_get_sftp_config)
