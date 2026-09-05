@@ -78,6 +78,19 @@ class PersonalizedNdaTestCase(TestCase):
         self.assertGreaterEqual(text.count(self.client_record.name), 2)
         self.assertRegex(text, r"September\s+1,\s+2026|\w+\s+\d{1,2},\s+\d{4}")
 
+    def test_repeated_nda_download_builds_pdf_once(self):
+        self.client.force_login(self.admin)
+        url = f"/admin-panel/api/download/{self.client_record.id}/step_1_mutual_nda_signed/"
+        with patch("admin_panel.nda_service.build_client_nda", wraps=build_client_nda) as builder:
+            first = self.client.get(url)
+            second = self.client.get(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertEqual(first["ETag"], second["ETag"])
+        self.assertEqual(builder.call_count, 1)
+
     def test_blank_personalized_nda_is_accepted_while_signature_validation_is_disabled(self):
         ok, checks = validate_signed_nda(build_client_nda(self.client_record), self.client_record)
         self.assertTrue(ok, checks)

@@ -1,4 +1,5 @@
 import io
+from unittest.mock import patch
 
 from django.test import TestCase
 
@@ -77,6 +78,22 @@ class PersonalizedSecurityReviewTestCase(TestCase):
         self.assertIn("123 Main Street, Suite 400, Columbus, OH 43215", text)
         self.assertGreaterEqual(text.count(self.client_record.name), 2)
         self.assertRegex(text, r"\w+\s+\d{1,2},\s+\d{4}")
+
+    def test_repeated_security_review_download_builds_pdf_once(self):
+        self.client.force_login(self.admin)
+        url = f"/admin-panel/api/download/{self.client_record.id}/step_3_security_review_returned/"
+        with patch(
+            "admin_panel.security_review_service.build_client_security_review",
+            wraps=build_client_security_review,
+        ) as builder:
+            first = self.client.get(url)
+            second = self.client.get(url)
+
+        self.assertEqual(first.status_code, 200)
+        self.assertEqual(second.status_code, 200)
+        self.assertEqual(first.content, second.content)
+        self.assertEqual(first["ETag"], second["ETag"])
+        self.assertEqual(builder.call_count, 1)
 
     def test_blank_personalized_security_review_is_accepted_while_signature_validation_is_disabled(self):
         ok, checks = validate_signed_security_review(

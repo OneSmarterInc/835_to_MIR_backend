@@ -1288,61 +1288,9 @@ def api_admin_template_download(request, client_id, step_key):
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
 
     import os
-    import tempfile
-    import uuid
-    from pathlib import Path
     from django.conf import settings
     from django.http import HttpResponse
-    from django.core.cache import cache
-    from django.utils.cache import patch_cache_control
-    import hashlib
-
-    def cached_client_pdf(client_obj, template_name, builder):
-        # PDF generation parses and merges several pages and was previously
-        # repeated for every click.  Cache by every client value rendered into
-        # the document, so edits automatically produce a different artifact.
-        cache_material = "|".join([
-            template_name,
-            str(client_obj.id),
-            str(client_obj.name or ""),
-            str(client_obj.address or ""),
-            str(client_obj.state or ""),
-            str(client_obj.zip_code or ""),
-            timezone.localdate().isoformat(),
-        ])
-        digest = hashlib.sha256(cache_material.encode("utf-8")).hexdigest()
-        key = f"admin-template-pdf:{digest}"
-        pdf_bytes = cache.get(key)
-        if pdf_bytes is None:
-            # Django's default cache is process-local, so separate Gunicorn
-            # workers otherwise rebuild the same personalized PDF. Keep a
-            # shared, private temporary artifact keyed by all rendered values.
-            cache_dir = Path(tempfile.gettempdir()) / "onesmarter-template-cache"
-            cache_path = cache_dir / f"{digest}.pdf"
-            try:
-                if cache_path.is_file():
-                    pdf_bytes = cache_path.read_bytes()
-                else:
-                    pdf_bytes = builder(client_obj)
-                    cache_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
-                    temporary = cache_dir / f".{digest}.{uuid.uuid4().hex}.tmp"
-                    temporary.write_bytes(pdf_bytes)
-                    os.replace(temporary, cache_path)
-            except OSError:
-                # A read-only or periodically cleaned temp directory must not
-                # prevent downloads; retain the existing in-memory fallback.
-                if pdf_bytes is None:
-                    pdf_bytes = builder(client_obj)
-            cache.set(key, pdf_bytes, timeout=24 * 60 * 60)
-        return pdf_bytes, digest
-
-    def pdf_download_response(pdf_bytes, download_name, digest):
-        response = HttpResponse(pdf_bytes, content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{download_name}"'
-        response['X-OneSmarter-Filename'] = download_name
-        response['ETag'] = f'"{digest}"'
-        patch_cache_control(response, private=True, max_age=86400)
-        return response
+    from admin_panel.document_download_cache import cached_client_pdf, pdf_download_response
 
     try:
         parts = step_key.split('_')
@@ -2897,6 +2845,7 @@ def api_admin_golive_step_upload(request, client_id, step_num):
 def api_admin_golive_step_download(request, client_id, step_num):
     """ GET /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/download/ """
     from django.http import HttpResponse
+    from admin_panel.document_download_cache import cached_client_pdf, pdf_download_response
 
     if step_num == 1:
         try:
@@ -2905,12 +2854,11 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 golive_authorization_download_filename,
             )
             client_obj = Client.objects.get(id=client_id)
-            pdf_bytes = build_client_golive_authorization(client_obj)
+            pdf_bytes, digest = cached_client_pdf(
+                client_obj, "golive-authorization-v1", build_client_golive_authorization
+            )
             filename = golive_authorization_download_filename(client_obj)
-            response = HttpResponse(pdf_bytes, content_type="application/pdf")
-            response['Content-Disposition'] = f'attachment; filename="{filename}"'
-            response['X-OneSmarter-Filename'] = filename
-            return response
+            return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
         except ValueError as exc:
@@ -2923,12 +2871,11 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 data_transfer_attestation_download_filename,
             )
             client_obj = Client.objects.get(id=client_id)
-            pdf_bytes = build_client_data_transfer_attestation(client_obj)
+            pdf_bytes, digest = cached_client_pdf(
+                client_obj, "data-transfer-attestation-v1", build_client_data_transfer_attestation
+            )
             filename = data_transfer_attestation_download_filename(client_obj)
-            response = HttpResponse(pdf_bytes, content_type="application/pdf")
-            response['Content-Disposition'] = f'attachment; filename="{filename}"'
-            response['X-OneSmarter-Filename'] = filename
-            return response
+            return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
         except ValueError as exc:
