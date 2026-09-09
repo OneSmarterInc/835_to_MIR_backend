@@ -999,6 +999,13 @@ def api_admin_client_state(request, client_id):
         {**u, "role": "Admin" if u.get("is_staff") else "User"}
         for u in User.objects.filter(client=client_obj).values("id", "name", "email", "mobile", "is_staff")
     ]
+    latest_mir_delivery = EDI835File.objects.filter(
+        client=client_obj,
+    ).exclude(
+        output_path__isnull=True,
+    ).exclude(
+        output_path="",
+    ).order_by("-uploaded_at").first()
 
     # Keep installations that predate the split filename/user step aligned with
     # the canonical 16-step workflow.
@@ -1101,6 +1108,13 @@ def api_admin_client_state(request, client_id):
             extra_data["contacts"] = contacts_list
         elif step.step_number == 10:
             extra_data["mir_filename_format"] = client_obj.mir_filename_format
+        elif step.step_number == 11 and latest_mir_delivery:
+            extra_data["mir_delivery"] = {
+                "file_id": str(latest_mir_delivery.id),
+                "mir_created": True,
+                "mir_filename": _canonical_mir_filename(latest_mir_delivery),
+                "sftp_pushed": bool(latest_mir_delivery.present_in_sftp),
+            }
         elif step.step_number == 16:
             extra_data["users"] = users_list
         elif step.step_number == 13:
