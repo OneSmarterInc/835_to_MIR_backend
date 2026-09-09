@@ -15,6 +15,7 @@ from project835.field_crypto import (
 from .models import EDI835File
 from .file_types import file_extension_error, has_valid_file_extension
 from .mir_persistence import set_mir_push_status, store_mir_file
+from .mir_837_validation import validate_generated_mir_against_837
 from .parser import parse_835_to_mir, EDI835Validator
 from .mir_exporter import export_mir_file
 from .storage import (
@@ -491,6 +492,14 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         )
         mir_text = res["text"]
 
+        # B2 preventive gate: compare stable source facts with a confidently
+        # matched stored 837 before any MIR copy, database persistence, or SFTP.
+        validate_generated_mir_against_837(
+            client=client,
+            edi_text=edi_text,
+            mir_text=mir_text,
+        )
+
         # Step 4: Write converted MIR file to output/ folder
         archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
         rel_output_path = relative_media_path(archived_mir_path)
@@ -716,6 +725,14 @@ def process_multiple_edi835_files(
 
     # Generate ONE single combined MIR file from all claims across all input 835 files
     mir_text, mir_res = generate_mir_text(all_claims, client=client)
+
+    # Apply the same B2 gate to combined/batch output before it is written or
+    # delivered. all_claims preserves the exact source order used by the MIR.
+    validate_generated_mir_against_837(
+        client=client,
+        claims=all_claims,
+        mir_text=mir_text,
+    )
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
