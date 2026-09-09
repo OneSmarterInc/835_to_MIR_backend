@@ -1,0 +1,114 @@
+name: B2 MIR-837 consistency verification
+
+on:
+  push:
+    branches: [b2-mir-837-consistency]
+
+jobs:
+  patch-and-verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mir_b2
+          POSTGRES_USER: mir_b2
+          POSTGRES_PASSWORD: mir_b2_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mir_b2 -d mir_b2"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SECRET_KEY: b2-test-secret-key-with-more-than-thirty-two-characters
+      DATABASE_URL: postgresql://mir_b2:mir_b2_password@127.0.0.1:5432/mir_b2
+      DEBUG: "1"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Patch B2 into both MIR conversion paths
+        shell: python
+        run: |
+          from pathlib import Path
+          path = Path('edi835/services.py')
+          text = path.read_text(encoding='utf-8')
+
+          import_old = "from .mir_persistence import set_mir_push_status, store_mir_file\n"
+          import_new = import_old + "from .mir_837_validation import validate_generated_mir_against_837\n"
+          if "from .mir_837_validation import validate_generated_mir_against_837" not in text:
+              if import_old not in text:
+                  raise SystemExit('B2 import anchor not found')
+              text = text.replace(import_old, import_new, 1)
+
+          single_old = '''        mir_text = res["text"]\n\n        # Step 4: Write converted MIR file to output/ folder\n'''
+          single_new = '''        mir_text = res["text"]\n\n        # B2 preventive gate: compare stable source facts with a confidently\n        # matched stored 837 before any MIR copy, database persistence, or SFTP.\n        validate_generated_mir_against_837(\n            client=client,\n            edi_text=edi_text,\n            mir_text=mir_text,\n        )\n\n        # Step 4: Write converted MIR file to output/ folder\n'''
+          if single_new not in text:
+              if single_old not in text:
+                  raise SystemExit('Single-file B2 anchor not found')
+              text = text.replace(single_old, single_new, 1)
+
+          batch_old = '''    mir_text, mir_res = generate_mir_text(all_claims, client=client)\n\n    first_base_name ='''
+          batch_new = '''    mir_text, mir_res = generate_mir_text(all_claims, client=client)\n\n    # Apply the same B2 gate to combined/batch output before it is written or\n    # delivered. all_claims preserves the exact source order used by the MIR.\n    validate_generated_mir_against_837(\n        client=client,\n        claims=all_claims,\n        mir_text=mir_text,\n    )\n\n    first_base_name ='''
+          if batch_new not in text:
+              if batch_old not in text:
+                  raise SystemExit('Batch B2 anchor not found')
+              text = text.replace(batch_old, batch_new, 1)
+
+          path.write_text(text, encoding='utf-8')
+
+      - name: Static order verification
+        shell: python
+        run: |
+          from pathlib import Path
+          text = Path('edi835/services.py').read_text(encoding='utf-8')
+          assert text.count('validate_generated_mir_against_837(') == 2
+          single = text.index('mir_text = res["text"]')
+          single_gate = text.index('validate_generated_mir_against_837(', single)
+          single_write = text.index('write_mir_copies(', single_gate)
+          single_store = text.index('store_mir_file(', single_gate)
+          single_push = text.index('upload_mir_to_sftp(', single_gate)
+          assert single < single_gate < single_write < single_store < single_push
+          batch = text.index('mir_text, mir_res = generate_mir_text(all_claims, client=client)')
+          batch_gate = text.index('validate_generated_mir_against_837(', batch)
+          batch_write = text.index('write_mir_copies(', batch_gate)
+          batch_store = text.index('store_mir_file(', batch_gate)
+          batch_push = text.index('upload_mir_to_sftp(', batch_gate)
+          assert batch < batch_gate < batch_write < batch_store < batch_push
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run B2 tests
+        run: python manage.py test edi835.test_mir_837_validation -v 2
+
+      - name: Run existing mapper financial tests
+        run: |
+          python manage.py test admin_panel.mir_mapper_logic.test_business_rules -v 2
+          python manage.py test admin_panel.mir_mapper_logic.test_financial_validation -v 2
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Commit verified runtime wiring
+        run: |
+          if git diff --quiet -- edi835/services.py; then
+            echo "No services.py patch to commit"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add edi835/services.py
+          git commit -m "Wire B2 check before MIR delivery"
+          git push
