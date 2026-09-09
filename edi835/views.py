@@ -1658,6 +1658,7 @@ def api_push_to_sftp(request):
         body = request.POST
 
     file_id = body.get("file_id")
+    force = body.get("force") is True
     if not file_id:
         return JsonResponse({"success": False, "error": "File ID is required."}, status=400)
 
@@ -1684,7 +1685,7 @@ def api_push_to_sftp(request):
 
     # Make retries and rapid/double clicks safe. Once delivery is recorded,
     # return the existing result without sending a duplicate MIR file.
-    if file_record.present_in_sftp:
+    if file_record.present_in_sftp and not force:
         return JsonResponse({
             "success": True,
             "message": "MIR file is already uploaded to SFTP.",
@@ -1707,6 +1708,7 @@ def api_push_to_sftp(request):
         "success": success,
         "message": message,
         "mir_filename": mir_filename,
+        "resent": bool(force and success),
         "error": message if not success else None,
     }, status=200 if success else 400)
 
