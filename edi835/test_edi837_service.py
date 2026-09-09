@@ -113,6 +113,41 @@ class EDI837ParsingTests(SimpleTestCase):
 
 
 class EDI837LifecycleTests(TestCase):
+    def test_client_session_can_list_only_its_837_files(self):
+        tenant = Client.objects.create(
+            name="837 Portal Client", client_code="PORTAL837", email="portal837@example.com"
+        )
+        other_tenant = Client.objects.create(
+            name="Other 837 Client", client_code="OTHER837", email="other837@example.com"
+        )
+        user = User.objects.create_user(
+            email="portal-837-user@example.com", name="Portal 837 User",
+            mobile="5550008372", password="test-password", client=tenant,
+        )
+        EDI837File.objects.create(
+            client=tenant, original_filename="visible.837", stored_filename="visible.837",
+            file_content="", file_hash="d" * 64,
+        )
+        EDI837File.objects.create(
+            client=other_tenant, original_filename="hidden.837", stored_filename="hidden.837",
+            file_content="", file_hash="e" * 64,
+        )
+
+        self.client.force_login(user)
+        response = self.client.get("/edi835/api/837/files/?client_id=self", secure=True)
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertTrue(payload["success"])
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["results"][0]["original_file_name"], "visible.837")
+
+    def test_anonymous_user_cannot_list_837_files(self):
+        response = self.client.get("/edi835/api/837/files/?client_id=self", secure=True)
+
+        self.assertEqual(response.status_code, 401)
+        self.assertEqual(response.json()["error"], "Authentication required")
+
     def test_client_837_transfer_never_promotes_user_to_staff(self):
         client = Client.objects.create(
             name="Role Safe Client", client_code="ROLE837", email="role@example.com"
