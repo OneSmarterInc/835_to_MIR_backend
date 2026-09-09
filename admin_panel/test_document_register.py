@@ -57,3 +57,24 @@ class DocumentRegisterTests(TestCase):
         self.assertEqual([item.version for item in versions], [1, 2])
         self.assertTrue(all(item.validation_status == "INVALID" for item in versions))
         self.assertEqual(str(versions[-1].expiration_date), "2028-08-04")
+        self.assertIsNotNone(versions[-1].signed_or_sent_at)
+
+        register = self.client.get(f"/admin-panel/api/clients/{self.tenant.id}/documents/").json()["documents"]
+        nda = next(row for row in register if row["document_type"] == "Onboarding Step 1")
+        self.assertEqual(nda["version"], 2)
+        self.assertEqual(nda["expiration_date"], "2028-08-04")
+        self.assertEqual(nda["state"], "VALIDATION FAILED")
+        self.assertIsNotNone(nda["signed_or_sent_at"])
+
+    def test_document_upload_requires_expiration_date(self):
+        response = self.client.post(
+            f"/admin-panel/api/clients/{self.tenant.id}/documents/upload/",
+            data=b"document",
+            content_type="application/pdf",
+            HTTP_X_FILENAME="document.pdf",
+            HTTP_X_DOC_NAME="Document",
+            HTTP_X_DOC_TYPE="General%20Document",
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"], "Expiration date is required.")
