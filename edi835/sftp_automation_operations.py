@@ -1,6 +1,7 @@
 """Directional SFTP operations used by the persistent scheduler."""
 
 import io
+import json
 import os
 import posixpath
 import stat
@@ -21,6 +22,19 @@ def _connected(client, purpose, outbound=False):
     """Return the exact administrator-configured connection and folder."""
     config, credentials, _folder = resolve_admin_sftp_route(client, purpose)
     return config, credentials
+
+
+def _serialize_validation_error(report):
+    """Return one durable JSON shape for refused inbound 835 validation."""
+    report = report if isinstance(report, dict) else {}
+    payload = {
+        "type": "835_validation_error",
+        "decision": report.get("decision") or "REFUSE",
+        "errors": report.get("errors") or [],
+        "warnings": report.get("warnings") or [],
+        "findings": report.get("findings") or [],
+    }
+    return json.dumps(payload, ensure_ascii=False, default=str)
 
 
 def ingest_835_incoming(client, actor):
@@ -44,7 +58,7 @@ def ingest_835_incoming(client, actor):
                 text = raw.decode("utf-8-sig", errors="replace").strip()
                 valid, report = validate_835_content(text)
                 if not valid:
-                    detail = "835 validation failed: " + "; ".join(report.get("errors") or ["invalid content"])
+                    detail = _serialize_validation_error(report)
                     stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
                     inbound = stage_inbound(client, "835", stored, raw, binary=True)
                     archived = archive_inbound(client, "835", inbound)
@@ -54,8 +68,9 @@ def ingest_835_incoming(client, actor):
                         present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
                         error_message=detail, processing_completed_at=timezone.now(),
                     )
+                    # Delete the remote source only after archive + DB persistence succeed.
                     sftp.remove(remote_path)
-                    errors.append(f"{name}: {detail}")
+                    errors.append(f"{name}: 835 validation failed")
                     continue
                 stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
                 inbound = stage_inbound(client, "835", stored, raw, binary=True)
