@@ -113,6 +113,42 @@ class TemporaryAdminClientAccessTestCase(TestCase):
         grant.save(update_fields=["revoked_at", "expires_at"])
         self.assertEqual(self.client.get("/admin-panel/api/clients/").json()["clients"], [])
 
+    def test_onboarding_state_exposes_latest_generated_mir_delivery(self):
+        record = EDI835File.objects.create(
+            client=self.allowed,
+            original_filename="step-11.835",
+            stored_filename="step-11.835",
+            output_path="mir_output/step-11.MIR",
+            status="ARCHIVED",
+            present_in_sftp=False,
+        )
+        self.client.force_login(self.superadmin)
+        response = self.client.get(f"/admin-panel/api/clients/{self.allowed.id}/state/")
+        self.assertEqual(response.status_code, 200)
+        review = next(step for step in response.json()["state"]["steps"] if step["actionType"] == "side_by_side_done")
+        self.assertEqual(review["extra"]["mir_delivery"]["file_id"], str(record.id))
+        self.assertTrue(review["extra"]["mir_delivery"]["mir_created"])
+        self.assertFalse(review["extra"]["mir_delivery"]["sftp_pushed"])
+
+    def test_force_push_resends_a_mir_already_marked_as_delivered(self):
+        record = EDI835File.objects.create(
+            client=self.allowed,
+            original_filename="step-11.835",
+            stored_filename="step-11.835",
+            output_path="mir_output/step-11.MIR",
+            status="ARCHIVED",
+            present_in_sftp=True,
+        )
+        self.client.force_login(self.superadmin)
+        with patch("edi835.services.push_file_record_to_sftp", return_value=(True, "MIR pushed again.")) as push:
+            response = self.client.post(
+                "/edi835/api/sftp/push/",
+                data=json.dumps({"file_id": str(record.id), "force": True}),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()["resent"])
+        push.assert_called_once_with(str(record.id))
 
 class Onboarding835ValidationTestCase(TestCase):
     def setUp(self):
