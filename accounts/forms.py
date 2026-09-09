@@ -1,10 +1,19 @@
 from django import forms
 from django.contrib.auth import authenticate
+import phonenumbers
 from .models import User
 from .phone_numbers import normalize_phone_number
 
 
 class SignupForm(forms.ModelForm):
+    country_code = forms.ChoiceField(
+        choices=sorted(
+            ((region, f"{region} +{phonenumbers.country_code_for_region(region)}")
+             for region in phonenumbers.SUPPORTED_REGIONS),
+            key=lambda item: item[0],
+        ),
+        initial="US",
+    )
     password = forms.CharField(
         widget=forms.PasswordInput(attrs={"placeholder": "Password"})
     )
@@ -14,7 +23,7 @@ class SignupForm(forms.ModelForm):
 
     class Meta:
         model = User
-        fields = ["name", "email", "mobile"]
+        fields = ["name", "email", "country_code", "mobile"]
         widgets = {
             "name": forms.TextInput(attrs={"placeholder": "Full name"}),
             "email": forms.EmailInput(attrs={"placeholder": "Email address"}),
