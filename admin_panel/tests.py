@@ -20,6 +20,7 @@ class TemporaryAdminClientAccessTestCase(TestCase):
         self.admin = User.objects.create_user(
             email="grant-admin@example.com", name="Grant Admin",
             mobile="5550199002", password="test-password", is_staff=True,
+            admin_screens=["clients", "onboard", "sftp-automation"],
         )
         self.allowed = Client.objects.create(
             name="Allowed Health", client_code="ALLOWED", email="allowed@example.com",
@@ -61,9 +62,43 @@ class TemporaryAdminClientAccessTestCase(TestCase):
         response = self.client.get("/admin-panel/api/clients/")
         self.assertEqual(response.status_code, 200)
         self.assertEqual([row["id"] for row in response.json()["clients"]], [str(self.allowed.id)])
+        allowed = self.client.get(f"/admin-panel/api/clients/{self.allowed.id}/state/")
+        self.assertEqual(allowed.status_code, 200)
         denied = self.client.get(f"/admin-panel/api/clients/{self.hidden.id}/state/")
         self.assertEqual(denied.status_code, 403)
         self.assertEqual(denied.json()["code"], "CLIENT_GRANT_REQUIRED")
+
+    def test_admin_metrics_include_every_granted_client_record_and_no_others(self):
+        EDI835File.objects.create(
+            client=self.allowed, original_filename="allowed.835",
+            stored_filename="allowed.835", status="COMPLETED", claims_count=3,
+        )
+        EDI835File.objects.create(
+            client=self.hidden, original_filename="hidden.835",
+            stored_filename="hidden.835", status="COMPLETED", claims_count=9,
+        )
+        self.grant(30, "minutes")
+        self.client.force_login(self.admin)
+        metrics = self.client.get("/edi835/api/metrics/")
+        self.assertEqual(metrics.status_code, 200)
+        self.assertEqual(metrics.json()["total_claims_converted_today"], 3)
+        self.assertEqual(metrics.json()["conversion_sets_count"], 1)
+
+    def test_json_client_scope_is_enforced_for_every_screen_api(self):
+        url = "/edi835/api/admin/sftp-automation/"
+        payload = {
+            "client_id": str(self.allowed.id), "automation_type": "835",
+            "direction": "INCOMING", "run_time": "08:00",
+        }
+        self.client.force_login(self.admin)
+        denied = self.client.post(url, data=json.dumps(payload), content_type="application/json")
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["code"], "CLIENT_GRANT_REQUIRED")
+
+        self.grant(30, "minutes")
+        self.client.force_login(self.admin)
+        allowed = self.client.post(url, data=json.dumps(payload), content_type="application/json")
+        self.assertNotEqual(allowed.status_code, 403)
 
     def test_revoked_or_expired_grant_removes_client_visibility(self):
         response = self.grant(30, "minutes")

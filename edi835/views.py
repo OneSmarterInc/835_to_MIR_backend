@@ -22,6 +22,7 @@ from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
 from django.db.models import Sum
+from admin_panel.access_control import can_access_client
 
 from .models import SFTPConfig, EDI835File, MIRFile
 from .batch_jobs import active_job_for, read_job, write_job
@@ -1040,6 +1041,8 @@ def api_sftp_connect(request):
         elif not request.user.is_staff:
             config_qs = config_qs.none()
         config = config_qs.first()
+        if config and config.client_id and not can_access_client(request.user, config.client_id):
+            config = None
         if not config:
             return JsonResponse({
                 "success": False,
@@ -1116,6 +1119,8 @@ def api_save_sftp_config(request):
             client_id = str(actor_client_id)
         elif not request.user.is_staff:
             return JsonResponse({"success": False, "error": "Your account is not associated with a client."}, status=403)
+        elif client_id and not can_access_client(request.user, client_id):
+            return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
         queryset = SFTPConfig.objects.filter(purpose=purpose)
         queryset = queryset.filter(client_id=client_id) if client_id else queryset.filter(client__isnull=True)
@@ -1256,12 +1261,16 @@ def api_save_sftp_config(request):
             "success": False,
             "error": "Your account is not associated with a client.",
         }, status=403)
+    elif client_id and not can_access_client(request.user, client_id):
+        return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
     config = None
     if config_id:
         config_qs = SFTPConfig.objects.filter(id=config_id)
         if actor_client_id:
             config_qs = config_qs.filter(client_id=actor_client_id)
         config = config_qs.first()
+        if config and config.client_id and not can_access_client(request.user, config.client_id):
+            config = None
         if not config:
             return JsonResponse({
                 "success": False,
@@ -1609,6 +1618,8 @@ def api_delete_sftp_config(request):
         elif not request.user.is_staff:
             config_qs = config_qs.none()
         config = config_qs.first()
+        if config and config.client_id and not can_access_client(request.user, config.client_id):
+            config = None
         if config:
             log_audit_event(
                 module="SYSTEM",
@@ -1661,6 +1672,8 @@ def api_push_to_sftp(request):
             "error": "This client has been permanently offboarded. SFTP delivery is locked.",
         }, status=409)
 
+    if request.user.is_staff and file_record.client_id and not can_access_client(request.user, file_record.client_id):
+        return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
     if not request.user.is_staff:
         request_client = getattr(request.user, "client", None)
         if not request_client or file_record.client_id != request_client.id:
@@ -1786,6 +1799,8 @@ def api_browse_sftp(request):
     config = SFTPConfig.objects.filter(id=config_id).first()
     if not config:
         return JsonResponse({"success": False, "error": "SFTP configuration was not found."}, status=404)
+    if config.client_id and not can_access_client(request.user, config.client_id):
+        return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
     is_staff = bool(getattr(request.user, "is_staff", False))
     request_client = getattr(request.user, "client", None)

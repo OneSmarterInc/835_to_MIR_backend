@@ -153,7 +153,9 @@ def _request_client(request, requested_client_id=None):
     if requested_client_id:
         from accounts.models import Client
         try:
-            return Client.objects.get(id=requested_client_id)
+            client = Client.objects.get(id=requested_client_id)
+            from admin_panel.access_control import can_access_client
+            return client if can_access_client(user, client.id) else None
         except (Client.DoesNotExist, ValueError):
             return None
     return getattr(user, "client", None) if user and user.is_authenticated else None
@@ -703,6 +705,10 @@ def download_mir(request):
             rec = EDI835File.objects.select_related("mir_file").filter(id=file_id).first()
         except (ValueError, TypeError):
             rec = None
+    if rec:
+        from admin_panel.access_control import can_access_client
+        if rec.client_id and not can_access_client(request.user, rec.client_id):
+            return JsonResponse({"error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
     canonical_name = _canonical_mir_filename(rec)
     file_name = _safe_mir_filename(canonical_name or requested_name or "output.mir")
@@ -783,23 +789,31 @@ def api_download_archive_zip(request):
         added_paths.add(archive_path)
 
     with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
-        client_filter = {"client_id": client_id} if client_id else {}
+        from admin_panel.access_control import can_access_client, scope_client_queryset
+        if client_id and not can_access_client(request.user, client_id):
+            return JsonResponse({"error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
         if download_type in {"835", "both", "all"}:
-            for record in EDI835File.objects.filter(**client_filter).only(
+            records = EDI835File.objects.all()
+            records = records.filter(client_id=client_id) if client_id else scope_client_queryset(records, request.user)
+            for record in records.only(
                 "id", "original_filename", "stored_filename", "input_file_content"
             ).iterator():
                 add_text(zf, "835", record.original_filename or record.stored_filename,
                          record.input_file_content, record.id)
 
         if download_type in {"mir", "both", "all"}:
-            for record in MIRFile.objects.filter(**client_filter).only(
+            records = MIRFile.objects.all()
+            records = records.filter(client_id=client_id) if client_id else scope_client_queryset(records, request.user)
+            for record in records.only(
                 "id", "mir_filename", "file_content"
             ).iterator():
                 add_text(zf, "MIR", record.mir_filename, record.file_content, record.id)
 
         if download_type in {"recon", "all"}:
-            for record in RECONFile.objects.filter(**client_filter).only(
+            records = RECONFile.objects.all()
+            records = records.filter(client_id=client_id) if client_id else scope_client_queryset(records, request.user)
+            for record in records.only(
                 "id", "original_filename", "stored_filename", "file_content"
             ).iterator():
                 add_text(zf, "RECON", record.original_filename or record.stored_filename,
@@ -825,9 +839,8 @@ def api_get_file_content(request, file_id):
     except (EDI835File.DoesNotExist, ValueError):
         return JsonResponse({"error": "File record not found."}, status=404)
 
-    # Staff already have access to the operational file list and may preview
-    # the same persisted records directly. Standard users remain tenant-bound.
-    if getattr(request.user, "client", None) != db_rec.client and not request.user.is_staff:
+    from admin_panel.access_control import can_access_client
+    if db_rec.client_id and not can_access_client(request.user, db_rec.client_id):
         return JsonResponse({"error": "Unauthorized access to file."}, status=403)
 
     edi_text = db_rec.input_file_content or ""

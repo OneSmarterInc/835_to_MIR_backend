@@ -17,6 +17,7 @@ from django.utils.dateparse import parse_datetime
 from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
+from admin_panel.access_control import can_access_client, scope_client_queryset
 from project835.decorators import authenticated_api_required, json_api_errors
 
 from .models import EDI835File, MIRClaim, RECONClaim, RECONFile, ReconciliationReviewAction
@@ -211,9 +212,13 @@ def recon_files(request):
     elif request.user.is_staff:
         client_id = request.GET.get("client_id", "").strip()
         if client_id:
+            if not can_access_client(request.user, client_id):
+                return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
             queryset = queryset.filter(client_id=client_id)
-        elif request.GET.get("scope") == "global":
+        elif request.user.is_superuser and request.GET.get("scope") == "global":
             queryset = queryset.filter(client__isnull=True)
+        elif not request.user.is_superuser:
+            queryset = scope_client_queryset(queryset, request.user)
     else:
         queryset = queryset.none()
     return JsonResponse({"success": True, "files": [_serialize_file(item) for item in queryset[:500]]})
@@ -393,7 +398,7 @@ def recon_detail(request, file_id):
 def reconciliation_results(request):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
-    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    is_global = request.user.is_superuser and request.GET.get("scope") == "global"
     client = None if is_global else _request_client(request, request.GET.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
@@ -446,7 +451,7 @@ def reconciliation_dashboard(request):
     """Aggregate the live Results scope for the reconciliation popup."""
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
-    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    is_global = request.user.is_superuser and request.GET.get("scope") == "global"
     client = None if is_global else _request_client(request, request.GET.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
@@ -526,7 +531,7 @@ def reconciliation_review_action(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
     body = json.loads(request.body.decode("utf-8")) if request.body else {}
-    is_global = request.user.is_staff and body.get("scope") == "global"
+    is_global = request.user.is_superuser and body.get("scope") == "global"
     client = None if is_global else _request_client(request, body.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
@@ -545,10 +550,7 @@ def reconciliation_review_action(request):
 
 def _visible_source_file(request, file_id):
     queryset = EDI835File.objects.select_related("client", "mir_file")
-    if getattr(request.user, "client_id", None):
-        queryset = queryset.filter(client_id=request.user.client_id)
-    elif not request.user.is_staff:
-        return None
+    queryset = scope_client_queryset(queryset, request.user)
     try:
         return queryset.get(id=file_id)
     except (EDI835File.DoesNotExist, ValueError):
@@ -685,7 +687,7 @@ def reconciliation_export(request):
     """Download every row matching the Result screen's active filters."""
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
-    is_global = request.user.is_staff and request.GET.get("scope") == "global"
+    is_global = request.user.is_superuser and request.GET.get("scope") == "global"
     client = None if is_global else _request_client(request, request.GET.get("client_id"))
     if not client and not is_global:
         return JsonResponse({"success": False, "error": "Select a client."}, status=400)
@@ -733,10 +735,7 @@ def reconciliation_claim_detail(request, claim_id):
     queryset = MIRClaim.objects.select_related("mir_file", "mir_file__client").defer(
         "mir_file__file_content"
     )
-    if getattr(request.user, "client_id", None):
-        queryset = queryset.filter(mir_file__client_id=request.user.client_id)
-    elif not request.user.is_staff:
-        queryset = queryset.none()
+    queryset = scope_client_queryset(queryset, request.user, "mir_file__client_id")
     try:
         claim = queryset.get(id=claim_id)
     except (MIRClaim.DoesNotExist, ValueError):

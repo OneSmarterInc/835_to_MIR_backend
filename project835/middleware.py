@@ -1,5 +1,6 @@
 from django.http import JsonResponse, HttpResponseForbidden
 from django.conf import settings
+import json
 import re
 from accounts.admin_screens import user_can_access_screen
 
@@ -47,7 +48,17 @@ def requested_client_id(request, path):
     match = re.search(r"/admin-panel/api/(?:download/|clients/)([0-9a-f-]+)(?:/|$)", path)
     if match:
         return match.group(1)
-    return request.GET.get("client_id") or request.POST.get("client_id")
+    client_id = (
+        request.GET.get("client_id") or request.GET.get("client")
+        or request.POST.get("client_id") or request.POST.get("client")
+    )
+    if client_id or request.content_type != "application/json" or not request.body:
+        return client_id
+    try:
+        payload = json.loads(request.body.decode("utf-8"))
+        return payload.get("client_id") or payload.get("client")
+    except (TypeError, ValueError, UnicodeDecodeError):
+        return None
 
 
 def client_access_revoked(user):
