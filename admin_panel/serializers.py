@@ -17,7 +17,8 @@ class ClientDocumentSerializer(serializers.ModelSerializer):
         model = ClientDocument
         fields = (
             "id", "client", "document_name", "original_filename", "document_type",
-            "file_size", "uploaded_by", "created_at",
+            "file_size", "uploaded_by", "expiration_date", "version", "direction",
+            "state", "validation_status", "created_at",
         )
         read_only_fields = fields
 
