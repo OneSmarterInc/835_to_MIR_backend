@@ -13,6 +13,7 @@ import stat
 from datetime import datetime, timezone as dt_timezone
 
 from django.http import JsonResponse
+from admin_panel.access_control import can_access_client
 
 from .admin_sftp_routes import VALID_PURPOSES, resolve_admin_sftp_route
 from .edi837_transfer import _normalize_folder, _open_sftp
@@ -98,6 +99,8 @@ def api_browse_sftp_admin_routes(request):
         config_qs = config_qs.none()
 
     config = config_qs.first()
+    if config and config.client_id and not can_access_client(request.user, config.client_id):
+        config = None
     if not config:
         return JsonResponse({"success": False, "error": "SFTP configuration was not found or is not authorized."}, status=404)
 
