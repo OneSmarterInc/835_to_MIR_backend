@@ -187,6 +187,11 @@ class ClientDocument(models.Model):
     file = models.FileField(upload_to=client_document_upload_to)
     file_size = models.IntegerField(default=0)
     uploaded_by = models.CharField(max_length=255, default='Admin User')
+    expiration_date = models.DateField(blank=True, null=True)
+    version = models.PositiveIntegerField(default=1)
+    direction = models.CharField(max_length=40, blank=True, default='')
+    state = models.CharField(max_length=40, blank=True, default='UPLOADED')
+    validation_status = models.CharField(max_length=20, blank=True, default='VALID')
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -197,6 +202,29 @@ class ClientDocument(models.Model):
 
     def __str__(self):
         return f"{self.document_name} ({self.client.name})"
+
+    def save(self, *args, **kwargs):
+        if self._state.adding:
+            from django.db.models import Max
+            latest = type(self).objects.filter(
+                client_id=self.client_id, document_type=self.document_type
+            ).aggregate(value=Max('version'))['value'] or 0
+            self.version = latest + 1
+        super().save(*args, **kwargs)
+
+
+class ClientDocumentRegister(models.Model):
+    """Tracks document activity that can occur before a file is uploaded."""
+    client = models.ForeignKey(Client, on_delete=models.CASCADE, related_name='document_register')
+    document_type = models.CharField(max_length=100)
+    sent_at = models.DateTimeField(blank=True, null=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=['client', 'document_type'], name='unique_client_document_register'),
+        ]
+
 
 
 class MirMappingField(models.Model):
