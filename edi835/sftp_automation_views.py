@@ -15,6 +15,7 @@ from project835.decorators import authenticated_api_required, json_api_errors
 from .models import SFTPAutomationRun, SFTPAutomationSchedule
 from .sftp_automation import next_schedule_run, schedule_occurrences, validated_timezone
 from admin_panel.email_service import send_automation_schedule_notice
+from admin_panel.access_control import can_access_client, scope_client_queryset
 
 
 logger = logging.getLogger(__name__)
@@ -116,12 +117,17 @@ def sftp_automation(request):
         schedules = SFTPAutomationSchedule.objects.select_related("client").all()
         runs = SFTPAutomationRun.objects.select_related("client")
         if selected_client_id:
+            if not can_access_client(request.user, selected_client_id):
+                return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
             try:
                 schedules = schedules.filter(client_id=selected_client_id)
                 runs = runs.filter(client_id=selected_client_id)
                 runs.exists()
             except (TypeError, ValueError, ValidationError):
                 return JsonResponse({"success": False, "error": "Invalid client identifier."}, status=400)
+        elif not request.user.is_superuser:
+            schedules = scope_client_queryset(schedules, request.user)
+            runs = scope_client_queryset(runs, request.user)
         try:
             page_number = max(1, int(request.GET.get("page", "1")))
             page_size = min(100, max(10, int(request.GET.get("page_size", "25"))))
@@ -159,6 +165,8 @@ def sftp_automation(request):
                ("835", "PROCESSING"), ("MIR", "OUTGOING"), ("RECON", "INCOMING")}
     if not client_id or not raw_time or automation_type not in valid_types or (automation_type, direction) not in allowed:
         return JsonResponse({"success": False, "error": "Select a supported automation operation, run time, and client."}, status=400)
+    if not can_access_client(request.user, client_id):
+        return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
     try:
         hour, minute = [int(value) for value in raw_time.split(":", 1)]
         run_time = time(hour=hour, minute=minute)
