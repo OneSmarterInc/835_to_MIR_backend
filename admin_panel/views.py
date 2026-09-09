@@ -1265,6 +1265,19 @@ def api_admin_step_upload(request, client_id, step_key):
                     import logging
                     logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
+                if file_bytes:
+                    failed_doc = ClientDocument.objects.create(
+                        client=client_obj,
+                        document_name=filename,
+                        original_filename=filename,
+                        document_type=f"Onboarding Step {step_num}",
+                        file_size=len(file_bytes),
+                        uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+                        state="VALIDATION FAILED",
+                        validation_status="INVALID",
+                    )
+                    failed_doc.file.save(filename, ContentFile(file_bytes), save=True)
+
                 return JsonResponse({
                     "success": False,
                     "error": err_msg or "Validation failed",
@@ -1351,6 +1364,7 @@ def api_admin_template_download(request, client_id, step_key):
                 client_obj = Client.objects.get(id=client_id)
                 pdf_bytes, digest = cached_client_pdf(client_obj, "nda-v1", build_client_nda)
                 download_name = nda_download_filename(client_obj)
+                record_document_sent(client_obj, "Onboarding Step 1")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 2:
@@ -1358,6 +1372,7 @@ def api_admin_template_download(request, client_id, step_key):
                 client_obj = Client.objects.get(id=client_id)
                 pdf_bytes, digest = cached_client_pdf(client_obj, "baa-v1", build_client_baa)
                 download_name = baa_download_filename(client_obj)
+                record_document_sent(client_obj, "Onboarding Step 2")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 3:
@@ -1370,6 +1385,7 @@ def api_admin_template_download(request, client_id, step_key):
                     client_obj, "security-review-v1", build_client_security_review
                 )
                 download_name = security_review_download_filename(client_obj)
+                record_document_sent(client_obj, "Onboarding Step 3")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             template_map = {}
@@ -2386,6 +2402,9 @@ def api_admin_default_smtp(request):
 from admin_panel.models import ClientDocument
 from django.core.files.base import ContentFile
 from django.http import HttpResponse
+from urllib.parse import unquote
+
+from admin_panel.document_registry import DOCUMENT_CATALOG, document_definition, record_document_sent
 
 @csrf_exempt
 def api_admin_client_documents(request, client_id):
@@ -2393,26 +2412,65 @@ def api_admin_client_documents(request, client_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
 
-    docs = ClientDocument.objects.filter(client_id=client_id).order_by('-created_at')
-    seen_keys = set()
-    doc_list = []
-    for d in docs:
-        if d.document_type == 'General Document':
-            key = f"general_{d.document_name}"
-        else:
-            key = d.document_type
+    client_obj = Client.objects.filter(id=client_id).first()
+    if not client_obj:
+        return JsonResponse({"success": False, "error": "Client not found"}, status=404)
 
-        if key not in seen_keys:
-            seen_keys.add(key)
-            doc_list.append({
-                "id": str(d.id),
-                "document_name": d.document_name,
-                "original_filename": d.original_filename,
-                "document_type": d.document_type,
-                "file_size": d.file_size,
-                "uploaded_by": d.uploaded_by,
-                "created_at": d.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if d.created_at else ""
-            })
+    docs = list(ClientDocument.objects.filter(client=client_obj).order_by('-created_at'))
+    activity = {row.document_type: row for row in client_obj.document_register.all()}
+    grouped = {}
+    for document in docs:
+        key = document.document_type if document.document_type != 'General Document' else f"general:{document.document_name}"
+        grouped.setdefault(key, []).append(document)
+
+    definitions = list(DOCUMENT_CATALOG)
+    known_types = {item["type"] for item in definitions}
+    for key, versions in grouped.items():
+        latest = versions[0]
+        if latest.document_type not in known_types:
+            definitions.append(document_definition(latest.document_type, latest.document_name))
+
+    doc_list = []
+    for definition in definitions:
+        matching = grouped.get(definition["type"], [])
+        if definition["type"] == "General Document":
+            matching = next((rows for key, rows in grouped.items() if key.startswith("general:")), [])
+        latest = matching[0] if matching else None
+        register = activity.get(definition["type"])
+        sent_at = register.sent_at if register else None
+        if latest and latest.validation_status == "INVALID":
+            state = "VALIDATION FAILED"
+        elif latest and definition["requires_signature"]:
+            state = "EXECUTED"
+        elif latest and definition["direction"] == "Sent to client":
+            state = "DELIVERED"
+        elif latest:
+            state = "RECEIVED"
+        elif sent_at and definition["requires_signature"]:
+            state = "OUT FOR SIGNATURE"
+        elif sent_at:
+            state = "DELIVERED"
+        else:
+            state = "NOT RECEIVED"
+        signed_or_sent_at = latest.created_at if latest and (definition["requires_signature"] or definition["direction"] == "From client") else sent_at
+        doc_list.append({
+            "id": str(latest.id) if latest else None,
+            "document_name": latest.original_filename if latest else definition["name"],
+            "original_filename": latest.original_filename if latest else "",
+            "document_type": definition["type"],
+            "category": definition["category"],
+            "direction": latest.direction or definition["direction"] if latest else definition["direction"],
+            "requires_signature": definition["requires_signature"],
+            "file_size": latest.file_size if latest else None,
+            "uploaded_by": latest.uploaded_by if latest else "",
+            "created_at": latest.created_at.isoformat() if latest and latest.created_at else None,
+            "signed_or_sent_at": signed_or_sent_at.isoformat() if signed_or_sent_at else None,
+            "expiration_date": latest.expiration_date.isoformat() if latest and latest.expiration_date else None,
+            "version": latest.version if latest else None,
+            "next_version": max([item.version for item in matching], default=0) + 1,
+            "state": state,
+            "validation_status": latest.validation_status if latest else None,
+        })
     return JsonResponse({"success": True, "documents": doc_list})
 
 
@@ -2424,9 +2482,10 @@ def api_admin_client_documents_upload(request, client_id):
 
     file_bytes = request.body
 
-    filename = request.headers.get('X-Filename', 'uploaded_document.pdf')
-    doc_name = request.headers.get('X-Doc-Name', filename)
-    doc_type = request.headers.get('X-Doc-Type', 'General Document')
+    filename = unquote(request.headers.get('X-Filename', 'uploaded_document.pdf'))
+    doc_name = unquote(request.headers.get('X-Doc-Name', filename))
+    doc_type = unquote(request.headers.get('X-Doc-Type', 'General Document'))
+    expiration_value = request.headers.get('X-Expiration-Date', '').strip()
 
     try:
         client_obj = Client.objects.get(id=client_id)
@@ -2436,13 +2495,18 @@ def api_admin_client_documents_upload(request, client_id):
     # Document Validation & Integrity Engine check
     doc_text = extract_text_from_file_bytes(file_bytes, filename)
     val_res = validate_document_text(doc_text, step_title=doc_name)
+    expiration_date = None
+    if expiration_value:
+        from datetime import date
+        try:
+            expiration_date = date.fromisoformat(expiration_value)
+        except ValueError:
+            return JsonResponse({"success": False, "error": "Enter a valid expiration date."}, status=400)
 
-    if not val_res["ok"]:
-        return JsonResponse({
-            "success": False,
-            "error": val_res["status_message"],
-            "checks": val_res["checks"]
-        }, status=400)
+    definition = document_definition(doc_type, doc_name)
+    version = ClientDocument.objects.filter(client=client_obj, document_type=doc_type).count() + 1
+    validation_status = "VALID" if val_res["ok"] else "INVALID"
+    state = "EXECUTED" if val_res["ok"] and definition["requires_signature"] else "RECEIVED" if val_res["ok"] else "VALIDATION FAILED"
 
     doc = ClientDocument.objects.create(
         client=client_obj,
@@ -2450,7 +2514,12 @@ def api_admin_client_documents_upload(request, client_id):
         original_filename=filename,
         document_type=doc_type,
         file_size=len(file_bytes),
-        uploaded_by="Admin User"
+        uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+        expiration_date=expiration_date,
+        version=version,
+        direction=definition["direction"],
+        state=state,
+        validation_status=validation_status,
     )
     doc.file.save(filename, ContentFile(file_bytes), save=True)
 
@@ -2468,7 +2537,9 @@ def api_admin_client_documents_upload(request, client_id):
 
     return JsonResponse({
         "success": True,
-        "message": "Document uploaded successfully",
+        "message": f"Document uploaded as version {version}" if val_res["ok"] else f"Version {version} saved, but document validation failed.",
+        "validation_ok": val_res["ok"],
+        "version": version,
         "checks": val_res["checks"]
     })
 
@@ -2871,11 +2942,38 @@ def api_admin_golive_step_upload(request, client_id, step_num):
             err_msg = val_res.get("error")
             if not err_msg and checks:
                 err_msg = next((c["detail"] for c in checks if not c.get("ok")), "Validation failed")
+            if file_bytes:
+                failed_doc = ClientDocument.objects.create(
+                    client=client_obj,
+                    document_name=filename,
+                    original_filename=filename,
+                    document_type=f"Go-Live Step {step_num}",
+                    file_size=len(file_bytes),
+                    uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+                    state="VALIDATION FAILED",
+                    validation_status="INVALID",
+                )
+                failed_doc.file.save(filename, ContentFile(file_bytes), save=True)
             return JsonResponse({
                 "success": False,
                 "error": err_msg,
                 "checks": checks
             }, status=400)
+
+        if file_bytes:
+            definition = document_definition(f"Go-Live Step {step_num}", step_def.title)
+            doc = ClientDocument.objects.create(
+                client=client_obj,
+                document_name=filename,
+                original_filename=filename,
+                document_type=f"Go-Live Step {step_num}",
+                file_size=len(file_bytes),
+                uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+                direction=definition["direction"],
+                state="EXECUTED" if definition["requires_signature"] else "RECEIVED",
+                validation_status="VALID",
+            )
+            doc.file.save(filename, ContentFile(file_bytes), save=True)
 
         status_obj, _ = ClientGoLiveStatus.objects.get_or_create(client=client_obj, step=step_def)
         status_obj.status = 'COMPLETED'
@@ -2915,6 +3013,7 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 client_obj, "golive-authorization-v1", build_client_golive_authorization
             )
             filename = golive_authorization_download_filename(client_obj)
+            record_document_sent(client_obj, "Go-Live Step 1")
             return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
@@ -2932,6 +3031,7 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 client_obj, "data-transfer-attestation-v1", build_client_data_transfer_attestation
             )
             filename = data_transfer_attestation_download_filename(client_obj)
+            record_document_sent(client_obj, "Go-Live Step 2")
             return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
