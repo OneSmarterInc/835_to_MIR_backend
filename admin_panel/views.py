@@ -1139,7 +1139,10 @@ def api_admin_client_state(request, client_id):
                     "id": latest_doc.id,
                     "original_filename": latest_doc.original_filename,
                     "uploaded_at": latest_doc.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if latest_doc.created_at else None,
-                    "validation_status": "COMPLETED"
+                    "validation_status": "FAILED" if latest_doc.validation_status == "INVALID" else "COMPLETED",
+                    "version": latest_doc.version,
+                    "next_version": latest_doc.version + 1,
+                    "expiration_date": latest_doc.expiration_date.isoformat() if latest_doc.expiration_date else None,
                 }
 
         steps_data.append({
@@ -1237,7 +1240,15 @@ def api_admin_step_upload(request, client_id, step_key):
         return locked
 
     file_bytes = request.body
-    filename = request.headers.get('X-Filename', 'uploaded_document.pdf')
+    filename = unquote(request.headers.get('X-Filename', 'uploaded_document.pdf'))
+    expiration_value = request.headers.get('X-Expiration-Date', '').strip()
+    if not expiration_value:
+        return JsonResponse({"success": False, "error": "Expiration date is required."}, status=400)
+    from datetime import date
+    try:
+        expiration_date = date.fromisoformat(expiration_value)
+    except ValueError:
+        return JsonResponse({"success": False, "error": "Enter a valid expiration date."}, status=400)
 
     try:
         parts = step_key.split('_')
@@ -1266,6 +1277,7 @@ def api_admin_step_upload(request, client_id, step_key):
                     logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
                 if file_bytes:
+                    failed_definition = document_definition(f"Onboarding Step {step_num}", step_def.title)
                     failed_doc = ClientDocument.objects.create(
                         client=client_obj,
                         document_name=filename,
@@ -1273,6 +1285,8 @@ def api_admin_step_upload(request, client_id, step_key):
                         document_type=f"Onboarding Step {step_num}",
                         file_size=len(file_bytes),
                         uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+                        expiration_date=expiration_date,
+                        direction=failed_definition["direction"],
                         state="VALIDATION FAILED",
                         validation_status="INVALID",
                     )
@@ -1281,13 +1295,15 @@ def api_admin_step_upload(request, client_id, step_key):
                 return JsonResponse({
                     "success": False,
                     "error": err_msg or "Validation failed",
-                    "checks": checks
+                    "checks": checks,
+                    "version": failed_doc.version if file_bytes else None,
                 }, status=400)
 
             # Save file as ClientDocument
             if file_bytes:
                 doc_name = f"Step {step_num}: {step_def.title}"
                 doc_type = f"Onboarding Step {step_num}"
+                definition = document_definition(doc_type, step_def.title)
 
                 doc = ClientDocument.objects.create(
                     client=client_obj,
@@ -1295,7 +1311,12 @@ def api_admin_step_upload(request, client_id, step_key):
                     original_filename=filename,
                     document_type=doc_type,
                     file_size=len(file_bytes),
-                    uploaded_by="Admin User"
+                    uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+                    signed_or_sent_at=timezone.now(),
+                    expiration_date=expiration_date,
+                    direction=definition["direction"],
+                    state="EXECUTED" if definition["requires_signature"] else "RECEIVED",
+                    validation_status="VALID",
                 )
                 from django.core.files.base import ContentFile
                 doc.file.save(filename, ContentFile(file_bytes), save=True)
@@ -1334,7 +1355,8 @@ def api_admin_step_upload(request, client_id, step_key):
             return JsonResponse({
                 "success": True,
                 "message": "File uploaded and step completed.",
-                "checks": val_res.get("checks", [])
+                "checks": val_res.get("checks", []),
+                "version": doc.version if file_bytes else None,
             })
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
@@ -2461,7 +2483,7 @@ def api_admin_client_documents(request, client_id):
             signed_or_sent_at = sent_at
         doc_list.append({
             "id": str(latest.id) if latest else None,
-            "document_name": latest.original_filename if latest else definition["name"],
+            "document_name": definition["name"],
             "original_filename": latest.original_filename if latest else "",
             "document_type": definition["type"],
             "category": definition["category"],
