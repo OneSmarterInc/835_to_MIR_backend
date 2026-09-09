@@ -2452,7 +2452,13 @@ def api_admin_client_documents(request, client_id):
             state = "DELIVERED"
         else:
             state = "NOT RECEIVED"
-        signed_or_sent_at = latest.created_at if latest and (definition["requires_signature"] or definition["direction"] == "From client") else sent_at
+        signed_or_sent_at = None
+        if latest:
+            signed_or_sent_at = latest.signed_or_sent_at
+            if not signed_or_sent_at and (definition["requires_signature"] or definition["direction"] == "From client"):
+                signed_or_sent_at = latest.created_at
+        if not signed_or_sent_at:
+            signed_or_sent_at = sent_at
         doc_list.append({
             "id": str(latest.id) if latest else None,
             "document_name": latest.original_filename if latest else definition["name"],
@@ -2486,6 +2492,8 @@ def api_admin_client_documents_upload(request, client_id):
     doc_name = unquote(request.headers.get('X-Doc-Name', filename))
     doc_type = unquote(request.headers.get('X-Doc-Type', 'General Document'))
     expiration_value = request.headers.get('X-Expiration-Date', '').strip()
+    if not expiration_value:
+        return JsonResponse({"success": False, "error": "Expiration date is required."}, status=400)
 
     try:
         client_obj = Client.objects.get(id=client_id)
@@ -2515,6 +2523,7 @@ def api_admin_client_documents_upload(request, client_id):
         document_type=doc_type,
         file_size=len(file_bytes),
         uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
+        signed_or_sent_at=timezone.now(),
         expiration_date=expiration_date,
         version=version,
         direction=definition["direction"],
