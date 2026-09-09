@@ -34,6 +34,7 @@ from project835.field_crypto import (
     decrypt_smtp_password,
 )
 from .document_validator import extract_text_from_file_bytes, validate_document_text
+from .access_control import active_client_grant_ids
 from validation import (
     validate_step_upload,
     validate_golive_step_upload,
@@ -123,11 +124,19 @@ def api_admin_stats(request):
     GET /admin-panel/api/stats/
     Returns admin metrics summary.
     """
-    total_clients = Client.objects.count()
-    active_clients = Client.objects.filter(status="ACTIVE").count()
-    inactive_clients = Client.objects.filter(status="INACTIVE").count()
-    total_users = User.objects.count()
-    total_conversions = EDI835File.objects.count()
+    visible_client_ids = active_client_grant_ids(request.user)
+    clients_qs = Client.objects.all()
+    users_qs = User.objects.all()
+    conversions_qs = EDI835File.objects.all()
+    if visible_client_ids is not None:
+        clients_qs = clients_qs.filter(id__in=visible_client_ids)
+        users_qs = users_qs.filter(client_id__in=visible_client_ids)
+        conversions_qs = conversions_qs.filter(client_id__in=visible_client_ids)
+    total_clients = clients_qs.count()
+    active_clients = clients_qs.filter(status="ACTIVE").count()
+    inactive_clients = clients_qs.filter(status="INACTIVE").count()
+    total_users = users_qs.count()
+    total_conversions = conversions_qs.count()
 
     return JsonResponse({
         "success": True,
@@ -153,6 +162,9 @@ def api_admin_clients(request):
     status_q = request.GET.get("status", "").strip()
 
     clients_qs = Client.objects.all().order_by("-created_at")
+    visible_client_ids = active_client_grant_ids(request.user)
+    if visible_client_ids is not None:
+        clients_qs = clients_qs.filter(id__in=visible_client_ids)
 
     if search_q:
         clients_qs = clients_qs.filter(
@@ -165,9 +177,9 @@ def api_admin_clients(request):
     if status_q and status_q.upper() in ["ACTIVE", "INACTIVE"]:
         clients_qs = clients_qs.filter(status=status_q.upper())
 
-    total_clients = Client.objects.count()
-    active_clients = Client.objects.filter(status="ACTIVE").count()
-    inactive_clients = Client.objects.filter(status="INACTIVE").count()
+    total_clients = clients_qs.count()
+    active_clients = clients_qs.filter(status="ACTIVE").count()
+    inactive_clients = clients_qs.filter(status="INACTIVE").count()
 
     from django.utils import timezone
     now = timezone.now()
@@ -570,9 +582,15 @@ def api_admin_access_info(request):
         Q(is_staff=False, is_superuser=False)
         & (Q(client__isnull=True) | ~Q(client__stage="offboarded"))
     )
-    visible_users = User.objects.select_related("client").filter(
-        administrative_accounts | active_tenant_accounts
-    ).order_by("-created_at")
+    cur_u = request.user
+    visible_client_ids = active_client_grant_ids(cur_u)
+    if visible_client_ids is None:
+        visible_filter = administrative_accounts | active_tenant_accounts
+    else:
+        visible_filter = administrative_accounts | Q(
+            is_staff=False, is_superuser=False, client_id__in=visible_client_ids,
+        )
+    visible_users = User.objects.select_related("client").filter(visible_filter).order_by("-created_at")
     for u in visible_users:
         staff_list.append({
             "id": u.id,
@@ -588,7 +606,6 @@ def api_admin_access_info(request):
             "admin_screens": screens_for_user(u),
         })
 
-    cur_u = request.user
     if cur_u.is_superuser:
         cur_role = "Super Admin"
     elif cur_u.is_staff:
@@ -602,6 +619,8 @@ def api_admin_access_info(request):
     active_grants = AdminClientAccessGrant.objects.filter(
         revoked_at__isnull=True, expires_at__gt=timezone.now()
     ).select_related("administrator", "client", "approved_by")
+    if not cur_u.is_superuser:
+        active_grants = active_grants.filter(administrator=cur_u)
     return JsonResponse({
         "success": True,
         "current_admin": {
@@ -610,7 +629,7 @@ def api_admin_access_info(request):
             "mfa_status": mfa_str,
             "mfa_desc": mfa_desc,
             "session_state": "Active",
-            "session_desc": "30-min auto-expire",
+            "session_desc": "Client grants auto-expire",
         },
         "last_login": cur_u.last_login.isoformat() if cur_u.last_login else "",
         "staff": staff_list,
@@ -635,22 +654,38 @@ def api_admin_client_access_grants(request):
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
     try:
         data = json.loads(request.body.decode("utf-8"))
-        administrator = User.objects.get(pk=data.get("user_id"), is_staff=True)
+        administrator = User.objects.get(pk=data.get("user_id"), is_staff=True, is_superuser=False)
         client_obj = Client.objects.get(pk=data.get("client_id"))
         reason = str(data.get("reason") or "").strip()
-        duration = min(120, max(5, int(data.get("duration_minutes", 30))))
+        legacy_minutes = data.get("duration_minutes")
+        duration_value = int(data.get("duration_value", legacy_minutes))
+        duration_unit = str(data.get("duration_unit") or ("minutes" if legacy_minutes is not None else "")).strip().lower()
+        if duration_value < 1 or duration_value > 525600:
+            raise ValueError
+        unit_deltas = {
+            "minutes": timedelta(minutes=duration_value),
+            "days": timedelta(days=duration_value),
+            "weeks": timedelta(weeks=duration_value),
+            "months": timedelta(days=30 * duration_value),
+        }
+        if duration_unit not in unit_deltas:
+            raise ValueError
+        duration_delta = unit_deltas[duration_unit]
+        if duration_delta > timedelta(days=365):
+            return JsonResponse({"success": False, "error": "Temporary access cannot exceed 365 days."}, status=400)
     except (ValueError, TypeError, User.DoesNotExist, Client.DoesNotExist):
         return JsonResponse({"success": False, "error": "Valid administrator, client, and duration are required."}, status=400)
     if len(reason) < 10:
         return JsonResponse({"success": False, "error": "A specific business reason of at least 10 characters is required."}, status=400)
     grant = AdminClientAccessGrant.objects.create(
         administrator=administrator, client=client_obj, reason=reason,
-        approved_by=request.user, expires_at=timezone.now() + timedelta(minutes=duration),
+        approved_by=request.user, expires_at=timezone.now() + duration_delta,
     )
-    log_audit_event("ACCESS", "BREAK_GLASS_GRANTED", f"Sensitive access granted to {administrator.email} for {duration} minutes. Reason: {reason}", request.user.email, client_obj)
+    duration_label = f"{duration_value} {duration_unit}"
+    log_audit_event("ACCESS", "BREAK_GLASS_GRANTED", f"Sensitive access granted to {administrator.email} for {duration_label}. Reason: {reason}", request.user.email, client_obj)
     try:
         from .email_service import send_client_email
-        send_client_email(client_obj, "Temporary Administrative Access Granted", f"<p>Temporary access to protected claim information was granted to <strong>{administrator.name or administrator.email}</strong> for {duration} minutes.</p><p><strong>Reason:</strong> {reason}</p>")
+        send_client_email(client_obj, "Temporary Administrative Access Granted", f"<p>Temporary access to protected claim information was granted to <strong>{administrator.name or administrator.email}</strong> for {duration_label}.</p><p><strong>Reason:</strong> {reason}</p>")
     except Exception:
         logging.getLogger(__name__).exception("Could not send break-glass notification")
     return JsonResponse({"success": True, "grant_id": grant.id, "expires_at": grant.expires_at.isoformat()})
@@ -2431,6 +2466,8 @@ def api_admin_document_download(request, doc_id):
         doc = ClientDocument.objects.get(id=doc_id)
     except ClientDocument.DoesNotExist:
         return JsonResponse({"success": False, "error": "Document not found"}, status=404)
+    if not request.user.is_superuser and not active_client_grant_ids(request.user).filter(client_id=doc.client_id).exists():
+        return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
     try:
         import mimetypes
@@ -2454,6 +2491,8 @@ def api_admin_document_delete(request, doc_id):
 
     try:
         doc = ClientDocument.objects.get(id=doc_id)
+        if not request.user.is_superuser and not active_client_grant_ids(request.user).filter(client_id=doc.client_id).exists():
+            return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
         doc.file.delete(save=False)
 
         # Audit Logging
@@ -3282,6 +3321,9 @@ def api_admin_audit_logs(request):
     sort_direction = "" if request.GET.get("direction", "desc") == "asc" else "-"
 
     qs = AuditLog.objects.select_related("client")
+    visible_client_ids = active_client_grant_ids(request.user)
+    if visible_client_ids is not None:
+        qs = qs.filter(client_id__in=visible_client_ids)
 
     if client_id:
         try:

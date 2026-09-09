@@ -185,8 +185,11 @@ def tracked_files_list(request):
         records = EDI835File.objects.select_related("client", "mir_file").defer(
             "input_file_content", "mir_file__file_content"
         )
-        if request.GET.get("scope") == "global":
+        if request.user.is_superuser and request.GET.get("scope") == "global":
             records = records.filter(client__isnull=True)
+        elif not request.user.is_superuser:
+            from admin_panel.access_control import active_client_grant_ids
+            records = records.filter(client_id__in=active_client_grant_ids(request.user))
         records = records.order_by('-uploaded_at')[:200]
     else:
         records = (
@@ -266,7 +269,13 @@ def api_get_metrics(request):
     today = timezone.localdate()
 
     client = getattr(request.user, "client", None)
-    base_qs = EDI835File.objects.all() if request.user.is_staff else EDI835File.objects.filter(client=client)
+    if request.user.is_superuser:
+        base_qs = EDI835File.objects.all()
+    elif request.user.is_staff:
+        from admin_panel.access_control import active_client_grant_ids
+        base_qs = EDI835File.objects.filter(client_id__in=active_client_grant_ids(request.user))
+    else:
+        base_qs = EDI835File.objects.filter(client=client)
 
     # Archived / Completed files (SFTP or Manual)
     archived_qs = base_qs.filter(status__in=["ARCHIVED", "COMPLETED"])
@@ -327,7 +336,10 @@ def api_archive_files_list(request):
     archive_records = EDI835File.objects.select_related("mir_file").defer(
         "input_file_content", "mir_file__file_content"
     )
-    if not request.user.is_staff:
+    if request.user.is_staff and not request.user.is_superuser:
+        from admin_panel.access_control import active_client_grant_ids
+        archive_records = archive_records.filter(client_id__in=active_client_grant_ids(request.user))
+    elif not request.user.is_staff:
         archive_records = archive_records.filter(
             client=getattr(request.user, "client", None)
         )

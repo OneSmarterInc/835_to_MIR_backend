@@ -42,6 +42,14 @@ def sensitive_client_id(request, path):
     return match.group(1) if match else None
 
 
+def requested_client_id(request, path):
+    """Resolve a tenant scope from administrative and conversion requests."""
+    match = re.search(r"/admin-panel/api/(?:download/|clients/)([0-9a-f-]+)(?:/|$)", path)
+    if match:
+        return match.group(1)
+    return request.GET.get("client_id") or request.POST.get("client_id")
+
+
 def client_access_revoked(user):
     if not user or not user.is_authenticated or user.is_staff or user.is_superuser:
         return False
@@ -66,17 +74,17 @@ class AdminAccessMiddleware:
             enrolled = bool(getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None))
             if not enrolled or not request.session.get("totp_verified", False):
                 return JsonResponse({"success": False, "error": "MFA enrollment and verification required."}, status=403)
-            # Super Admins retain system-wide oversight. Temporary client
-            # grants constrain delegated staff administrators only.
-            if request.user.is_staff and not request.user.is_superuser and (
-                normalized_path.startswith("/edi835/api/tracked-files")
-                or normalized_path.startswith("/edi835/api/reconciliation")
-                or "/edi-files" in normalized_path
-            ):
-                from admin_panel.access_control import has_active_client_grant
-                client_id = sensitive_client_id(request, normalized_path)
-                if not client_id or not has_active_client_grant(request.user, client_id):
-                    return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
+
+        # A delegated administrator may only address a tenant while an
+        # explicit, unexpired grant exists. This check is independent of the
+        # optional MFA setting and cannot be bypassed by calling an API directly.
+        if request.user.is_authenticated and request.user.is_staff and not request.user.is_superuser:
+            from admin_panel.access_control import has_active_client_grant
+            client_id = requested_client_id(request, normalized_path)
+            client_path = bool(re.search(r"/admin-panel/api/(?:download/|clients/)[0-9a-f-]+(?:/|$)", normalized_path))
+            client_scoped = client_path or (normalized_path.startswith("/edi835/api/") and bool(client_id))
+            if client_scoped and (not client_id or not has_active_client_grant(request.user, client_id)):
+                return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
         # --- OFFBOARDED CLIENT BLOCK (highest priority) ---
         # Allow logout and login endpoints so user can see the error and log out
