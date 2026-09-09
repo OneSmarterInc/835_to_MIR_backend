@@ -251,7 +251,12 @@ def payment_reductions(service: ServiceLine) -> Dict[int, Decimal]:
 
 
 def payment_reduction_slots(service: ServiceLine) -> Dict[int, Tuple[str, Decimal]]:
-    """Return MIR slot -> (combined group/reason, amount)."""
+    """Return MIR slot -> (combined group/reason, amount).
+
+    Repeated adjustments that map to the same MIR code may be accumulated.
+    Different 835 adjustment reasons must never be collapsed into one MIR slot
+    under a single reason label; fail the conversion instead.
+    """
     result: Dict[int, Tuple[str, Decimal]] = {}
     for adjustment in service.adjustments:
         if adjustment.group != config.X12_PATIENT_RESP_GROUP:
@@ -265,6 +270,11 @@ def payment_reduction_slots(service: ServiceLine) -> Dict[int, Tuple[str, Decima
         else:
             continue
         existing = result.get(slot)
+        if existing and existing[0] != code:
+            raise ValueError(
+                f"MIR reduction slot {slot} cannot contain both {existing[0]} and {code}; "
+                "conversion aborted to prevent adjustment reason misrepresentation."
+            )
         amount = adjustment.amount + (existing[1] if existing else Decimal("0"))
         result[slot] = (code, amount)
     return result
