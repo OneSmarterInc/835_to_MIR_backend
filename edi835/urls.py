@@ -62,13 +62,12 @@ reconciliation_review_action = authenticated_api(reconciliation_review_action)
 sftp_837_files = authenticated_api(sftp_837_files)
 sftp_837_ingest = authenticated_api(sftp_837_ingest)
 sftp_automation = authenticated_api(sftp_automation)
-edi837_upload_process = authenticated_api(edi837_upload_process)
-edi837_sftp_transfer = authenticated_api(edi837_sftp_transfer_for_search)
-edi837_search = authenticated_api(edi837_search)
-edi837_files = authenticated_api(edi837_files)
-edi837_claim_detail = authenticated_api(edi837_claim_detail)
-edi837_claim_export = authenticated_api(edi837_claim_export)
-edi837_claim_push_sftp = authenticated_api(edi837_claim_push_sftp_named)
+# These views already enforce portal authentication themselves. Keeping them
+# as native Django views preserves the authenticated Django session used by
+# client accounts; wrapping them a second time in DRF can replace that user
+# with AnonymousUser before the view-level authorization runs.
+edi837_sftp_transfer = edi837_sftp_transfer_for_search
+edi837_claim_push_sftp = edi837_claim_push_sftp_named
 
 urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
