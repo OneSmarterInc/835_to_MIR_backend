@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 40490)
-Total output lines: 3772
-
 from project835.field_crypto import (
     encrypt_smtp_password,
     decrypt_smtp_password,
@@ -1268,19 +1265,6 @@ def api_admin_step_upload(request, client_id, step_key):
                     import logging
                     logging.getLogger(__name__).error(f"Failed to send email: {e}")
 
-                if file_bytes:
-                    failed_doc = ClientDocument.objects.create(
-                        client=client_obj,
-                        document_name=filename,
-                        original_filename=filename,
-                        document_type=f"Onboarding Step {step_num}",
-                        file_size=len(file_bytes),
-                        uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
-                        state="VALIDATION FAILED",
-                        validation_status="INVALID",
-                    )
-                    failed_doc.file.save(filename, ContentFile(file_bytes), save=True)
-
                 return JsonResponse({
                     "success": False,
                     "error": err_msg or "Validation failed",
@@ -1367,7 +1351,6 @@ def api_admin_template_download(request, client_id, step_key):
                 client_obj = Client.objects.get(id=client_id)
                 pdf_bytes, digest = cached_client_pdf(client_obj, "nda-v1", build_client_nda)
                 download_name = nda_download_filename(client_obj)
-                record_document_sent(client_obj, "Onboarding Step 1")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 2:
@@ -1375,7 +1358,6 @@ def api_admin_template_download(request, client_id, step_key):
                 client_obj = Client.objects.get(id=client_id)
                 pdf_bytes, digest = cached_client_pdf(client_obj, "baa-v1", build_client_baa)
                 download_name = baa_download_filename(client_obj)
-                record_document_sent(client_obj, "Onboarding Step 2")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             if step_num == 3:
@@ -1388,7 +1370,6 @@ def api_admin_template_download(request, client_id, step_key):
                     client_obj, "security-review-v1", build_client_security_review
                 )
                 download_name = security_review_download_filename(client_obj)
-                record_document_sent(client_obj, "Onboarding Step 3")
                 return pdf_download_response(pdf_bytes, download_name, digest)
 
             template_map = {}
@@ -1404,7 +1385,928 @@ def api_admin_template_download(request, client_id, step_key):
                 return JsonResponse({"success": False, "error": f"Template file {filename} not found."}, status=404)
 
             with open(file_path, 'rb') as f:
-                response = HttpResponse(f.read(), content_type='…10490 tokens truncated…# Only update the stored password when the user
+                response = HttpResponse(f.read(), content_type='application/octet-stream')
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                response['X-OneSmarter-Filename'] = filename
+                return response
+        else:
+            return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+    except Client.DoesNotExist:
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+    except ValueError as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=500)
+
+
+@csrf_exempt
+def api_admin_step_file(request, client_id, step_key):
+    """ GET /admin-panel/api/clients/<client_id>/steps/<step_key>/file/ """
+    try:
+        parts = step_key.split('_')
+        if len(parts) >= 2:
+            step_num = int(parts[1])
+            doc_type = f"Onboarding Step {step_num}"
+            doc = ClientDocument.objects.filter(client_id=client_id, document_type=doc_type).order_by('-created_at').first()
+            if doc:
+                import mimetypes
+                content_type, _ = mimetypes.guess_type(doc.original_filename)
+                if not content_type:
+                    content_type = "application/pdf" if doc.original_filename.lower().endswith(".pdf") else "application/octet-stream"
+                from django.http import HttpResponse
+                response = HttpResponse(doc.file.read(), content_type=content_type)
+                response['Content-Disposition'] = f'inline; filename="{doc.original_filename}"'
+                response['X-OneSmarter-Filename'] = doc.original_filename
+                return response
+    except Exception:
+        pass
+
+    return JsonResponse({"success": False, "error": "File not found"}, status=404)
+
+
+@csrf_exempt
+def api_admin_step_notes(request, client_id, step_key):
+    """ GET/POST /admin-panel/api/clients/<client_id>/steps/<step_key>/notes/ """
+    from accounts.models import ClientStepComment
+
+    try:
+        client_obj = Client.objects.get(id=client_id)
+    except (Client.DoesNotExist, ValueError):
+        return JsonResponse({"success": False, "error": "Client not found."}, status=404)
+
+    try:
+        parts = step_key.split('_')
+        if step_key.startswith('golive_step_'):
+            step_number = 100 + int(parts[2])
+        elif step_key.startswith('offboard_step_'):
+            step_number = 200 + int(parts[2])
+        elif step_key.startswith('step_'):
+            step_number = int(parts[1])
+        else:
+            raise ValueError
+    except (ValueError, IndexError):
+        return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+
+    if request.method == "POST":
+        locked = _offboarded_workflow_lock(request, client_id, "workflow note creation")
+        if locked:
+            return locked
+        try:
+            body = json.loads(request.body.decode('utf-8'))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return JsonResponse({"success": False, "error": "Invalid JSON body."}, status=400)
+        note_text = (body.get('note_text') or '').strip()
+        if not note_text:
+            return JsonResponse({"success": False, "error": "Note text is required."}, status=400)
+        author = getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator'
+        note = ClientStepComment.objects.create(
+            client=client_obj,
+            step_number=step_number,
+            comment=note_text,
+            author=author,
+        )
+        return JsonResponse({
+            "success": True,
+            "message": "Note added successfully.",
+            "note": {
+                "id": str(note.id),
+                "note_text": note.comment,
+                "author": note.author,
+                "created_at": note.created_at.isoformat(),
+            },
+        })
+
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET and POST are allowed."}, status=405)
+
+    notes = ClientStepComment.objects.filter(
+        client=client_obj,
+        step_number=step_number,
+    ).order_by('-created_at')
+    return JsonResponse({
+        "success": True,
+        "notes": [
+            {
+                "id": str(note.id),
+                "note_text": note.comment,
+                "author": note.author,
+                "created_at": note.created_at.isoformat(),
+            }
+            for note in notes
+        ],
+    })
+
+
+def _comment_step_number(step_key):
+    parts = step_key.split('_')
+    if step_key.startswith('golive_step_'):
+        return 100 + int(parts[2])
+    if step_key.startswith('offboard_step_'):
+        return 200 + int(parts[2])
+    if step_key.startswith('step_'):
+        return int(parts[1])
+    raise ValueError("Invalid step key")
+
+
+@csrf_exempt
+def api_admin_delete_step_note(request, client_id, step_key, note_id):
+    from accounts.models import ClientStepComment
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "workflow note deletion")
+    if locked:
+        return locked
+    try:
+        step_number = _comment_step_number(step_key)
+    except (ValueError, IndexError):
+        return JsonResponse({"success": False, "error": "Invalid step key."}, status=400)
+    deleted, _ = ClientStepComment.objects.filter(
+        id=note_id, client_id=client_id, step_number=step_number,
+    ).delete()
+    if not deleted:
+        return JsonResponse({"success": False, "error": "Note not found."}, status=404)
+    return JsonResponse({"success": True, "message": "Note deleted successfully."})
+
+
+@csrf_exempt
+def api_admin_delete_client_contact(request, client_id, contact_id):
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding contact deletion")
+    if locked:
+        return locked
+    from accounts.models import ClientContact
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    deleted, _ = ClientContact.objects.filter(id=contact_id, client_id=client_id).delete()
+    if not deleted:
+        return JsonResponse({"success": False, "error": "Contact not found."}, status=404)
+    return JsonResponse({"success": True, "message": "Contact deleted successfully."})
+
+
+@csrf_exempt
+def api_admin_delete_client_user(request, client_id, user_id):
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding user deletion")
+    if locked:
+        return locked
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    user_obj = User.objects.filter(id=user_id, client_id=client_id, is_staff=False).first()
+    if not user_obj:
+        return JsonResponse({"success": False, "error": "Client user not found."}, status=404)
+    email = user_obj.email
+    user_obj.delete()
+    return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
+
+
+@csrf_exempt
+def api_admin_step_redo(request, client_id, step_key):
+    """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/redo/ """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding step redo")
+    if locked:
+        return locked
+    try:
+        parts = step_key.split('_')
+        if len(parts) >= 2:
+            step_num = int(parts[1])
+            client_obj = Client.objects.get(id=client_id)
+
+            with transaction.atomic():
+                step_def = OnboardingStepDefinition.objects.get(step_number=step_num)
+                step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
+                step_status.status = 'IN_PROGRESS'
+                step_status.save()
+
+                # Reset every later workflow action to PENDING. Workflow order
+                # differs from numeric order because Step 10 precedes Step 8.
+                current_position = onboarding_process_position(step_num)
+                subsequent_step_numbers = ONBOARDING_PROCESS_ORDER[current_position + 1:]
+                subsequent_statuses = ClientStepStatus.objects.filter(
+                    client=client_obj,
+                    step__step_number__in=subsequent_step_numbers,
+                ).exclude(status='PENDING').select_related('step')
+                for sub_status in subsequent_statuses:
+                    sub_status.status = 'PENDING'
+                    sub_status.save()
+
+                update_client_onboarding_stats(client_obj)
+
+            # Audit log for step redo
+            try:
+                actor = "System"
+                if request.user and hasattr(request.user, "name") and request.user.name:
+                    actor = request.user.name
+                elif request.user and hasattr(request.user, "email") and request.user.email:
+                    actor = request.user.email
+                AuditLog.objects.create(
+                    module="ONBOARDING",
+                    action="STEP_REDO",
+                    details=f"Step {step_num} redone for client '{client_obj.name}'. Subsequent steps reset to PENDING.",
+                    performed_by=actor,
+                    client=client_obj
+                )
+            except Exception:
+                pass
+
+    except Exception:
+        pass
+    return JsonResponse({"success": True, "message": "Step reset to IN_PROGRESS, subsequent steps locked"})
+
+
+
+@csrf_exempt
+def api_admin_step_validate_835(request, client_id):
+    """ POST /admin-panel/api/clients/<client_id>/steps/step_7_835_val/validate-uploaded/ """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, "onboarding 835 validation")
+    if locked:
+        return locked
+    try:
+        client_obj = Client.objects.get(id=client_id)
+
+        # The onboarding screen sends the original name in X-Filename because
+        # the request body contains the raw file bytes. Resolve and validate it
+        # before parsing so every extension in the shared 835 policy follows
+        # the normal 835 validation pipeline.
+        from urllib.parse import unquote
+        from edi835.file_types import file_extension_error, has_valid_file_extension
+        uploaded_filename = os.path.basename(
+            unquote(request.headers.get("X-Filename", "uploaded_file.x12"))
+        )
+        if not has_valid_file_extension(uploaded_filename, "835"):
+            return JsonResponse({
+                "success": False,
+                "error": file_extension_error("835"),
+                "checks": [],
+            }, status=400)
+
+        file_bytes = request.body
+        if not file_bytes:
+            return JsonResponse({"success": False, "error": "No file uploaded"}, status=400)
+
+        raw_text = file_bytes.decode('utf-8', errors='replace')
+
+        # Step 7 onboarding validation intentionally uses the application's
+        # multi-transaction-aware 835 validator. PyX12 remains available for
+        # conversion/pipeline validation, but its schema engine can reject
+        # real-world batched remittances that pass the structural checks used
+        # by this onboarding workflow.
+        is_valid, checks = validate_x12_835_content(raw_text)
+
+        if not is_valid:
+            failed_checks = [check for check in checks if not check.get("ok")]
+            first_failure = (
+                failed_checks[0].get("detail")
+                if failed_checks
+                else "Errors found."
+            )
+            err_msg = "EDI Validation Failed. " + str(first_failure)
+
+            # Send failure email
+            try:
+                from admin_panel.email_service import send_client_email
+                filename_to_report = uploaded_filename
+                subject = f"OneSmarter: 835 File Validation Failed - {filename_to_report}"
+                html = f"<h3>835 File Validation Failed</h3><p>The file <b>{filename_to_report}</b> failed X12 validation.</p><p><b>Reason:</b> {err_msg}</p>"
+                send_client_email(client_obj, subject, html)
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Failed to send email: {e}")
+
+            return JsonResponse({"success": False, "error": err_msg, "checks": checks}, status=400)
+
+        checks = [{
+            "ok": True,
+            "label": "Structure",
+            "detail": "835 structural and balance checks passed."
+        }]
+
+        # Save as ClientDocument now that it is valid
+        filename = uploaded_filename
+        doc_name = f"Step 8: 835 File Validation"
+        from admin_panel.models import ClientDocument
+        from django.core.files.base import ContentFile
+
+        doc = ClientDocument.objects.create(
+            client=client_obj,
+            document_name=doc_name,
+            original_filename=filename,
+            document_type="Onboarding Step 8",
+            file_size=len(file_bytes),
+            uploaded_by="Admin User"
+        )
+        doc.file.save(filename, ContentFile(file_bytes), save=True)
+
+        # Process the EDI file content immediately through the pipeline (validation, conversion, SFTP upload)
+        from edi835.services import process_edi835_file_content, resolve_sftp_config
+        proc_res = process_edi835_file_content(raw_text, original_filename=filename, client=client_obj)
+
+        if not proc_res.get("success"):
+            return JsonResponse({
+                "success": False,
+                "error": f"835 validation passed, but MIR conversion failed: {proc_res.get('error', 'Unknown conversion error')}",
+                "checks": checks,
+            }, status=400)
+
+        db_record = proc_res.get("db_record")
+        if not db_record or not db_record.present_in_sftp:
+            outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
+            upload_error = (
+                getattr(outbound_cfg, "last_error", None)
+                or "The configured outbound SFTP folder rejected the upload."
+            )
+            checks.append({
+                "ok": True,
+                "label": "MIR Conversion",
+                "detail": "835 converted to MIR successfully.",
+            })
+            checks.append({
+                "ok": False,
+                "label": "SFTP Upload",
+                "detail": upload_error,
+            })
+            return JsonResponse({
+                "success": False,
+                "error": f"MIR conversion succeeded, but outbound SFTP upload failed: {upload_error}",
+                "checks": checks,
+                "file_id": str(db_record.id) if db_record else None,
+            }, status=502)
+
+        checks.extend([
+            {
+                "ok": True,
+                "label": "MIR Conversion",
+                "detail": "835 converted to MIR successfully.",
+            },
+            {
+                "ok": True,
+                "label": "SFTP Upload",
+                "detail": "Generated MIR uploaded to the configured outbound SFTP folder.",
+            },
+        ])
+
+        # Notify the active client users created during onboarding. This runs
+        # only after the MIR has been successfully uploaded to SFTP and uses
+        # the SMTP configuration saved for this client in Step 6.
+        email_sent = False
+        email_recipients = []
+        email_error = None
+        try:
+            from admin_panel.email_service import send_client_email, get_client_users
+            from django.utils.html import escape
+
+            email_recipients = get_client_users(client_obj)
+            outbound_cfg = resolve_sftp_config(client=client_obj, outbound=True)
+            outbound_folder = getattr(outbound_cfg, "outbound_mir_folder", None) or "/"
+            mir_filename = _canonical_mir_filename(db_record) or (Path(db_record.output_path).name if db_record.output_path else "Generated MIR file")
+            delivered_at = timezone.localtime().strftime("%B %d, %Y at %I:%M %p %Z")
+
+            email_subj = f"MIR Delivery Confirmation – {filename}"
+            email_html = f"""
+            <div style="font-family:Arial,sans-serif;color:#1f2937;line-height:1.6;max-width:680px">
+              <h2 style="color:#0f766e;margin-bottom:8px">835 Validation and MIR Delivery Completed</h2>
+              <p>Dear {escape(client_obj.name)} Team,</p>
+              <p>
+                The submitted 835 file has passed validation, was converted successfully to MIR format,
+                and the generated MIR file was uploaded to your configured outbound SFTP location.
+              </p>
+              <table style="border-collapse:collapse;width:100%;margin:18px 0">
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Source 835 file</td><td style="padding:8px;border:1px solid #d1d5db">{escape(filename)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Generated MIR file</td><td style="padding:8px;border:1px solid #d1d5db">{escape(mir_filename)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Validation</td><td style="padding:8px;border:1px solid #d1d5db">Passed</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">SFTP delivery</td><td style="padding:8px;border:1px solid #d1d5db">Successful</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Outbound folder</td><td style="padding:8px;border:1px solid #d1d5db">{escape(outbound_folder)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Claims identified</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('claims_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Services processed</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('services_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">MIR records created</td><td style="padding:8px;border:1px solid #d1d5db">{proc_res.get('records_count', 0)}</td></tr>
+                <tr><td style="padding:8px;border:1px solid #d1d5db;font-weight:bold">Completed at</td><td style="padding:8px;border:1px solid #d1d5db">{escape(delivered_at)}</td></tr>
+              </table>
+              <p>No further action is required unless you are unable to locate the MIR file in the outbound SFTP folder.</p>
+              <p>Sincerely,<br><strong>OneSmarter Inc.</strong></p>
+            </div>
+            """
+            if not email_recipients:
+                email_error = "No active client-user email address is available."
+            else:
+                email_sent = send_client_email(
+                    client_obj,
+                    email_subj,
+                    email_html,
+                    to_emails=email_recipients,
+                )
+                if not email_sent:
+                    email_error = "The client SMTP server did not send the notification."
+        except Exception as exc:
+            email_error = str(exc)
+            logging.getLogger(__name__).exception(
+                "Step 9 delivery email failed for client %s", client_obj.id
+            )
+
+        checks.append({
+            "ok": email_sent,
+            "label": "Client Email Notification",
+            "detail": (
+                f"Delivery confirmation sent to {', '.join(email_recipients)}."
+                if email_sent
+                else email_error or "Delivery confirmation email was not sent."
+            ),
+        })
+
+        step_def = OnboardingStepDefinition.objects.get(step_number=8)
+        step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
+        step_status.status = 'COMPLETED'
+        step_status.save()
+        update_client_onboarding_stats(client_obj)
+
+        return JsonResponse({
+            "success": True,
+            "message": "835 validated, converted to MIR, and uploaded to outbound SFTP successfully.",
+            "checks": checks,
+            "file_id": str(db_record.id),
+            "mir_output_path": db_record.output_path,
+            "email_sent": email_sent,
+            "email_recipients": email_recipients,
+            "email_error": email_error,
+        })
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+
+
+@csrf_exempt
+def api_admin_step_action(request, client_id, step_key, action):
+    """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/<action>/ """
+    if request.method != "POST":
+        return JsonResponse({"success": False, "error": "Only POST allowed"}, status=405)
+    locked = _offboarded_workflow_lock(request, client_id, f"onboarding step action '{action}'")
+    if locked:
+        return locked
+
+    try:
+        parts = step_key.split('_')
+        if len(parts) >= 2:
+            step_num = int(parts[1])
+            client_obj = Client.objects.get(id=client_id)
+            response_data = {}
+
+            if action == "save" and step_num == 4:
+                from accounts.models import ClientContact
+                try:
+                    data = json.loads(request.body.decode('utf-8'))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return JsonResponse({'success': False, 'error': 'Invalid JSON body.'}, status=400)
+                name = (data.get('employee_name') or '').strip()
+                email = (data.get('email') or '').strip().lower()
+                phone = (data.get('phone') or '').strip()
+                role_name = (data.get('role_name') or '').strip() or 'Technical Contact'
+                if not name:
+                    return JsonResponse({'success': False, 'error': 'Contact name is required.'}, status=400)
+                if email:
+                    ok_email, err_email = validate_email_address(email)
+                    if not ok_email:
+                        return JsonResponse({'success': False, 'error': err_email}, status=400)
+                if phone:
+                    try:
+                        phone = normalize_phone_number(phone, data.get('country_code'), required=False)
+                    except ValueError as exc:
+                        return JsonResponse({'success': False, 'error': str(exc)}, status=400)
+                with transaction.atomic():
+                    Client.objects.select_for_update().get(id=client_id)
+                    duplicate_filter = Q(name__iexact=name)
+                    if email:
+                        duplicate_filter |= Q(email__iexact=email)
+                    if phone:
+                        duplicate_filter |= Q(phone=phone)
+                    if ClientContact.objects.filter(client=client_obj).filter(duplicate_filter).exists():
+                        return JsonResponse({'success': False, 'error': 'This contact already exists for the client.'}, status=409)
+                    contact = ClientContact.objects.create(
+                        client=client_obj, role_name=role_name, name=name,
+                        email=email or None, phone=phone or None,
+                    )
+                response_data['contact'] = {
+                    'id': str(contact.id), 'role_name': contact.role_name, 'name': contact.name,
+                    'email': contact.email or '', 'phone': contact.phone or '',
+                }
+
+            if action == "save" and step_num == 10:
+                try:
+                    data = json.loads(request.body.decode('utf-8'))
+                    mir_format = data.get('mir_filename_format', '').strip()
+                    if mir_format:
+                        client_obj.mir_filename_format = mir_format
+                        client_obj.save(update_fields=['mir_filename_format'])
+                except Exception as e:
+                    return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+            # ── Step 6: persist SMTP config (password encrypted at rest) ───
+            if action == "send" and step_num == 6:
+                try:
+                    data = json.loads(request.body.decode('utf-8'))
+                    smtp_fields = {
+                        'sender_name':   data.get('sender_name', '').strip(),
+                        'sender_email':  data.get('sender_email', '').strip(),
+                        'smtp_host':     data.get('smtp_host', '').strip(),
+                        'smtp_port':     int(data.get('smtp_port', 587)),
+                        'smtp_username': data.get('smtp_username', '').strip(),
+                        'security':      data.get('security', 'STARTTLS').strip(),
+                        'reply_to':      data.get('reply_to', '').strip() or None,
+                    }
+                    plain_password = data.get('smtp_password', '').strip()
+                    if plain_password:
+                        smtp_fields['smtp_password'] = encrypt_smtp_password(plain_password)
+
+                    # If Use Default SMTP is checked, set use_default=True
+                    use_def_smtp = bool(data.get('use_default', False))
+                    smtp_fields['use_default'] = use_def_smtp
+
+                    ClientSmtpConfig.objects.update_or_create(
+                        client=client_obj,
+                        defaults=smtp_fields
+                    )
+
+                    # Send SMTP configuration success email
+                    try:
+                        from admin_panel.email_service import send_client_email
+                        subject = f"OneSmarter: SMTP Configuration Complete"
+                        html = f"<p>Hello,</p><p>SMTP configuration for {client_obj.name} has been successfully completed in the OneSmarter system.</p>"
+                        send_client_email(client_obj, subject, html)
+                    except Exception as email_err:
+                        # Log but do not fail the step
+                        import logging
+                        logging.getLogger(__name__).error(f"Failed to send SMTP success email: {email_err}")
+                except Exception as smtp_err:
+                    return JsonResponse({'success': False, 'error': f'SMTP save failed: {smtp_err}'}, status=400)
+            # ─────────────────────────────────────────────────────────────────
+
+            if (action == "save" and step_num in [5, 10, 11]) or (action == "send" and step_num == 6) or action == "submit-text":
+                from accounts.models import ClientStepComment
+                try:
+                    data = json.loads(request.body.decode('utf-8'))
+                    verification_text = data.get('verification_text') or data.get('notes', '').strip() or data.get('submission_text', '').strip()
+                    if verification_text:
+                        author = "System"
+                        if request.user and hasattr(request.user, "name") and request.user.name:
+                            author = request.user.name
+                        elif request.user and hasattr(request.user, "email") and request.user.email:
+                            author = request.user.email
+                        latest = ClientStepComment.objects.filter(client=client_obj, step_number=step_num).first()
+                        if latest and latest.comment == verification_text and latest.author == author:
+                            note = latest
+                        else:
+                            note = ClientStepComment.objects.create(
+                                client=client_obj, step_number=step_num,
+                                comment=verification_text, author=author,
+                            )
+                        response_data['note'] = {
+                            'id': str(note.id), 'note_text': note.comment, 'author': note.author,
+                            'created_at': note.created_at.isoformat(),
+                        }
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    return JsonResponse({'success': False, 'error': 'Invalid JSON body.'}, status=400)
+
+            if action == "save" and step_num == 13:
+                try:
+                    body = json.loads(request.body.decode('utf-8'))
+                    scheduled_date = body.get('scheduled_date', '').strip()
+                    scheduled_time = body.get('scheduled_time', '10:00').strip()
+                    timezone_name = _valid_timezone_name(body.get('timezone'))
+                    notes = body.get('notes', '').strip()
+
+                    if notes:
+                        from accounts.models import ClientStepComment
+                        author = "System"
+                        if request.user and hasattr(request.user, "name") and request.user.name:
+                            author = request.user.name
+                        elif request.user and hasattr(request.user, "email") and request.user.email:
+                            author = request.user.email
+                        latest = ClientStepComment.objects.filter(client=client_obj, step_number=step_num).first()
+                        if not latest or latest.comment != notes or latest.author != author:
+                            ClientStepComment.objects.create(
+                                client=client_obj, step_number=step_num,
+                                comment=notes, author=author,
+                            )
+
+                    if scheduled_date:
+                        from datetime import datetime
+                        from django.utils import timezone
+                        try:
+                            if "-" in scheduled_date and len(scheduled_date.split("-")[0]) == 4:
+                                dt = datetime.strptime(f"{scheduled_date} {scheduled_time}", "%Y-%m-%d %H:%M")
+                            else:
+                                dt = datetime.strptime(f"{scheduled_date} {scheduled_time}", "%m-%d-%Y %H:%M")
+                            client_obj.live_since = timezone.make_aware(dt, ZoneInfo(timezone_name))
+                            client_obj.timezone = timezone_name
+                            client_obj.save(update_fields=["live_since", "timezone", "updated_at"])
+                        except ValueError:
+                            pass
+                except Exception:
+                    pass
+
+            step_def = OnboardingStepDefinition.objects.get(step_number=step_num)
+            step_status, _ = ClientStepStatus.objects.get_or_create(client=client_obj, step=step_def)
+            step_status.status = 'COMPLETED'
+            step_status.save()
+            update_client_onboarding_stats(client_obj)
+
+            # Audit log for step action
+            try:
+                actor = "System"
+                if request.user and hasattr(request.user, "name") and request.user.name:
+                    actor = request.user.name
+                elif request.user and hasattr(request.user, "email") and request.user.email:
+                    actor = request.user.email
+                AuditLog.objects.create(
+                    module="ONBOARDING",
+                    action=f"STEP_{action.upper().replace('-', '_')}",
+                    details=f"Step {step_num} ('{step_def.title}') action '{action}' completed for client '{client_obj.name}'.",
+                    performed_by=actor,
+                    client=client_obj
+                )
+            except Exception:
+                pass
+
+    except Exception as e:
+        return JsonResponse({"success": False, "error": str(e)}, status=400)
+
+    return JsonResponse({"success": True, "message": f"Action {action} on {step_key} completed successfully.", **response_data})
+
+
+
+@csrf_exempt
+def api_admin_client_smtp(request, client_id):
+    """
+    GET  /admin-panel/api/clients/<client_id>/smtp/  — load existing config (password never returned)
+    POST /admin-panel/api/clients/<client_id>/smtp/  — upsert config (password stored encrypted)
+    """
+    try:
+        client_obj = Client.objects.get(id=client_id)
+    except Client.DoesNotExist:
+        return JsonResponse({'success': False, 'error': 'Client not found'}, status=404)
+
+    if request.method == 'GET':
+        try:
+            cfg = client_obj.smtp_config
+            effective_cfg = cfg
+            inherited_from_default = False
+            if cfg.use_default:
+                effective_cfg = ClientSmtpConfig.objects.filter(client__isnull=True).first()
+                inherited_from_default = effective_cfg is not None
+
+            if effective_cfg is None:
+                return JsonResponse({
+                    'success': True,
+                    'config': {
+                        'sender_name': '', 'sender_email': '', 'smtp_host': '',
+                        'smtp_port': 587, 'smtp_username': '', 'security': 'STARTTLS',
+                        'reply_to': '', 'use_default': True, 'has_password': False,
+                        'inherited_from_default': False,
+                    },
+                })
+            return JsonResponse({
+                'success': True,
+                'config': {
+                    'sender_name':   effective_cfg.sender_name,
+                    'sender_email':  effective_cfg.sender_email,
+                    'smtp_host':     effective_cfg.smtp_host,
+                    'smtp_port':     effective_cfg.smtp_port,
+                    'smtp_username': effective_cfg.smtp_username,
+                    'security':      effective_cfg.security,
+                    'reply_to':      effective_cfg.reply_to or '',
+                    'use_default':   cfg.use_default,
+                    'inherited_from_default': inherited_from_default,
+                    # smtp_password intentionally NEVER sent to the browser
+                    'has_password':  bool(effective_cfg.smtp_password),
+                }
+            })
+        except ClientSmtpConfig.DoesNotExist:
+            return JsonResponse({'success': True, 'config': None})
+
+    if request.method == 'POST':
+        locked = _offboarded_workflow_lock(request, client_id, "onboarding SMTP update")
+        if locked:
+            return locked
+        try:
+            data = json.loads(request.body.decode('utf-8'))
+            use_default = data.get('use_default', False)
+            if isinstance(use_default, str):
+                use_default = use_default.lower() == 'true'
+            smtp_fields = {
+                'sender_name':   data.get('sender_name', '').strip(),
+                'sender_email':  data.get('sender_email', '').strip(),
+                'smtp_host':     data.get('smtp_host', '').strip(),
+                'smtp_port':     int(data.get('smtp_port', 587)),
+                'smtp_username': data.get('smtp_username', '').strip(),
+                'security':      data.get('security', 'STARTTLS').strip(),
+                'reply_to':      data.get('reply_to', '').strip() or None,
+                'use_default':   bool(use_default),
+            }
+            plain_password = data.get('smtp_password', '').strip()
+            if plain_password:
+                # Encrypt before storing — only the server key can decrypt it
+                smtp_fields['smtp_password'] = encrypt_smtp_password(plain_password)
+            obj, created = ClientSmtpConfig.objects.update_or_create(
+                client=client_obj,
+                defaults=smtp_fields
+            )
+            return JsonResponse({'success': True, 'created': created})
+        except Exception as e:
+            return JsonResponse({'success': False, 'error': str(e)}, status=400)
+
+    return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
+
+@csrf_exempt
+@admin_api_required
+def api_admin_default_smtp(request):
+    """
+    GET:
+        Returns default SMTP configuration.
+        Password and encrypted ciphertext are never returned.
+
+    POST:
+        Creates or updates default SMTP configuration.
+        Password is encrypted before being stored.
+        An empty password preserves the existing password.
+    """
+
+    # ---------------------------------------------------------
+    # GET DEFAULT SMTP CONFIGURATION
+    # ---------------------------------------------------------
+    if request.method == "GET":
+        try:
+            cfg = ClientSmtpConfig.objects.get(
+                client__isnull=True
+            )
+
+            return JsonResponse(
+                {
+                    "success": True,
+                    "config": {
+                        "sender_name": cfg.sender_name,
+                        "sender_email": cfg.sender_email,
+                        "smtp_host": cfg.smtp_host,
+                        "smtp_port": cfg.smtp_port,
+                        "smtp_username": cfg.smtp_username,
+                        "security": cfg.security,
+                        "reply_to": cfg.reply_to or "",
+
+                        # Only tell frontend whether a password exists.
+                        # Never return plaintext or encrypted password.
+                        "has_password": bool(
+                            cfg.smtp_password
+                        ),
+                    },
+                }
+            )
+
+        except ClientSmtpConfig.DoesNotExist:
+            return JsonResponse(
+                {
+                    "success": True,
+                    "config": None,
+                }
+            )
+
+        except Exception:
+            logging.exception(
+                "Failed to load default SMTP configuration"
+            )
+
+            return JsonResponse(
+                {
+                    "success": False,
+                    "error": (
+                        "Failed to load default SMTP "
+                        "configuration."
+                    ),
+                },
+                status=500,
+            )
+
+    # ---------------------------------------------------------
+    # SAVE DEFAULT SMTP CONFIGURATION
+    # ---------------------------------------------------------
+    if request.method == "POST":
+        try:
+            data = json.loads(
+                request.body.decode("utf-8")
+            )
+
+            sender_name = (
+                data.get("sender_name") or ""
+            ).strip()
+
+            sender_email = (
+                data.get("sender_email") or ""
+            ).strip()
+
+            smtp_host = (
+                data.get("smtp_host") or ""
+            ).strip()
+
+            smtp_username = (
+                data.get("smtp_username") or ""
+            ).strip()
+
+            plain_password = (
+                data.get("smtp_password") or ""
+            ).strip()
+
+            security = (
+                data.get("security") or "STARTTLS"
+            ).strip().upper()
+
+            reply_to = (
+                data.get("reply_to") or ""
+            ).strip() or None
+
+            try:
+                smtp_port = int(
+                    data.get("smtp_port", 587)
+                )
+            except (ValueError, TypeError):
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "SMTP port must be a valid number."
+                        ),
+                    },
+                    status=400,
+                )
+
+            if smtp_port < 1 or smtp_port > 65535:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "SMTP port must be between "
+                            "1 and 65535."
+                        ),
+                    },
+                    status=400,
+                )
+
+            if not sender_name:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "Sender name is required.",
+                    },
+                    status=400,
+                )
+
+            if not sender_email:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "Sender email is required.",
+                    },
+                    status=400,
+                )
+
+            if not smtp_host:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "SMTP host is required.",
+                    },
+                    status=400,
+                )
+
+            if not smtp_username:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": "SMTP username is required.",
+                    },
+                    status=400,
+                )
+
+            if security not in {
+                "STARTTLS",
+                "SSL_TLS",
+                "NONE",
+            }:
+                return JsonResponse(
+                    {
+                        "success": False,
+                        "error": (
+                            "Invalid SMTP security protocol."
+                        ),
+                    },
+                    status=400,
+                )
+
+            smtp_fields = {
+                "sender_name": sender_name,
+                "sender_email": sender_email,
+                "smtp_host": smtp_host,
+                "smtp_port": smtp_port,
+                "smtp_username": smtp_username,
+                "security": security,
+                "reply_to": reply_to,
+            }
+
+            # Only update the stored password when the user
             # entered a new password.
             if plain_password:
                 smtp_fields["smtp_password"] = (
@@ -1484,9 +2386,6 @@ def api_admin_template_download(request, client_id, step_key):
 from admin_panel.models import ClientDocument
 from django.core.files.base import ContentFile
 from django.http import HttpResponse
-from urllib.parse import unquote
-
-from admin_panel.document_registry import DOCUMENT_CATALOG, document_definition, record_document_sent
 
 @csrf_exempt
 def api_admin_client_documents(request, client_id):
@@ -1494,65 +2393,26 @@ def api_admin_client_documents(request, client_id):
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET allowed"}, status=405)
 
-    client_obj = Client.objects.filter(id=client_id).first()
-    if not client_obj:
-        return JsonResponse({"success": False, "error": "Client not found"}, status=404)
-
-    docs = list(ClientDocument.objects.filter(client=client_obj).order_by('-created_at'))
-    activity = {row.document_type: row for row in client_obj.document_register.all()}
-    grouped = {}
-    for document in docs:
-        key = document.document_type if document.document_type != 'General Document' else f"general:{document.document_name}"
-        grouped.setdefault(key, []).append(document)
-
-    definitions = list(DOCUMENT_CATALOG)
-    known_types = {item["type"] for item in definitions}
-    for key, versions in grouped.items():
-        latest = versions[0]
-        if latest.document_type not in known_types:
-            definitions.append(document_definition(latest.document_type, latest.document_name))
-
+    docs = ClientDocument.objects.filter(client_id=client_id).order_by('-created_at')
+    seen_keys = set()
     doc_list = []
-    for definition in definitions:
-        matching = grouped.get(definition["type"], [])
-        if definition["type"] == "General Document":
-            matching = next((rows for key, rows in grouped.items() if key.startswith("general:")), [])
-        latest = matching[0] if matching else None
-        register = activity.get(definition["type"])
-        sent_at = register.sent_at if register else None
-        if latest and latest.validation_status == "INVALID":
-            state = "VALIDATION FAILED"
-        elif latest and definition["requires_signature"]:
-            state = "EXECUTED"
-        elif latest and definition["direction"] == "Sent to client":
-            state = "DELIVERED"
-        elif latest:
-            state = "RECEIVED"
-        elif sent_at and definition["requires_signature"]:
-            state = "OUT FOR SIGNATURE"
-        elif sent_at:
-            state = "DELIVERED"
+    for d in docs:
+        if d.document_type == 'General Document':
+            key = f"general_{d.document_name}"
         else:
-            state = "NOT RECEIVED"
-        signed_or_sent_at = latest.created_at if latest and (definition["requires_signature"] or definition["direction"] == "From client") else sent_at
-        doc_list.append({
-            "id": str(latest.id) if latest else None,
-            "document_name": latest.original_filename if latest else definition["name"],
-            "original_filename": latest.original_filename if latest else "",
-            "document_type": definition["type"],
-            "category": definition["category"],
-            "direction": latest.direction or definition["direction"] if latest else definition["direction"],
-            "requires_signature": definition["requires_signature"],
-            "file_size": latest.file_size if latest else None,
-            "uploaded_by": latest.uploaded_by if latest else "",
-            "created_at": latest.created_at.isoformat() if latest and latest.created_at else None,
-            "signed_or_sent_at": signed_or_sent_at.isoformat() if signed_or_sent_at else None,
-            "expiration_date": latest.expiration_date.isoformat() if latest and latest.expiration_date else None,
-            "version": latest.version if latest else None,
-            "next_version": max([item.version for item in matching], default=0) + 1,
-            "state": state,
-            "validation_status": latest.validation_status if latest else None,
-        })
+            key = d.document_type
+
+        if key not in seen_keys:
+            seen_keys.add(key)
+            doc_list.append({
+                "id": str(d.id),
+                "document_name": d.document_name,
+                "original_filename": d.original_filename,
+                "document_type": d.document_type,
+                "file_size": d.file_size,
+                "uploaded_by": d.uploaded_by,
+                "created_at": d.created_at.strftime("%Y-%m-%dT%H:%M:%SZ") if d.created_at else ""
+            })
     return JsonResponse({"success": True, "documents": doc_list})
 
 
@@ -1564,10 +2424,9 @@ def api_admin_client_documents_upload(request, client_id):
 
     file_bytes = request.body
 
-    filename = unquote(request.headers.get('X-Filename', 'uploaded_document.pdf'))
-    doc_name = unquote(request.headers.get('X-Doc-Name', filename))
-    doc_type = unquote(request.headers.get('X-Doc-Type', 'General Document'))
-    expiration_value = request.headers.get('X-Expiration-Date', '').strip()
+    filename = request.headers.get('X-Filename', 'uploaded_document.pdf')
+    doc_name = request.headers.get('X-Doc-Name', filename)
+    doc_type = request.headers.get('X-Doc-Type', 'General Document')
 
     try:
         client_obj = Client.objects.get(id=client_id)
@@ -1577,18 +2436,13 @@ def api_admin_client_documents_upload(request, client_id):
     # Document Validation & Integrity Engine check
     doc_text = extract_text_from_file_bytes(file_bytes, filename)
     val_res = validate_document_text(doc_text, step_title=doc_name)
-    expiration_date = None
-    if expiration_value:
-        from datetime import date
-        try:
-            expiration_date = date.fromisoformat(expiration_value)
-        except ValueError:
-            return JsonResponse({"success": False, "error": "Enter a valid expiration date."}, status=400)
 
-    definition = document_definition(doc_type, doc_name)
-    version = ClientDocument.objects.filter(client=client_obj, document_type=doc_type).count() + 1
-    validation_status = "VALID" if val_res["ok"] else "INVALID"
-    state = "EXECUTED" if val_res["ok"] and definition["requires_signature"] else "RECEIVED" if val_res["ok"] else "VALIDATION FAILED"
+    if not val_res["ok"]:
+        return JsonResponse({
+            "success": False,
+            "error": val_res["status_message"],
+            "checks": val_res["checks"]
+        }, status=400)
 
     doc = ClientDocument.objects.create(
         client=client_obj,
@@ -1596,12 +2450,7 @@ def api_admin_client_documents_upload(request, client_id):
         original_filename=filename,
         document_type=doc_type,
         file_size=len(file_bytes),
-        uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
-        expiration_date=expiration_date,
-        version=version,
-        direction=definition["direction"],
-        state=state,
-        validation_status=validation_status,
+        uploaded_by="Admin User"
     )
     doc.file.save(filename, ContentFile(file_bytes), save=True)
 
@@ -1619,9 +2468,7 @@ def api_admin_client_documents_upload(request, client_id):
 
     return JsonResponse({
         "success": True,
-        "message": f"Document uploaded as version {version}" if val_res["ok"] else f"Version {version} saved, but document validation failed.",
-        "validation_ok": val_res["ok"],
-        "version": version,
+        "message": "Document uploaded successfully",
         "checks": val_res["checks"]
     })
 
@@ -2024,38 +2871,11 @@ def api_admin_golive_step_upload(request, client_id, step_num):
             err_msg = val_res.get("error")
             if not err_msg and checks:
                 err_msg = next((c["detail"] for c in checks if not c.get("ok")), "Validation failed")
-            if file_bytes:
-                failed_doc = ClientDocument.objects.create(
-                    client=client_obj,
-                    document_name=filename,
-                    original_filename=filename,
-                    document_type=f"Go-Live Step {step_num}",
-                    file_size=len(file_bytes),
-                    uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
-                    state="VALIDATION FAILED",
-                    validation_status="INVALID",
-                )
-                failed_doc.file.save(filename, ContentFile(file_bytes), save=True)
             return JsonResponse({
                 "success": False,
                 "error": err_msg,
                 "checks": checks
             }, status=400)
-
-        if file_bytes:
-            definition = document_definition(f"Go-Live Step {step_num}", step_def.title)
-            doc = ClientDocument.objects.create(
-                client=client_obj,
-                document_name=filename,
-                original_filename=filename,
-                document_type=f"Go-Live Step {step_num}",
-                file_size=len(file_bytes),
-                uploaded_by=(request.user.name or request.user.email) if request.user and request.user.is_authenticated else "Admin User",
-                direction=definition["direction"],
-                state="EXECUTED" if definition["requires_signature"] else "RECEIVED",
-                validation_status="VALID",
-            )
-            doc.file.save(filename, ContentFile(file_bytes), save=True)
 
         status_obj, _ = ClientGoLiveStatus.objects.get_or_create(client=client_obj, step=step_def)
         status_obj.status = 'COMPLETED'
@@ -2095,7 +2915,6 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 client_obj, "golive-authorization-v1", build_client_golive_authorization
             )
             filename = golive_authorization_download_filename(client_obj)
-            record_document_sent(client_obj, "Go-Live Step 1")
             return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
@@ -2113,7 +2932,6 @@ def api_admin_golive_step_download(request, client_id, step_num):
                 client_obj, "data-transfer-attestation-v1", build_client_data_transfer_attestation
             )
             filename = data_transfer_attestation_download_filename(client_obj)
-            record_document_sent(client_obj, "Go-Live Step 2")
             return pdf_download_response(pdf_bytes, filename, digest)
         except Client.DoesNotExist:
             return JsonResponse({"success": False, "error": "Client not found."}, status=404)
