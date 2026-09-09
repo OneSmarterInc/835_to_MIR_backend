@@ -18,3 +18,10 @@ class PhoneNumberValidationTestCase(SimpleTestCase):
     def test_rejects_number_that_does_not_match_selected_country(self):
         with self.assertRaisesRegex(ValueError, "selected country code"):
             normalize_phone_number("+919876543210", "US")
+
+    def test_signup_form_exposes_country_selector(self):
+        from accounts.forms import SignupForm
+
+        form = SignupForm()
+        self.assertIn("country_code", form.fields)
+        self.assertIn(("US", "US +1"), form.fields["country_code"].choices)

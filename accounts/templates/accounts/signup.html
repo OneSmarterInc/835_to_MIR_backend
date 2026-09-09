@@ -30,7 +30,11 @@
             </div>
             <div>
                 <label>Mobile Number</label>
-                {{ form.mobile }}
+                <div style="display:grid;grid-template-columns:140px 1fr;gap:8px">
+                    {{ form.country_code }}
+                    {{ form.mobile }}
+                </div>
+                {% if form.country_code.errors %}<div class="error-msg">{{ form.country_code.errors.0 }}</div>{% endif %}
                 {% if form.mobile.errors %}<div class="error-msg">{{ form.mobile.errors.0 }}</div>{% endif %}
             </div>
             <div>
