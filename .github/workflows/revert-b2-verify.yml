@@ -1,0 +1,76 @@
+name: Revert B2 MIR-837 consistency
+
+on:
+  push:
+    branches: [revert-b2-mir-837-consistency]
+
+jobs:
+  revert-and-verify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: mir_revert_b2
+          POSTGRES_USER: mir_revert_b2
+          POSTGRES_PASSWORD: mir_revert_b2_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mir_revert_b2 -d mir_revert_b2"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      SECRET_KEY: revert-b2-test-secret-key-with-more-than-thirty-two-characters
+      DATABASE_URL: postgresql://mir_revert_b2:mir_revert_b2_password@127.0.0.1:5432/mir_revert_b2
+      DEBUG: "1"
+      ALLOWED_HOSTS: localhost,127.0.0.1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Revert B2 merge commit only
+        run: |
+          if [ -f edi835/mir_837_validation.py ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git revert -m 1 --no-edit f0feb02884bc11c2f4e3fb8bd24fc51ebd9ae008
+          else
+            echo "B2 already reverted on this branch"
+          fi
+
+      - name: Verify B2 code is gone
+        run: |
+          test ! -f edi835/mir_837_validation.py
+          test ! -f edi835/test_mir_837_validation.py
+          ! grep -q "validate_generated_mir_against_837" edi835/services.py
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run mapper regression tests
+        run: |
+          python manage.py test admin_panel.mir_mapper_logic.test_business_rules -v 2
+          python manage.py test admin_panel.mir_mapper_logic.test_financial_validation -v 2
+
+      - name: Run Django system check
+        run: python manage.py check
+
+      - name: Push verified revert
+        run: |
+          if git log -1 --pretty=%B | grep -q "Revert \"Add B2 MIR-to-837 consistency gate\""; then
+            git push origin HEAD:revert-b2-mir-837-consistency
+          else
+            echo "No new revert commit to push"
+          fi
