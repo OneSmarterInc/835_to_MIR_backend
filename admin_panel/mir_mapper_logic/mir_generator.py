@@ -5,6 +5,7 @@ from datetime import date
 from typing import Dict, Iterable, List, Tuple
 
 from . import config
+from .financial_validation import validate_patient_responsibility_mapping
 from .mapping_engine import evaluate_field
 from .mapping_store import get_mappings
 from .mir_mapper import claim_primary_reason
@@ -42,6 +43,7 @@ def _header(claim: Claim, sequence: int, max_sequence: int, line_count: int, fie
 
 def _service_block(service: ServiceLine, claim: Claim, sequence: int, max_sequence: int,
                    line_count: int, inherited_reason: str, fields: list[dict], process_date: date | None = None) -> str:
+    validate_patient_responsibility_mapping(service, claim.status, inherited_reason)
     b = [config.BLANK_CHAR] * config.MIR_SERVICE_BLOCK_LENGTH
     for field in fields:
         if field.get("scope") != "Service":
