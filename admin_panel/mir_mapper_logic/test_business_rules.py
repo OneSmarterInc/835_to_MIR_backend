@@ -123,6 +123,18 @@ class MirBusinessRuleTests(unittest.TestCase):
         service = ServiceLine(adjustments=[adjustment("PR", "45", "12.79")])
         self.assertEqual(payment_reduction_slots(service), {3: ("PR119", Decimal("12.79"))})
 
+    def test_repeated_same_pr_code_in_same_slot_combines_amount(self):
+        service = ServiceLine(
+            adjustments=[
+                adjustment("PR", "3", "10.00"),
+                adjustment("PR", "3", "2.50"),
+            ]
+        )
+        self.assertEqual(
+            payment_reduction_slots(service),
+            {3: ("PR3", Decimal("12.50"))},
+        )
+
     def test_pr_b11_is_carried_as_denial_reason_not_reduction_slot(self):
         service = ServiceLine(adjustments=[adjustment("PR", "B11", "31")])
         self.assertEqual(payment_reduction_slots(service), {})
