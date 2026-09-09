@@ -283,6 +283,10 @@ from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-file-name",
+    "x-filename",
+    "x-expiration-date",
+    "x-doc-name",
+    "x-doc-type",
     "x-admin-screen",
 ]
 # Django CSRF Trusted Origins for CORS POST requests
@@ -334,31 +338,3 @@ LOGGING = {
             "formatter": "verbose",
         },
     },
-    "loggers": {
-        "django": {
-            "handlers": ["console", "file"],
-            "level": "INFO",
-            "propagate": True,
-        },
-        "accounts": {
-            "handlers": ["console", "file"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "admin_panel": {
-            "handlers": ["console", "file"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "edi835": {
-            "handlers": ["console", "file"],
-            "level": "INFO",
-            "propagate": False,
-        },
-        "converter": {
-            "handlers": ["console", "file"],
-            "level": "INFO",
-            "propagate": False,
-        },
-    },
-}
