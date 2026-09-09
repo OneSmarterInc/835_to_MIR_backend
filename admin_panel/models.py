@@ -187,6 +187,7 @@ class ClientDocument(models.Model):
     file = models.FileField(upload_to=client_document_upload_to)
     file_size = models.IntegerField(default=0)
     uploaded_by = models.CharField(max_length=255, default='Admin User')
+    signed_or_sent_at = models.DateTimeField(blank=True, null=True)
     expiration_date = models.DateField(blank=True, null=True)
     version = models.PositiveIntegerField(default=1)
     direction = models.CharField(max_length=40, blank=True, default='')
