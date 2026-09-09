@@ -1,12 +1,82 @@
-from django.test import TestCase
+from django.test import TestCase, override_settings
+from django.utils import timezone
 import json
-from datetime import datetime, timezone as datetime_timezone
+from datetime import datetime, timedelta, timezone as datetime_timezone
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
 
 from accounts.models import Client, ClientContact, User
-from admin_panel.models import AuditLog, ClientSmtpConfig
+from admin_panel.models import AuditLog, AdminClientAccessGrant, ClientSmtpConfig
 from edi835.models import EDI835File
+
+
+@override_settings(MFA_ENFORCEMENT_ENABLED=False)
+class TemporaryAdminClientAccessTestCase(TestCase):
+    def setUp(self):
+        self.superadmin = User.objects.create_superuser(
+            email="grant-super@example.com", name="Grant Super",
+            mobile="5550199001", password="test-password",
+        )
+        self.admin = User.objects.create_user(
+            email="grant-admin@example.com", name="Grant Admin",
+            mobile="5550199002", password="test-password", is_staff=True,
+        )
+        self.allowed = Client.objects.create(
+            name="Allowed Health", client_code="ALLOWED", email="allowed@example.com",
+        )
+        self.hidden = Client.objects.create(
+            name="Hidden Health", client_code="HIDDEN", email="hidden@example.com",
+        )
+
+    def grant(self, value=2, unit="weeks"):
+        self.client.force_login(self.superadmin)
+        with patch("admin_panel.email_service.send_client_email", return_value=True):
+            return self.client.post(
+                "/admin-panel/api/access/grants/",
+                data=json.dumps({
+                    "user_id": self.admin.id,
+                    "client_id": str(self.allowed.id),
+                    "reason": "Investigate a conversion issue",
+                    "duration_value": value,
+                    "duration_unit": unit,
+                }),
+                content_type="application/json",
+            )
+
+    def test_superadmin_can_grant_supported_duration_and_expiry_is_server_owned(self):
+        before = timezone.now() + timedelta(days=14)
+        response = self.grant()
+        self.assertEqual(response.status_code, 200)
+        grant = AdminClientAccessGrant.objects.get(pk=response.json()["grant_id"])
+        self.assertGreaterEqual(grant.expires_at, before - timedelta(seconds=2))
+        self.assertLessEqual(grant.expires_at, before + timedelta(seconds=2))
+
+    def test_invalid_unit_and_more_than_one_year_are_rejected(self):
+        self.assertEqual(self.grant(1, "hours").status_code, 400)
+        self.assertEqual(self.grant(13, "months").status_code, 400)
+
+    def test_admin_sees_only_clients_with_active_grants(self):
+        self.grant(30, "minutes")
+        self.client.force_login(self.admin)
+        response = self.client.get("/admin-panel/api/clients/")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([row["id"] for row in response.json()["clients"]], [str(self.allowed.id)])
+        denied = self.client.get(f"/admin-panel/api/clients/{self.hidden.id}/state/")
+        self.assertEqual(denied.status_code, 403)
+        self.assertEqual(denied.json()["code"], "CLIENT_GRANT_REQUIRED")
+
+    def test_revoked_or_expired_grant_removes_client_visibility(self):
+        response = self.grant(30, "minutes")
+        grant = AdminClientAccessGrant.objects.get(pk=response.json()["grant_id"])
+        grant.revoked_at = timezone.now()
+        grant.save(update_fields=["revoked_at"])
+        self.client.force_login(self.admin)
+        self.assertEqual(self.client.get("/admin-panel/api/clients/").json()["clients"], [])
+
+        grant.revoked_at = None
+        grant.expires_at = timezone.now() - timedelta(seconds=1)
+        grant.save(update_fields=["revoked_at", "expires_at"])
+        self.assertEqual(self.client.get("/admin-panel/api/clients/").json()["clients"], [])
 
 
 class Onboarding835ValidationTestCase(TestCase):
