@@ -114,7 +114,28 @@ MPL_AI_MODEL=qwen3-0.6b-instruct-q4_k_m
 MPL_AI_TIMEOUT_SECONDS=180
 ```
 
-## 6. Start the model
+## 6. Download the official model and create Q4_K_M locally
+
+The official Qwen GGUF repository currently publishes Q8_0, not Q4_K_M. Download that official artifact and quantize it locally rather than using an unverified third-party conversion.
+
+```bash
+sudo systemctl stop mpl-ai.service 2>/dev/null || true
+sudo mkdir -p /opt/mir-ai/models
+sudo chown ubuntu:ubuntu /opt/mir-ai/models
+cd /opt/mir-ai/models
+curl -fL --retry 3 \
+  -o Qwen3-0.6B-Q8_0.gguf \
+  https://huggingface.co/Qwen/Qwen3-0.6B-GGUF/resolve/main/Qwen3-0.6B-Q8_0.gguf
+/opt/mir-ai/llama.cpp/build/bin/llama-quantize \
+  Qwen3-0.6B-Q8_0.gguf \
+  Qwen3-0.6B-Q4_K_M.gguf \
+  Q4_K_M
+ls -lh Qwen3-0.6B-Q8_0.gguf Qwen3-0.6B-Q4_K_M.gguf
+```
+
+Keep Q8_0 until Q4 has passed the health and response tests. It can be removed afterward to recover disk space.
+
+## 7. Start the model
 
 ```bash
 cd /var/www/835_to_MIR_backend
@@ -124,7 +145,7 @@ sudo systemctl enable --now mpl-ai.service
 sudo journalctl -u mpl-ai.service -f
 ```
 
-The first start downloads Q4_K_M. Wait for the listening message, then press `Ctrl+C` to leave the log.
+The service loads the locally created Q4_K_M file. Wait for the listening message, then press `Ctrl+C` to leave the log.
 
 ```bash
 set -a
@@ -136,7 +157,7 @@ curl -sS http://127.0.0.1:8080/v1/models \
 free -h
 ```
 
-## 7. Configure and start the worker
+## 8. Configure and start the worker
 
 Inspect Django's real environment:
 
@@ -171,7 +192,7 @@ sudo journalctl -u mpl-notice-worker.service --since "10 minutes ago" --no-pager
 sudo journalctl -u mir.service --since "10 minutes ago" --no-pager
 ```
 
-## 8. Deploy and test the frontend
+## 9. Deploy and test the frontend
 
 Deploy frontend `master` through the existing Vercel project. Port 8080 needs no CORS or nginx exposure because only Django calls localhost.
 
@@ -183,7 +204,7 @@ Deploy frontend `master` through the existing Vercel project. Port 8080 needs no
 6. Approve an accurate result or mark it **Changes Required**.
 7. Repeat with another client to verify tenant isolation.
 
-## 9. Monitor and protect Django
+## 10. Monitor and protect Django
 
 ```bash
 watch -n 2 'free -h; echo; uptime; echo; systemctl is-active mir.service mpl-ai.service mpl-notice-worker.service'
@@ -197,7 +218,7 @@ sudo systemctl stop mpl-ai.service
 
 Deterministic MPL analysis remains available. Restart later with `sudo systemctl start mpl-ai.service`.
 
-## 10. Fine-tuning later
+## 11. Fine-tuning later
 
 Start with the constrained prompt. Do not tune from five format samples. After at least 50 approved analyses (200+ preferred), export outside Git:
 
