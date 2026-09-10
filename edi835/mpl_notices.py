@@ -247,11 +247,76 @@ def call_local_model(notice, claim, timeline, findings, actions):
     return result
 
 
+
+def call_unmatched_notice_model(notice, identifiers):
+    base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
+    fallback = {
+        "summary": (
+            f"Extracted {len(identifiers)} claim number(s), but none matched stored 837 data "
+            "for this client, so the reported issues could not be verified."
+        ),
+        "suggestions": [
+            "Confirm that the correct client is selected.",
+            "Confirm that the relevant 837 files have been uploaded and processed.",
+            "Verify the extracted claim numbers against the source system before taking corrective action.",
+        ],
+    }
+    if not base_url:
+        return fallback
+    model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q8_0")
+    evidence = {
+        "reported_email": clean_email_for_analysis(notice.latest_message_body)[:3000],
+        "extracted_claim_numbers": identifiers[:50],
+        "database_result": "No extracted claim number matched stored 837 data for this client.",
+    }
+    payload = json.dumps({
+        "model": model_id,
+        "temperature": 0.0,
+        "max_tokens": 350,
+        "response_format": {"type": "json_object"},
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "/no_think\nSummarize the sender's reported claim issues and suggest safe investigation "
+                    "steps. State clearly that no claim data was matched or verified. Do not invent file data, "
+                    "claim facts, corrections, or guarantee approval. Return JSON only with keys summary and "
+                    "suggestions, where suggestions is an array of short strings."
+                ),
+            },
+            {"role": "user", "content": json.dumps(evidence)},
+        ],
+    }).encode()
+    headers = {"Content-Type": "application/json"}
+    if os.getenv("MPL_AI_API_KEY"):
+        headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
+    try:
+        request = Request(f"{base_url}/chat/completions", data=payload, headers=headers, method="POST")
+        with urlopen(
+            request,
+            timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120")),
+        ) as response:
+            outer = json.loads(response.read().decode())
+        result = json.loads(outer["choices"][0]["message"]["content"])
+        summary = str(result.get("summary") or "").strip()
+        suggestions = [
+            str(item).strip() for item in result.get("suggestions", [])
+            if str(item).strip()
+        ][:8]
+        if not summary:
+            return fallback
+        return {"summary": summary, "suggestions": suggestions or fallback["suggestions"]}
+    except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        return fallback
+
+
 def process_notice(notice_id):
     notice = MPLNotice.objects.select_related("client").get(pk=notice_id)
     notice.status, notice.processing_started_at = "PARSING_EMAIL", timezone.now()
     notice.attempt_count += 1
     notice.last_error = ""
+    notice.ai_response = ""
+    notice.ai_suggestions = []
     notice.save()
     try:
         parsed = parse_subject(notice.subject, notice.reporting_year, notice.received_at)
@@ -259,12 +324,21 @@ def process_notice(notice_id):
         notice.program, notice.notice_type = parsed["program"], parsed["notice_type"]
         notice.latest_message_body, notice.quoted_email_history = split_latest_message(notice.raw_email_body)
         notice.latest_message_body = clean_email_for_analysis(notice.latest_message_body)
+        identifiers = extract_claim_identifiers(
+            f"{notice.subject}\n{notice.latest_message_body}",
+            notice.requested_claim_numbers,
+        )
+        notice.extracted_claim_numbers = identifiers
         notice.status = "MATCHING_CLAIMS"
         notice.save()
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
         matches = [link.claim for link in confirmed_links] or match_claims(notice)
         if not matches:
-            notice.status, notice.last_error = "REVIEW_REQUIRED", "None of the claim numbers in this email matched stored 837 claim data for this client."
+            unmatched_ai = call_unmatched_notice_model(notice, identifiers)
+            notice.ai_response = unmatched_ai["summary"]
+            notice.ai_suggestions = unmatched_ai["suggestions"]
+            notice.status = "REVIEW_REQUIRED"
+            notice.last_error = "None of the extracted claim numbers matched stored 837 claim data for this client."
             notice.processing_completed_at = timezone.now()
             notice.save()
             return notice
@@ -326,7 +400,7 @@ def claim_summary(link):
 
 
 def serialize_notice(notice, detail=False):
-    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None}
+    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "ai_response": notice.ai_response, "ai_suggestions": notice.ai_suggestions}
     if detail:
         data.update({"email_body": notice.raw_email_body, "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
     return data
