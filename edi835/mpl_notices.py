@@ -11,7 +11,7 @@ from urllib.request import Request, urlopen
 from django.db.models import Q
 from django.utils import timezone
 
-from .models import EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
+from .models import EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
 
 
 SUBJECT_PATTERN = re.compile(
@@ -353,7 +353,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
 
 
 
-def call_unmatched_notice_model(notice, identifiers):
+def call_unmatched_notice_model(notice, identifiers, source_matches):
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
     fallback = {
         "summary": (
@@ -372,7 +372,8 @@ def call_unmatched_notice_model(notice, identifiers):
     evidence = {
         "reported_email": clean_email_for_analysis(notice.latest_message_body)[:3000],
         "extracted_claim_numbers": identifiers[:50],
-        "database_result": "No extracted claim number matched stored 837 data for this client.",
+        "source_matches": source_matches[:20],
+        "database_result": "No extracted claim number matched stored 837 claim data; other source matches may still be present.",
     }
     payload = json.dumps({
         "model": model_id,
@@ -434,12 +435,13 @@ def process_notice(notice_id):
             notice.requested_claim_numbers,
         )
         notice.extracted_claim_numbers = identifiers
+        notice.source_matches = search_claim_sources(notice, identifiers)
         notice.status = "MATCHING_CLAIMS"
         notice.save()
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
         matches = [link.claim for link in confirmed_links] or match_claims(notice)
         if not matches:
-            unmatched_ai = call_unmatched_notice_model(notice, identifiers)
+            unmatched_ai = call_unmatched_notice_model(notice, identifiers, notice.source_matches)
             notice.ai_response = unmatched_ai["summary"]
             notice.ai_suggestions = unmatched_ai["suggestions"]
             notice.status = "REVIEW_REQUIRED"
@@ -505,7 +507,7 @@ def claim_summary(link):
 
 
 def serialize_notice(notice, detail=False):
-    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "ai_response": notice.ai_response, "ai_suggestions": notice.ai_suggestions}
+    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": notice.source_matches, "ai_response": notice.ai_response, "ai_suggestions": notice.ai_suggestions}
     if detail:
         data.update({"email_body": notice.raw_email_body, "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
     return data
