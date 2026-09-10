@@ -635,7 +635,7 @@ class ReconciliationReviewAction(models.Model):
 
 
 class MPLNotice(models.Model):
-    """A manually entered MPL email and its auditable processing state."""
+    """An uploaded MPL email and its auditable processing state."""
 
     STATUS_CHOICES = [
         ("RECEIVED", "Received"),
@@ -663,6 +663,9 @@ class MPLNotice(models.Model):
     program = models.CharField(max_length=30, blank=True, default="")
     notice_type = models.CharField(max_length=30, blank=True, default="")
     raw_email_body = models.TextField()
+    source_filename = models.CharField(max_length=255, blank=True, default="")
+    source_content_type = models.CharField(max_length=100, blank=True, default="application/vnd.ms-outlook")
+    source_file = models.BinaryField(null=True, blank=True)
     requested_claim_numbers = models.JSONField(default=list, blank=True)
     latest_message_body = models.TextField(blank=True, default="")
     quoted_email_history = models.TextField(blank=True, default="")
