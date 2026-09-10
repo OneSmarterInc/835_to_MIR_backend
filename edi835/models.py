@@ -670,6 +670,7 @@ class MPLNotice(models.Model):
     extracted_claim_numbers = models.JSONField(default=list, blank=True)
     source_matches = models.JSONField(default=list, blank=True)
     ai_response = models.TextField(blank=True, default="")
+    ai_response_source = models.CharField(max_length=80, blank=True, default="")
     ai_suggestions = models.JSONField(default=list, blank=True)
     latest_message_body = models.TextField(blank=True, default="")
     quoted_email_history = models.TextField(blank=True, default="")
