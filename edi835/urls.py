@@ -32,6 +32,10 @@ from .edi837_views import (
 from .edi837_files_v2 import edi837_files
 from .edi837_naming_views import edi837_claim_push_sftp_named
 from .edi837_search_transfer import edi837_sftp_transfer_for_search
+from .mpl_views import (
+    mpl_notice_analyze, mpl_notice_detail, mpl_notice_process_now,
+    mpl_analysis_review, mpl_notice_select_claim, mpl_notices, mpl_related_file,
+)
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list_eastern)
@@ -58,8 +62,22 @@ sftp_automation = authenticated_api(sftp_automation)
 # with AnonymousUser before the view-level authorization runs.
 edi837_sftp_transfer = edi837_sftp_transfer_for_search
 edi837_claim_push_sftp = edi837_claim_push_sftp_named
+mpl_notices = authenticated_api(mpl_notices)
+mpl_notice_detail = authenticated_api(mpl_notice_detail)
+mpl_notice_analyze = authenticated_api(mpl_notice_analyze)
+mpl_notice_select_claim = authenticated_api(mpl_notice_select_claim)
+mpl_notice_process_now = authenticated_api(mpl_notice_process_now)
+mpl_related_file = authenticated_api(mpl_related_file)
+mpl_analysis_review = authenticated_api(mpl_analysis_review)
 
 urlpatterns = [
+    path("api/mpl-notices/", mpl_notices, name="mpl_notices"),
+    path("api/mpl-notices/<uuid:notice_id>/", mpl_notice_detail, name="mpl_notice_detail"),
+    path("api/mpl-notices/<uuid:notice_id>/analyze/", mpl_notice_analyze, name="mpl_notice_analyze"),
+    path("api/mpl-notices/<uuid:notice_id>/select-claim/", mpl_notice_select_claim, name="mpl_notice_select_claim"),
+    path("api/mpl-notices/<uuid:notice_id>/process-now/", mpl_notice_process_now, name="mpl_notice_process_now"),
+    path("api/mpl-files/<str:file_type>/<uuid:file_id>/download/", mpl_related_file, name="mpl_related_file"),
+    path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/review/", mpl_analysis_review, name="mpl_analysis_review"),
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
     path("api/metrics/", api_get_metrics, name="edi835_api_metrics"),

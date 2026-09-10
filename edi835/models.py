@@ -632,3 +632,113 @@ class ReconciliationReviewAction(models.Model):
             fields=["scope_key", "claim_control_number"],
             name="uniq_reconciliation_review_action",
         )]
+
+
+class MPLNotice(models.Model):
+    """A manually entered MPL email and its auditable processing state."""
+
+    STATUS_CHOICES = [
+        ("RECEIVED", "Received"),
+        ("PARSING_EMAIL", "Parsing email"),
+        ("MATCHING_CLAIMS", "Matching claims"),
+        ("WAITING_FOR_CLAIM_SELECTION", "Waiting for claim selection"),
+        ("COLLECTING_EVIDENCE", "Collecting evidence"),
+        ("RUNNING_VALIDATIONS", "Running validations"),
+        ("ANALYZING", "Analyzing"),
+        ("COMPLETED", "Completed"),
+        ("REVIEW_REQUIRED", "Review required"),
+        ("FAILED", "Failed"),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey(
+        "accounts.Client", on_delete=models.CASCADE, related_name="mpl_notices"
+    )
+    subject = models.CharField(max_length=500)
+    sender_text = models.CharField(max_length=255, blank=True, default="")
+    received_at = models.DateTimeField(null=True, blank=True)
+    reporting_year = models.PositiveSmallIntegerField(null=True, blank=True)
+    reporting_period_start = models.DateField(null=True, blank=True)
+    reporting_period_end = models.DateField(null=True, blank=True)
+    program = models.CharField(max_length=30, blank=True, default="")
+    notice_type = models.CharField(max_length=30, blank=True, default="")
+    raw_email_body = models.TextField()
+    requested_claim_numbers = models.JSONField(default=list, blank=True)
+    latest_message_body = models.TextField(blank=True, default="")
+    quoted_email_history = models.TextField(blank=True, default="")
+    status = models.CharField(
+        max_length=40, choices=STATUS_CHOICES, default="RECEIVED", db_index=True
+    )
+    created_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="created_mpl_notices",
+    )
+    processing_started_at = models.DateTimeField(null=True, blank=True)
+    processing_completed_at = models.DateTimeField(null=True, blank=True)
+    attempt_count = models.PositiveSmallIntegerField(default=0)
+    last_error = models.TextField(blank=True, default="")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mpl_notice"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["client", "-created_at"], name="mpl_notice_client_date_idx"),
+            models.Index(fields=["status", "created_at"], name="mpl_notice_work_idx"),
+        ]
+
+
+class MPLNoticeClaim(models.Model):
+    """One 837 claim matched to a notice; ambiguous matches require confirmation."""
+
+    notice = models.ForeignKey(MPLNotice, on_delete=models.CASCADE, related_name="notice_claims")
+    claim = models.ForeignKey(EDI837Claim, on_delete=models.CASCADE, related_name="mpl_notice_claims")
+    matching_method = models.CharField(max_length=50)
+    matching_confidence = models.DecimalField(max_digits=5, decimal_places=4, default=0)
+    confirmed_by_user = models.BooleanField(default=False)
+    confirmed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "mpl_notice_claim"
+        constraints = [
+            models.UniqueConstraint(fields=["notice", "claim"], name="uniq_mpl_notice_claim")
+        ]
+
+
+class MPLClaimAnalysis(models.Model):
+    """Versioned deterministic evidence plus an optional local-model explanation."""
+
+    REVIEW_CHOICES = [
+        ("PENDING", "Pending"),
+        ("APPROVED", "Approved"),
+        ("CHANGES_REQUIRED", "Changes required"),
+    ]
+
+    notice_claim = models.OneToOneField(
+        MPLNoticeClaim, on_delete=models.CASCADE, related_name="analysis"
+    )
+    model_id = models.CharField(max_length=255, blank=True, default="")
+    prompt_version = models.CharField(max_length=30, default="mpl-3b-v1")
+    schema_version = models.CharField(max_length=30, default="1.0")
+    timeline = models.JSONField(default=list, blank=True)
+    findings = models.JSONField(default=list, blank=True)
+    recommended_actions = models.JSONField(default=list, blank=True)
+    related_files = models.JSONField(default=list, blank=True)
+    summary = models.TextField(blank=True, default="")
+    primary_issue_code = models.CharField(max_length=80, blank=True, default="")
+    needs_response = models.BooleanField(default=True)
+    confidence = models.DecimalField(max_digits=5, decimal_places=4, default=0)
+    raw_model_output = models.JSONField(default=dict, blank=True)
+    review_status = models.CharField(max_length=30, choices=REVIEW_CHOICES, default="PENDING")
+    reviewed_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="reviewed_mpl_analyses",
+    )
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mpl_claim_analysis"

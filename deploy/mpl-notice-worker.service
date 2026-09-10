@@ -1,0 +1,20 @@
+[Unit]
+Description=MIR MPL Notice Analysis Worker
+After=network-online.target mir.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=www-data
+WorkingDirectory=/var/www/835_to_MIR_backend
+EnvironmentFile=/etc/mir-mpl-ai.env
+ExecStart=/var/www/835_to_MIR_backend/venv/bin/python manage.py run_mpl_notice_worker --poll-seconds 2
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
