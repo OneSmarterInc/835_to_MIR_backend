@@ -209,7 +209,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         return None
     model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
     evidence = {
-        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "latest_message": notice.latest_message_body[:4000]},
+        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice.latest_message_body, claim.claim_control_number)},
         "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
         "timeline": timeline, "verified_findings": findings,
         "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions)],
@@ -217,7 +217,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
     payload = json.dumps({
         "model": model_id, "temperature": 0.0, "max_tokens": 800, "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "/no_think\nExplain only supplied healthcare-claim evidence. Return JSON only. Never invent claims, files, issue codes, facts, or actions and never guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
+            {"role": "system", "content": "/no_think\nAnalyze one healthcare claim. Treat reported_issue_context as the sender's unverified report, and timeline plus verified_findings as application evidence. Explain whether the stored 837, MIR, 835, and reconciliation evidence supports the report. Suggest only review or correction steps grounded in supplied evidence and approved_actions. Return JSON only. Never invent claims, files, facts, actions, or guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
             {"role": "user", "content": json.dumps(evidence)},
         ],
     }).encode()
@@ -258,12 +258,13 @@ def process_notice(notice_id):
         notice.reporting_period_start, notice.reporting_period_end = parsed["period_start"], parsed["period_end"]
         notice.program, notice.notice_type = parsed["program"], parsed["notice_type"]
         notice.latest_message_body, notice.quoted_email_history = split_latest_message(notice.raw_email_body)
+        notice.latest_message_body = clean_email_for_analysis(notice.latest_message_body)
         notice.status = "MATCHING_CLAIMS"
         notice.save()
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
         matches = [link.claim for link in confirmed_links] or match_claims(notice)
         if not matches:
-            notice.status, notice.last_error = "REVIEW_REQUIRED", "No claim could be matched automatically. Enter an exact claim number and reanalyze."
+            notice.status, notice.last_error = "REVIEW_REQUIRED", "None of the claim numbers in this email matched stored 837 claim data for this client."
             notice.processing_completed_at = timezone.now()
             notice.save()
             return notice
