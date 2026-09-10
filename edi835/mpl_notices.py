@@ -92,7 +92,7 @@ def clean_email_for_analysis(body):
 
 
 def claim_email_context(body, claim_number):
-    raw_text = (body or "").replace("\\u00a0", " ").replace("\\r\\n", "\\n")
+    raw_text = (body or "").replace("\u00a0", " ").replace("\r\n", "\n")
     lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     target = str(claim_number or "").upper()
     positions = [index for index, line in enumerate(lines) if target and target in line.upper()]
