@@ -7,7 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 from edi835.models import MPLClaimAnalysis
 
 
-SYSTEM_PROMPT = "Explain only supplied healthcare-claim evidence. Return valid JSON. Never invent facts, files, issue codes, or actions and never guarantee payer approval."
+SYSTEM_PROMPT = "/no_think\nExplain only supplied healthcare-claim evidence. Return valid JSON. Never invent facts, files, issue codes, or actions and never guarantee payer approval."
 
 
 def scrub(value):

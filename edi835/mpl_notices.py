@@ -1,4 +1,4 @@
-"""Evidence-first MPL notice processing for the local Ministral service."""
+"""Evidence-first MPL notice processing for the local Qwen service."""
 
 import json
 import os
@@ -157,7 +157,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
     if not base_url:
         return None
-    model_id = os.getenv("MPL_AI_MODEL", "ministral-3-3b-instruct-2512")
+    model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
     evidence = {
         "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "latest_message": notice.latest_message_body[:4000]},
         "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
@@ -167,7 +167,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
     payload = json.dumps({
         "model": model_id, "temperature": 0.0, "max_tokens": 800, "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "Explain only supplied healthcare-claim evidence. Return JSON only. Never invent claims, files, issue codes, facts, or actions and never guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
+            {"role": "system", "content": "/no_think\nExplain only supplied healthcare-claim evidence. Return JSON only. Never invent claims, files, issue codes, facts, or actions and never guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
             {"role": "user", "content": json.dumps(evidence)},
         ],
     }).encode()

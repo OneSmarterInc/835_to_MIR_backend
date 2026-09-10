@@ -8,7 +8,7 @@ from edi835.mpl_notices import process_notice
 
 
 class Command(BaseCommand):
-    help = "Process queued MPL notices with deterministic evidence and local Ministral."
+    help = "Process queued MPL notices with deterministic evidence and local Qwen."
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
