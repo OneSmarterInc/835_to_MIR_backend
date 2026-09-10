@@ -325,7 +325,7 @@ def process_notice(notice_id):
         notice.latest_message_body, notice.quoted_email_history = split_latest_message(notice.raw_email_body)
         notice.latest_message_body = clean_email_for_analysis(notice.latest_message_body)
         identifiers = extract_claim_identifiers(
-            f"{notice.subject}\n{notice.latest_message_body}",
+            f"{notice.subject}\n{notice.raw_email_body}",
             notice.requested_claim_numbers,
         )
         notice.extracted_claim_numbers = identifiers
