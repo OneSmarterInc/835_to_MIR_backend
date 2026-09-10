@@ -103,7 +103,7 @@ def claim_email_context(body, claim_number):
         excerpt = "\n".join(lines[max(0, position - 8):min(len(lines), position + 5)])
         if excerpt not in excerpts:
             excerpts.append(excerpt)
-    return "\n\n".join(excerpts)[:2400]
+    return "\n\n".join(excerpts)[:1800]
 
 
 def match_claims(notice):
@@ -211,11 +211,11 @@ def call_local_model(notice, claim, timeline, findings, actions):
     evidence = {
         "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice.latest_message_body, claim.claim_control_number)},
         "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
-        "timeline": timeline, "verified_findings": findings,
-        "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions)],
+        "timeline": timeline[-8:], "verified_findings": findings[:8],
+        "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions[:10])],
     }
     payload = json.dumps({
-        "model": model_id, "temperature": 0.0, "max_tokens": 800, "response_format": {"type": "json_object"},
+        "model": model_id, "temperature": 0.0, "max_tokens": 500, "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": "/no_think\nAnalyze one healthcare claim. Treat reported_issue_context as the sender's unverified report, and timeline plus verified_findings as application evidence. Explain whether the stored 837, MIR, 835, and reconciliation evidence supports the report. Suggest only review or correction steps grounded in supplied evidence and approved_actions. Return JSON only. Never invent claims, files, facts, actions, or guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
             {"role": "user", "content": json.dumps(evidence)},
@@ -286,7 +286,8 @@ def process_notice(notice_id):
         notice.save()
         for link in links:
             timeline, files, findings = collect_evidence(link.claim)
-            if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", notice.latest_message_body, re.I):
+            email_context = claim_email_context(notice.latest_message_body, link.claim.claim_control_number)
+            if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", email_context, re.I):
                 findings.append(_finding("NO_PREFIX_NOTICE", "error", "The MPL email reports that the returned claim has no prefix.", "MPL email"))
             actions = approved_actions(findings)
             notice.status = "ANALYZING"
