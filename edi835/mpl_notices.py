@@ -17,7 +17,7 @@ from .models import EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNotic
 SUBJECT_PATTERN = re.compile(
     r"^(?:(?P<prefix>fw|fwd|re)\s*:\s*)?MIR\s+Back\s+to\s+the\s+TPA\s+File\s*--\s*"
     r"(?P<sm>\d{1,2})[\/_](?P<sd>\d{1,2})\s+thru\s+(?P<em>\d{1,2})[\/_](?P<ed>\d{1,2})\s*--\s*"
-    r"(?P<program>ABC(?:_CPT)?)(?P<ack>\s*-?\s*Acknowledged)?\s*$", re.I,
+    r"(?P<program>ABC(?:[_/]CPT)?)(?P<ack>\s*-?\s*Acknowledged)?\s*$", re.I,
 )
 
 CORRECTION_CATALOGUE = {
@@ -47,7 +47,7 @@ def parse_subject(subject, reporting_year=None, received_at=None):
     return {
         "period_start": start,
         "period_end": date(end_year, int(match["em"]), int(match["ed"])),
-        "program": match["program"].upper(),
+        "program": match["program"].upper().replace("/", "_"),
         "notice_type": "ACKNOWLEDGEMENT" if match["ack"] else "MIR_RESULTS",
     }
 
