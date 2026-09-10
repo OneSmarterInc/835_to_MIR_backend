@@ -92,12 +92,12 @@ def clean_email_for_analysis(body):
 
 
 def claim_email_context(body, claim_number):
-    text = clean_email_for_analysis(body)
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    raw_text = (body or "").replace("\\u00a0", " ").replace("\\r\\n", "\\n")
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
     target = str(claim_number or "").upper()
     positions = [index for index, line in enumerate(lines) if target and target in line.upper()]
     if not positions:
-        return text[:1800]
+        return clean_email_for_analysis(raw_text)[:1800]
     excerpts = []
     for position in positions[:3]:
         excerpt = "\n".join(lines[max(0, position - 8):min(len(lines), position + 5)])
@@ -108,7 +108,7 @@ def claim_email_context(body, claim_number):
 
 def match_claims(notice):
     identifiers = extract_claim_identifiers(
-        f"{notice.subject}\n{notice.latest_message_body}",
+        f"{notice.subject}\n{notice.raw_email_body}",
         notice.requested_claim_numbers,
     )
     matches = []
@@ -209,7 +209,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         return None
     model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
     evidence = {
-        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice.latest_message_body, claim.claim_control_number)},
+        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice.raw_email_body, claim.claim_control_number)},
         "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
         "timeline": timeline[-8:], "verified_findings": findings[:8],
         "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions[:10])],
@@ -360,7 +360,7 @@ def process_notice(notice_id):
         notice.save()
         for link in links:
             timeline, files, findings = collect_evidence(link.claim)
-            email_context = claim_email_context(notice.latest_message_body, link.claim.claim_control_number)
+            email_context = claim_email_context(notice.raw_email_body, link.claim.claim_control_number)
             if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", email_context, re.I):
                 findings.append(_finding("NO_PREFIX_NOTICE", "error", "The MPL email reports that the returned claim has no prefix.", "MPL email"))
             actions = approved_actions(findings)
