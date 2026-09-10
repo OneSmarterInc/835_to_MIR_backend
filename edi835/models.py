@@ -667,6 +667,9 @@ class MPLNotice(models.Model):
     source_content_type = models.CharField(max_length=100, blank=True, default="application/vnd.ms-outlook")
     source_file = models.BinaryField(null=True, blank=True)
     requested_claim_numbers = models.JSONField(default=list, blank=True)
+    extracted_claim_numbers = models.JSONField(default=list, blank=True)
+    ai_response = models.TextField(blank=True, default="")
+    ai_suggestions = models.JSONField(default=list, blank=True)
     latest_message_body = models.TextField(blank=True, default="")
     quoted_email_history = models.TextField(blank=True, default="")
     status = models.CharField(
