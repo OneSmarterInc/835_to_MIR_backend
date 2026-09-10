@@ -64,13 +64,26 @@ def split_latest_message(body):
 
 
 def extract_claim_identifiers(text, supplied=None):
-    identifiers = {
-        str(value).strip()
-        for value in (supplied or [])
-        if re.fullmatch(r"\d{17}", str(value).strip())
-    }
-    identifiers.update(re.findall(r"(?<!\d)(\d{17})(?!\d)", text or ""))
-    return sorted(identifiers)
+    identifiers = []
+    seen = set()
+
+    def add(value):
+        candidate = str(value or "").strip().upper()
+        if (
+            candidate
+            and candidate not in seen
+            and 5 <= len(candidate) <= 100
+            and re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*", candidate)
+            and sum(character.isdigit() for character in candidate) >= 4
+        ):
+            seen.add(candidate)
+            identifiers.append(candidate)
+
+    for value in supplied or []:
+        add(value)
+    for value in re.findall(r"(?<![A-Z0-9_-])([A-Z0-9][A-Z0-9_-]{4,99})(?![A-Z0-9_-])", text or "", re.I):
+        add(value)
+    return identifiers
 
 
 def clean_email_for_analysis(body):
@@ -434,14 +447,19 @@ def process_notice(notice_id):
             f"{notice.subject}\n{notice.raw_email_body}",
             notice.requested_claim_numbers,
         )
-        notice.extracted_claim_numbers = identifiers
-        notice.source_matches = search_claim_sources(notice, identifiers)
+        all_source_matches = search_claim_sources(notice, identifiers)
+        notice.source_matches = [
+            item for item in all_source_matches if item.get("sources")
+        ]
+        notice.extracted_claim_numbers = [
+            item["claim_number"] for item in notice.source_matches
+        ]
         notice.status = "MATCHING_CLAIMS"
         notice.save()
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
         matches = [link.claim for link in confirmed_links] or match_claims(notice)
         if not matches:
-            unmatched_ai = call_unmatched_notice_model(notice, identifiers, notice.source_matches)
+            unmatched_ai = call_unmatched_notice_model(notice, notice.extracted_claim_numbers, notice.source_matches)
             notice.ai_response = unmatched_ai["summary"]
             notice.ai_suggestions = unmatched_ai["suggestions"]
             notice.status = "REVIEW_REQUIRED"
