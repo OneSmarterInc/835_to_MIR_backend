@@ -321,6 +321,26 @@ def fallback_summary(claim, findings):
     return f"Claim {claim.claim_control_number} has {len(findings)} verified finding(s): " + "; ".join(item["description"] for item in findings[:3])
 
 
+
+def parse_model_json(content):
+    if isinstance(content, dict):
+        return content
+    text = str(content or "").strip()
+    fenced = re.fullmatch(r"\x60\x60\x60(?:json)?\s*(.*?)\s*\x60\x60\x60", text, re.I | re.S)
+    if fenced:
+        text = fenced.group(1).strip()
+    try:
+        result = json.loads(text)
+    except json.JSONDecodeError:
+        start, end = text.find("{"), text.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        result = json.loads(text[start:end + 1])
+    if not isinstance(result, dict):
+        raise ValueError("Model response must be a JSON object.")
+    return result
+
+
 def call_local_model(notice, claim, timeline, findings, actions):
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
     if not base_url:
@@ -347,7 +367,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         with urlopen(request, timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120"))) as response:
             outer = json.loads(response.read().decode())
         content = outer["choices"][0]["message"]["content"]
-        result = json.loads(content) if isinstance(content, str) else content
+        result = parse_model_json(content)
     except (HTTPError, URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError):
         return None
     allowed_codes = {item["code"] for item in findings}
@@ -416,7 +436,7 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
             timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120")),
         ) as response:
             outer = json.loads(response.read().decode())
-        result = json.loads(outer["choices"][0]["message"]["content"])
+        result = parse_model_json(outer["choices"][0]["message"]["content"])
         summary = str(result.get("summary") or "").strip()
         suggestions = [
             str(item).strip() for item in result.get("suggestions", [])
