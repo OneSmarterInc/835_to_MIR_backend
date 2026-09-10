@@ -1,10 +1,12 @@
 import json
 import os
+import re
 import tempfile
 from datetime import datetime
 from email.utils import parsedate_to_datetime
 
 import extract_msg
+from bs4 import BeautifulSoup
 
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
@@ -21,6 +23,27 @@ def _body(request):
         return json.loads(request.body.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise NoticeValidationError("Request body must be valid JSON.")
+
+
+def _clean_outlook_text(value):
+    return str(value or "").replace("\x00", "").strip()
+
+
+def _extract_msg_body(message):
+    body = _clean_outlook_text(message.body)
+    if body:
+        return body
+    html_body = message.htmlBody
+    if not html_body:
+        return ""
+    if isinstance(html_body, bytes):
+        try:
+            html_body = html_body.decode("utf-8")
+        except UnicodeDecodeError:
+            html_body = html_body.decode("cp1252", errors="replace")
+    text = BeautifulSoup(html_body, "html.parser").get_text("\n")
+    text = re.sub(r"\n[ \t]+", "\n", text)
+    return re.sub(r"\n{3,}", "\n\n", text).replace("\x00", "").strip()
 
 
 def _parse_msg_upload(upload):
@@ -40,9 +63,9 @@ def _parse_msg_upload(upload):
             temp.write(raw)
             temp_path = temp.name
         message = extract_msg.Message(temp_path)
-        subject = str(message.subject or "").strip()
-        body = str(message.body or "").strip()
-        sender = str(message.sender or "").strip()
+        subject = _clean_outlook_text(message.subject)
+        body = _extract_msg_body(message)
+        sender = _clean_outlook_text(message.sender)
         received_at = message.date
         if received_at and not isinstance(received_at, datetime):
             try:
