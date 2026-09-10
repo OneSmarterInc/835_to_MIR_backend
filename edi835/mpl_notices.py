@@ -68,6 +68,7 @@ def extract_claim_identifiers(text, supplied=None):
     for pattern in (
         r"(?:claim|clm|icn|internal claim|highmark claim)(?:\s+(?:number|no|#))?\s*[:#=-]?\s*([A-Z0-9][A-Z0-9_-]{4,99})",
         r"\b(CLM[A-Z0-9_-]{3,96})\b",
+        r"\b(\d{17})\b",
     ):
         identifiers.update(re.findall(pattern, text or "", re.I))
     return sorted(value.upper() for value in identifiers)
