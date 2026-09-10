@@ -64,14 +64,13 @@ def split_latest_message(body):
 
 
 def extract_claim_identifiers(text, supplied=None):
-    identifiers = {str(value).strip() for value in (supplied or []) if str(value).strip()}
-    for pattern in (
-        r"(?:claim|clm|icn|internal claim|highmark claim)(?:\s+(?:number|no|#))?\s*[:#=-]?\s*([A-Z0-9][A-Z0-9_-]{4,99})",
-        r"\b(CLM[A-Z0-9_-]{3,96})\b",
-        r"\b(\d{17})\b",
-    ):
-        identifiers.update(re.findall(pattern, text or "", re.I))
-    return sorted(value.upper() for value in identifiers)
+    identifiers = {
+        str(value).strip()
+        for value in (supplied or [])
+        if re.fullmatch(r"\d{17}", str(value).strip())
+    }
+    identifiers.update(re.findall(r"(?<!\d)(\d{17})(?!\d)", text or ""))
+    return sorted(identifiers)
 
 
 def clean_email_for_analysis(body):
@@ -104,6 +103,112 @@ def claim_email_context(body, claim_number):
         if excerpt not in excerpts:
             excerpts.append(excerpt)
     return "\n\n".join(excerpts)[:1800]
+
+
+
+def search_claim_sources(notice, identifiers):
+    results = []
+    for identifier in identifiers[:50]:
+        sources = []
+        claim_837 = (
+            EDI837Claim.objects.filter(client=notice.client)
+            .filter(
+                Q(claim_control_number__iexact=identifier)
+                | Q(highmark_claim_number__iexact=identifier)
+                | Q(internal_claim_number__iexact=identifier)
+                | Q(reference_9c__iexact=identifier)
+                | Q(patient_control_number__iexact=identifier)
+            )
+            .select_related("edi_file")
+            .order_by("-edi_file__uploaded_at", "-id")
+            .first()
+        )
+        if claim_837:
+            source = claim_837.edi_file
+            sources.append({
+                "type": "837",
+                "filename": source.original_filename,
+                "status": source.status,
+                "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
+                "details": {
+                    "service_dates": f"{claim_837.service_from_date or '—'} – {claim_837.service_to_date or '—'}",
+                    "services": claim_837.service_count,
+                    "total_charge": str(claim_837.total_charge_amount),
+                },
+                "download_url": f"/edi835/api/mpl-files/837/{source.id}/download/",
+            })
+
+        mir_claim = (
+            MIRClaim.objects.filter(
+                mir_file__client=notice.client,
+                claim_control_number__iexact=identifier,
+            )
+            .select_related("mir_file")
+            .order_by("-mir_file__converted_at", "-id")
+            .first()
+        )
+        if mir_claim:
+            source = mir_claim.mir_file
+            sources.append({
+                "type": "MIR",
+                "filename": source.mir_filename,
+                "status": mir_claim.claim_status or source.status,
+                "date": source.converted_at.isoformat() if source.converted_at else None,
+                "details": {
+                    "reason": mir_claim.primary_reason or "—",
+                    "services": mir_claim.service_count,
+                },
+                "download_url": f"/edi835/api/mpl-files/mir/{source.id}/download/",
+            })
+
+        files_835 = (
+            EDI835File.objects.filter(
+                client=notice.client,
+                input_file_content__contains=identifier,
+            )
+            .order_by("-uploaded_at")[:3]
+        )
+        for source in files_835:
+            sources.append({
+                "type": "835",
+                "filename": source.original_filename,
+                "status": source.status,
+                "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
+                "details": {
+                    "claims": source.claims_count,
+                    "services": source.services_count,
+                },
+                "download_url": f"/edi835/api/mpl-files/835/{source.id}/download/",
+            })
+
+        recon_claim = (
+            RECONClaim.objects.filter(client=notice.client)
+            .filter(
+                Q(claim_control_number__iexact=identifier)
+                | Q(patient_control_number__iexact=identifier)
+            )
+            .select_related("recon_file")
+            .order_by("-recon_file__uploaded_at", "-id")
+            .first()
+        )
+        if recon_claim:
+            source = recon_claim.recon_file
+            sources.append({
+                "type": "RECON",
+                "filename": source.original_filename,
+                "status": recon_claim.claim_status or source.status,
+                "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
+                "details": {
+                    "service_dates": f"{recon_claim.service_from_date or '—'} – {recon_claim.service_to_date or '—'}",
+                    "services": recon_claim.service_count,
+                    "charge": str(recon_claim.charge_amount),
+                    "paid": str(recon_claim.paid_amount),
+                    "patient_responsibility": str(recon_claim.patient_responsibility),
+                },
+                "download_url": f"/edi835/api/mpl-files/recon/{source.id}/download/",
+            })
+        results.append({"claim_number": identifier, "sources": sources})
+    return results
 
 
 def match_claims(notice):
