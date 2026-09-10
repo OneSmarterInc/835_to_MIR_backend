@@ -1,5 +1,10 @@
 import json
+import os
+import tempfile
 from datetime import datetime
+from email.utils import parsedate_to_datetime
+
+import extract_msg
 
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
@@ -16,6 +21,64 @@ def _body(request):
         return json.loads(request.body.decode("utf-8") or "{}")
     except (UnicodeDecodeError, json.JSONDecodeError):
         raise NoticeValidationError("Request body must be valid JSON.")
+
+
+def _parse_msg_upload(upload):
+    filename = os.path.basename(str(upload.name or "email.msg"))
+    if not filename.lower().endswith(".msg"):
+        raise NoticeValidationError("Upload an Outlook .msg email file.")
+    if upload.size > 10 * 1024 * 1024:
+        raise NoticeValidationError("The .msg file must be 10 MB or smaller.")
+    raw = upload.read()
+    if not raw:
+        raise NoticeValidationError("The selected .msg file is empty.")
+
+    temp_path = None
+    message = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as temp:
+            temp.write(raw)
+            temp_path = temp.name
+        message = extract_msg.Message(temp_path)
+        subject = str(message.subject or "").strip()
+        body = str(message.body or "").strip()
+        sender = str(message.sender or "").strip()
+        received_at = message.date
+        if received_at and not isinstance(received_at, datetime):
+            try:
+                received_at = parsedate_to_datetime(str(received_at))
+            except (TypeError, ValueError, OverflowError):
+                received_at = None
+        if received_at and timezone.is_naive(received_at):
+            received_at = timezone.make_aware(received_at)
+        if not subject:
+            raise NoticeValidationError("The .msg file does not contain an email subject.")
+        if not body:
+            raise NoticeValidationError("The .msg file does not contain a readable email body.")
+        return {
+            "filename": filename[:255],
+            "content_type": str(upload.content_type or "application/vnd.ms-outlook")[:100],
+            "raw": raw,
+            "subject": subject,
+            "body": body,
+            "sender": sender,
+            "received_at": received_at,
+        }
+    except NoticeValidationError:
+        raise
+    except Exception as exc:
+        raise NoticeValidationError("The selected file is not a readable Outlook .msg email.") from exc
+    finally:
+        if message is not None:
+            try:
+                message.close()
+            except Exception:
+                pass
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
 
 
 def _client_for_request(request, requested_id=None):
@@ -37,30 +100,64 @@ def mpl_notices(request):
         notices = [serialize_notice(item) for item in queryset[:100]]
         return JsonResponse({"success": True, "notices": notices})
     try:
-        data = _body(request)
-        client = _client_for_request(request, data.get("client_id"))
-        subject = str(data.get("subject") or "").strip()
-        email_body = str(data.get("email_body") or "").strip()
-        if not email_body:
-            raise NoticeValidationError("Email content is required.")
-        if len(email_body) > 200_000:
-            raise NoticeValidationError("Email content is too large.")
-        received_at = None
-        if data.get("received_at"):
-            received_at = datetime.fromisoformat(str(data["received_at"]).replace("Z", "+00:00"))
-            if timezone.is_naive(received_at):
-                received_at = timezone.make_aware(received_at)
-        parsed = parse_subject(subject, data.get("reporting_year"), received_at)
-        claim_numbers = data.get("claim_numbers") or []
-        if isinstance(claim_numbers, str):
-            claim_numbers = [part.strip() for part in claim_numbers.split(",") if part.strip()]
-        notice = MPLNotice.objects.create(
-            client=client, subject=subject, sender_text=str(data.get("sender") or "")[:255],
-            received_at=received_at, reporting_year=data.get("reporting_year"),
-            reporting_period_start=parsed["period_start"], reporting_period_end=parsed["period_end"],
-            program=parsed["program"], notice_type=parsed["notice_type"],
-            raw_email_body=email_body, requested_claim_numbers=claim_numbers[:50], created_by=request.user,
-        )
+        upload = request.FILES.get("email_file")
+        if upload:
+            data = request.POST
+            parsed_upload = _parse_msg_upload(upload)
+            client = _client_for_request(request, data.get("client_id"))
+            subject = parsed_upload["subject"]
+            email_body = parsed_upload["body"]
+            received_at = parsed_upload["received_at"]
+            reporting_year = data.get("reporting_year") or None
+            parsed = parse_subject(subject, reporting_year, received_at)
+            claim_numbers = [
+                part.strip() for part in str(data.get("claim_numbers") or "").split(",")
+                if part.strip()
+            ]
+            notice = MPLNotice.objects.create(
+                client=client,
+                subject=subject,
+                sender_text=parsed_upload["sender"][:255],
+                received_at=received_at,
+                reporting_year=reporting_year,
+                reporting_period_start=parsed["period_start"],
+                reporting_period_end=parsed["period_end"],
+                program=parsed["program"],
+                notice_type=parsed["notice_type"],
+                raw_email_body=email_body,
+                requested_claim_numbers=claim_numbers[:50],
+                source_filename=parsed_upload["filename"],
+                source_content_type=parsed_upload["content_type"],
+                source_file=parsed_upload["raw"],
+                created_by=request.user,
+            )
+        else:
+            # Retain JSON intake compatibility for existing API clients.
+            data = _body(request)
+            client = _client_for_request(request, data.get("client_id"))
+            subject = str(data.get("subject") or "").strip()
+            email_body = str(data.get("email_body") or "").strip()
+            if not email_body:
+                raise NoticeValidationError("Email content is required.")
+            if len(email_body) > 200_000:
+                raise NoticeValidationError("Email content is too large.")
+            received_at = None
+            if data.get("received_at"):
+                received_at = datetime.fromisoformat(str(data["received_at"]).replace("Z", "+00:00"))
+                if timezone.is_naive(received_at):
+                    received_at = timezone.make_aware(received_at)
+            parsed = parse_subject(subject, data.get("reporting_year"), received_at)
+            claim_numbers = data.get("claim_numbers") or []
+            if isinstance(claim_numbers, str):
+                claim_numbers = [part.strip() for part in claim_numbers.split(",") if part.strip()]
+            notice = MPLNotice.objects.create(
+                client=client, subject=subject, sender_text=str(data.get("sender") or "")[:255],
+                received_at=received_at, reporting_year=data.get("reporting_year"),
+                reporting_period_start=parsed["period_start"], reporting_period_end=parsed["period_end"],
+                program=parsed["program"], notice_type=parsed["notice_type"],
+                raw_email_body=email_body, requested_claim_numbers=claim_numbers[:50],
+                created_by=request.user,
+            )
         return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)}, status=201)
     except PermissionError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=403)
@@ -169,5 +266,24 @@ def mpl_related_file(request, file_type, file_id):
     filename = getattr(record, filename_field, "mpl-evidence.txt")
     response = HttpResponse(content.encode("utf-8"), content_type="application/octet-stream")
     response["Content-Disposition"] = f'attachment; filename="{filename.replace(chr(34), "")}"'
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@require_http_methods(["GET"])
+def mpl_notice_source_file(request, notice_id):
+    notice = MPLNotice.objects.filter(pk=notice_id).first()
+    if not notice:
+        return JsonResponse({"success": False, "error": "Notice not found."}, status=404)
+    if not can_access_client(request.user, notice.client_id):
+        return JsonResponse({"success": False, "error": "Access denied."}, status=403)
+    if not notice.source_file:
+        return JsonResponse({"success": False, "error": "Original email file is not available."}, status=404)
+    filename = os.path.basename(notice.source_filename or "email.msg").replace('"', "")
+    response = HttpResponse(
+        bytes(notice.source_file),
+        content_type=notice.source_content_type or "application/vnd.ms-outlook",
+    )
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["X-Content-Type-Options"] = "nosniff"
     return response
