@@ -74,14 +74,63 @@ def extract_claim_identifiers(text, supplied=None):
     return sorted(value.upper() for value in identifiers)
 
 
+def clean_email_for_analysis(body):
+    text = (body or "").replace("\u00a0", " ").replace("\r\n", "\n")
+    footer_positions = [
+        text.lower().find(marker)
+        for marker in (
+            "_______________________________________________ this email was sent using microsoft information rights management",
+            "confidentiality notice:",
+        )
+    ]
+    footer_positions = [position for position in footer_positions if position >= 0]
+    if footer_positions:
+        text = text[:min(footer_positions)]
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def claim_email_context(body, claim_number):
+    text = clean_email_for_analysis(body)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    target = str(claim_number or "").upper()
+    positions = [index for index, line in enumerate(lines) if target and target in line.upper()]
+    if not positions:
+        return text[:1800]
+    excerpts = []
+    for position in positions[:3]:
+        excerpt = "\n".join(lines[max(0, position - 8):min(len(lines), position + 5)])
+        if excerpt not in excerpts:
+            excerpts.append(excerpt)
+    return "\n\n".join(excerpts)[:2400]
+
+
 def match_claims(notice):
-    identifiers = extract_claim_identifiers(f"{notice.subject}\n{notice.latest_message_body}", notice.requested_claim_numbers)
-    if not identifiers:
-        return []
-    query = Q()
-    for identifier in identifiers:
-        query |= Q(claim_control_number__iexact=identifier) | Q(highmark_claim_number__iexact=identifier) | Q(internal_claim_number__iexact=identifier) | Q(reference_9c__iexact=identifier) | Q(patient_control_number__iexact=identifier)
-    return list(EDI837Claim.objects.filter(client=notice.client).filter(query).select_related("edi_file").order_by("-edi_file__uploaded_at")[:25])
+    identifiers = extract_claim_identifiers(
+        f"{notice.subject}\n{notice.latest_message_body}",
+        notice.requested_claim_numbers,
+    )
+    matches = []
+    seen = set()
+    for identifier in identifiers[:50]:
+        claim = (
+            EDI837Claim.objects.filter(client=notice.client)
+            .filter(
+                Q(claim_control_number__iexact=identifier)
+                | Q(highmark_claim_number__iexact=identifier)
+                | Q(internal_claim_number__iexact=identifier)
+                | Q(reference_9c__iexact=identifier)
+                | Q(patient_control_number__iexact=identifier)
+            )
+            .select_related("edi_file")
+            .order_by("-edi_file__uploaded_at", "-id")
+            .first()
+        )
+        if claim and claim.id not in seen:
+            seen.add(claim.id)
+            matches.append(claim)
+    return matches
 
 
 def _finding(code, severity, description, evidence):
