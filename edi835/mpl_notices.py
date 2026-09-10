@@ -268,16 +268,20 @@ def process_notice(notice_id):
             notice.processing_completed_at = timezone.now()
             notice.save()
             return notice
-        ambiguous = len(matches) > 1
         if confirmed_links:
             links = confirmed_links
         else:
             notice.notice_claims.all().delete()
-            links = [MPLNoticeClaim.objects.create(notice=notice, claim=claim, matching_method="exact_identifier", matching_confidence=Decimal("0.5" if ambiguous else "1.0"), confirmed_by_user=not ambiguous) for claim in matches]
-        if ambiguous:
-            notice.status, notice.last_error = "WAITING_FOR_CLAIM_SELECTION", "Multiple possible claims were found. Select the correct claim to continue."
-            notice.save()
-            return notice
+            links = [
+                MPLNoticeClaim.objects.create(
+                    notice=notice,
+                    claim=claim,
+                    matching_method="exact_identifier",
+                    matching_confidence=Decimal("1.0"),
+                    confirmed_by_user=True,
+                )
+                for claim in matches
+            ]
         notice.status = "COLLECTING_EVIDENCE"
         notice.save()
         for link in links:
@@ -291,7 +295,7 @@ def process_notice(notice_id):
             confidence = Decimal(str(min(max(float((ai or {}).get("confidence", 0.70 if findings else 0.40)), 0), 1)))
             MPLClaimAnalysis.objects.update_or_create(notice_claim=link, defaults={
                 "model_id": (ai or {}).get("model_id", "deterministic-fallback"), "timeline": timeline,
-                "findings": findings, "recommended_actions": actions, "related_files": files,
+                "findings": findings, "recommended_actions": (ai or {}).get("recommended_actions") or actions, "related_files": files,
                 "summary": (ai or {}).get("summary") or fallback_summary(link.claim, findings),
                 "primary_issue_code": (ai or {}).get("primary_issue_code") or (findings[0]["code"] if findings else ""),
                 "needs_response": bool((ai or {}).get("needs_response", notice.notice_type != "ACKNOWLEDGEMENT")),
