@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import transaction
 from django.utils import timezone
@@ -89,11 +89,11 @@ def _parse_iso(value):
     if not value:
         return None
     try:
-        parsed = timezone.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
     except (TypeError, ValueError):
         return None
     if timezone.is_naive(parsed):
-        parsed = timezone.make_aware(parsed, timezone.utc)
+        parsed = timezone.make_aware(parsed, dt_timezone.utc)
     return parsed
 
 
@@ -197,31 +197,30 @@ def _mark_release_attempt(source_id, claim_index, *, status, now, error="", mir_
     with transaction.atomic():
         source = EDI835File.objects.select_for_update().get(id=source_id)
         findings = list(source.conversion_findings or [])
-        target = None
-        for finding in findings:
-            if str(finding.get("rule_code") or "") not in DUPLICATE_HOLD_CODES:
-                continue
-            if str(finding.get("claim_index") or "") == str(claim_index or ""):
-                target = finding
-                break
-        if target is None:
+        targets = [
+            finding for finding in findings
+            if str(finding.get("rule_code") or "") in DUPLICATE_HOLD_CODES
+            and str(finding.get("claim_index") or "") == str(claim_index or "")
+        ]
+        if not targets:
             return None
 
-        target["last_release_attempt_at"] = now.isoformat()
-        if status == "SENT":
-            target["severity"] = "INFO"
-            target["release_status"] = "SENT"
-            target["released_at"] = now.isoformat()
-            target["release_mir_filename"] = mir_filename
-            target.pop("last_release_error", None)
-        else:
-            target["release_status"] = "RETRY"
-            target["last_release_error"] = str(error or "Held-claim release failed.")[:1000]
+        for target in targets:
+            target["last_release_attempt_at"] = now.isoformat()
+            if status == "SENT":
+                target["severity"] = "INFO"
+                target["release_status"] = "SENT"
+                target["released_at"] = now.isoformat()
+                target["release_mir_filename"] = mir_filename
+                target.pop("last_release_error", None)
+            else:
+                target["release_status"] = "RETRY"
+                target["last_release_error"] = str(error or "Held-claim release failed.")[:1000]
 
         source.conversion_findings = findings
         source.held_claims_count = _recompute_held_count(findings)
         source.save(update_fields=["conversion_findings", "held_claims_count"])
-        return source.client_id, str(target.get("claim_number") or "").strip()
+        return source.client_id, str(targets[0].get("claim_number") or "").strip()
 
 
 def _candidate_rows(now, limit):
@@ -357,6 +356,9 @@ def release_due_held_claims(now=None, limit=25) -> dict:
                 raise RuntimeError(release_record.error_message)
 
             sent_at = timezone.now()
+            # The SFTP upload has completed at this point, so mark this source
+            # occurrence sent before the global PUSHED hook reschedules other
+            # pending copies of the same claim number.
             _mark_release_attempt(
                 source.id,
                 candidate["claim_index"],
