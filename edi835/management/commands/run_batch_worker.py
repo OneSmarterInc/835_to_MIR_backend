@@ -29,6 +29,7 @@ class Command(BaseCommand):
         if recovered_automations:
             self.stderr.write(f"Marked {recovered_automations} interrupted automation run(s) as failed.")
         stopping = False
+        last_held_release_scan = None
 
         def stop(*_args):
             nonlocal stopping
@@ -43,6 +44,24 @@ class Command(BaseCommand):
                 self.stderr.write(f"Could not enqueue due SFTP automations: {exc}")
                 time.sleep(max(0.25, options["poll_seconds"]))
                 continue
+
+            # The worker already runs continuously. Reuse it for duplicate
+            # releases instead of adding a second scheduler. Scan at most once
+            # a minute so held-claim checks do not compete with batch jobs.
+            now = timezone.now()
+            if last_held_release_scan is None or (now - last_held_release_scan).total_seconds() >= 60:
+                try:
+                    from edi835.held_claims import release_due_held_claims
+                    result = release_due_held_claims(now=now)
+                    if result.get("released"):
+                        self.stdout.write(f"Released {result['released']} due held claim(s).")
+                    if result.get("failed"):
+                        self.stderr.write(f"{result['failed']} held claim release attempt(s) will retry.")
+                except Exception as exc:
+                    self.stderr.write(f"Could not release due held claims: {exc}")
+                finally:
+                    last_held_release_scan = now
+
             pending = queued_jobs()
             if pending:
                 self._process(pending[0])
