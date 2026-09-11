@@ -1,5 +1,6 @@
 import json
 from datetime import date
+from unittest.mock import patch
 
 from django.test import TestCase
 from django.utils import timezone
@@ -10,6 +11,7 @@ from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
     extract_claim_identifiers,
+    local_ai_enabled,
     parse_subject,
     process_notice,
     reported_issue_rules,
@@ -73,6 +75,16 @@ class MPLClaimExtractionTests(TestCase):
     def test_does_not_extract_dates_mir_fields_or_ordinary_words(self):
         body = "Period 2026-08-21. Check MIR1019, CON89, HEADER, DIRECT and UE115."
         self.assertEqual(extract_claim_identifiers(body), [])
+
+
+class MPLAIEnablementTests(TestCase):
+    def test_local_ai_is_disabled_by_default(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(local_ai_enabled())
+
+    def test_local_ai_requires_explicit_opt_in(self):
+        with patch.dict("os.environ", {"MPL_AI_ENABLED": "true"}, clear=True):
+            self.assertTrue(local_ai_enabled())
 
 
 class MPLPromptGroundingTests(TestCase):
