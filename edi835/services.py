@@ -178,7 +178,6 @@ def resolve_sftp_config(client=None, outbound=False, purpose=None):
     return config or pick(SFTPConfig.objects.filter(client__isnull=True), purpose)
 
 
-
 def get_edi835_storage_dirs(client=None):
     """
     Returns compatibility aliases plus the complete client-scoped media tree.
@@ -481,7 +480,9 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     db_record.save()
 
     try:
-        # Step 3: Perform 835 parsing and MIR conversion during processing
+        # Step 3: Perform 835 parsing and MIR conversion during processing.
+        # The generator is claim-scoped: claims with blocking conversion
+        # findings are held while clean claims continue into the MIR output.
         client = db_record.client if db_record else None
         res = parse_835_to_mir(
             edi_text,
@@ -490,8 +491,41 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
             process_date=timezone.localdate(processing_started_at),
         )
         mir_text = res["text"]
+        held_claims = int(res.get("held_claims_count", 0) or 0)
+        delivered_claims = int(res.get("delivered_claims_count", res["claims_count"]) or 0)
+        findings = list(res.get("conversion_findings", []) or [])
+        rel_archive_path = relative_media_path(processing_file_path)
 
-        # Step 4: Write converted MIR file to output/ folder
+        # If every claim is held, do not create or send an empty MIR file.
+        if delivered_claims == 0:
+            db_record.status = "ERROR"
+            db_record.output_path = None
+            db_record.archive_path = rel_archive_path
+            db_record.claims_count = res["claims_count"]
+            db_record.services_count = res["services_count"]
+            db_record.records_count = 0
+            db_record.delivered_claims_count = 0
+            db_record.held_claims_count = held_claims
+            db_record.conversion_findings = findings
+            db_record.error_message = "All claims were held for conversion review; no MIR file was delivered."
+            db_record.present_in_sftp = False
+            db_record.present_in_archive_folder = True
+            db_record.processing_completed_at = timezone.now()
+            db_record.save()
+            return {
+                "success": False,
+                "partial": True,
+                "code": "ALL_CLAIMS_HELD",
+                "decision": "HOLD",
+                "db_record": db_record,
+                "error": db_record.error_message,
+                "findings": findings,
+                "claims_count": res["claims_count"],
+                "services_count": res["services_count"],
+                "records_count": 0,
+            }
+
+        # Step 4: Write only the clean claims to the generated MIR file.
         archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
         rel_output_path = relative_media_path(archived_mir_path)
 
@@ -513,14 +547,15 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         if sftp_uploaded:
             remove_delivered_outbound(client, "mir", output_mir_path)
 
-        rel_archive_path = relative_media_path(processing_file_path)
-
         db_record.status = "ARCHIVED"
         db_record.output_path = rel_output_path
         db_record.archive_path = rel_archive_path
         db_record.claims_count = res["claims_count"]
         db_record.services_count = res["services_count"]
         db_record.records_count = res["records_count"]
+        db_record.delivered_claims_count = delivered_claims
+        db_record.held_claims_count = held_claims
+        db_record.conversion_findings = findings
         db_record.error_message = None
         db_record.present_in_sftp = sftp_uploaded
         db_record.present_in_archive_folder = True
@@ -529,6 +564,8 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         return {
             "success": True,
+            "partial": bool(held_claims),
+            "findings": findings,
             "db_record": db_record,
             "mir_text": mir_text,
             "claims_count": res["claims_count"],
@@ -617,6 +654,10 @@ def process_multiple_edi835_files(
             if valid:
                 try:
                     parsed_claims = parse_835(content)
+                    # Preserve exact source file provenance for held claims in a
+                    # multi-file conversion without changing the public parser contract.
+                    for claim in parsed_claims:
+                        setattr(claim, "source_filename", fname)
                     if not parsed_claims:
                         raise ValueError("No CLP claim segments were parsed.")
                 except Exception as exc:
@@ -687,9 +728,9 @@ def process_multiple_edi835_files(
 
         # Prefix with UUID to avoid overwrites in batch mode
         stored_fname = f"{file_uuid}_{idx}_{fname}"
-        
+
         # A file already dropped in this client's inbound directory is the
-        # staged copy.  Reuse it so the original is moved (not duplicated)
+        # staged copy. Reuse it so the original is moved (not duplicated)
         # into archive and the inbound directory is empty after the attempt.
         supplied_path = item.get("local_path")
         inbound_path = Path(supplied_path) if supplied_path else None
@@ -714,8 +755,25 @@ def process_multiple_edi835_files(
             "errors": errors
         }
 
-    # Generate ONE single combined MIR file from all claims across all input 835 files
-    mir_text, mir_res = generate_mir_text(all_claims, client=client)
+    # Generate ONE single combined MIR file from all claims across all input 835 files.
+    # Use one process date for deterministic regeneration of the whole batch.
+    batch_started_at = timezone.now()
+    batch_process_date = timezone.localdate(batch_started_at)
+    generated = generate_mir_text(all_claims, client=client, process_date=batch_process_date)
+    mir_text, mir_res = normalize_mir_generation_result(generated, all_claims)
+
+    # Attach file provenance to claim findings where the generator knows the
+    # originating claim but not the batch filename directly.
+    claim_sources = {
+        str(getattr(claim, "claim_number", "")): getattr(claim, "source_filename", "")
+        for claim in all_claims
+    }
+    conversion_findings = []
+    for finding in list(mir_res.get("findings", []) or []):
+        finding = dict(finding)
+        if not finding.get("source_filename"):
+            finding["source_filename"] = claim_sources.get(str(finding.get("claim_number", "")), "")
+        conversion_findings.append(finding)
 
     first_base_name = os.path.splitext(file_names[0])[0] if file_names else "batch"
     combined_base_name = f"MIR_COMBINED_{first_base_name}" if len(file_names) > 1 else f"MIR_{first_base_name}"
@@ -725,8 +783,6 @@ def process_multiple_edi835_files(
     )
     delivery_mir_filename = unique_mir_filename(delivery_mir_filename, file_uuid)
     stored_mir_filename = local_mir_filename(client, delivery_mir_filename)
-    archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
-    rel_output_path = relative_media_path(archived_mir_path)
 
     # Combine all input file names into a single string for table 835 IN column
     combined_inputs_str = ", ".join(file_names)
@@ -734,6 +790,50 @@ def process_multiple_edi835_files(
     claims_count = mir_res.get("claims", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("claims", 0)
     services_count = mir_res.get("services", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("services", 0)
     records_count = mir_res.get("mir_records", 0) if isinstance(mir_res, dict) else getattr(mir_res, "get", lambda k, d: 0)("mir_records", 0)
+    delivered_claims_count = int(mir_res.get("delivered_claims", claims_count) or 0)
+    held_claims_count = int(mir_res.get("held_claims", max(0, claims_count - delivered_claims_count)) or 0)
+
+    if delivered_claims_count == 0:
+        db_rec = EDI835File.objects.create(
+            id=file_uuid,
+            client=client,
+            original_filename=combined_inputs_str,
+            stored_filename=file_names[0] if file_names else "batch.835",
+            input_file_content="\n\n".join(input_contents),
+            status="ERROR",
+            claims_count=claims_count,
+            services_count=services_count,
+            records_count=0,
+            delivered_claims_count=0,
+            held_claims_count=held_claims_count,
+            conversion_findings=conversion_findings,
+            archive_path=first_archive_rel_path,
+            present_in_sftp=False,
+            present_in_archive_folder=True,
+            ingestion_source=ingestion_source,
+            processing_started_at=batch_started_at,
+            error_message="All claims were held for conversion review; no MIR file was delivered.",
+            processing_completed_at=timezone.now(),
+        )
+        return {
+            "success": False,
+            "partial": True,
+            "code": "ALL_CLAIMS_HELD",
+            "decision": "HOLD",
+            "error": db_rec.error_message,
+            "findings": conversion_findings,
+            "db_record": db_rec,
+            "accepted_files": file_names,
+            "refused_files": refused_files,
+            "warnings": warning_findings,
+            "claims_count": claims_count,
+            "services_count": services_count,
+            "records_count": 0,
+            "errors": errors,
+        }
+
+    archived_mir_path, output_mir_path = write_mir_copies(client, stored_mir_filename, mir_text)
+    rel_output_path = relative_media_path(archived_mir_path)
 
     # Create one source record, then store the complete normalized MIR before
     # attempting the outbound SFTP push.
@@ -747,11 +847,15 @@ def process_multiple_edi835_files(
         claims_count=claims_count,
         services_count=services_count,
         records_count=records_count,
+        delivered_claims_count=delivered_claims_count,
+        held_claims_count=held_claims_count,
+        conversion_findings=conversion_findings,
         output_path=rel_output_path,
         archive_path=first_archive_rel_path,
         present_in_sftp=False,
         present_in_archive_folder=True,
         ingestion_source=ingestion_source,
+        processing_started_at=batch_started_at,
         processing_completed_at=timezone.now()
     )
 
@@ -797,7 +901,9 @@ def process_multiple_edi835_files(
 
     return {
         "success": True,
-        "decision": "WARN" if refused_files or warning_findings else "ACCEPT",
+        "decision": "WARN" if refused_files or warning_findings or held_claims_count else "ACCEPT",
+        "partial": bool(held_claims_count),
+        "findings": conversion_findings,
         "mir_text": mir_text,
         "combined_filename": delivery_mir_filename,
         "stored_filename": stored_mir_filename,
