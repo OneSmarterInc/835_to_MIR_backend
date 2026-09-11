@@ -1,4 +1,4 @@
-"""Four-day duplicate-claim quarantine and automatic held-claim release."""
+"""Fourth-day duplicate-claim quarantine and automatic held-claim release."""
 
 from __future__ import annotations
 
@@ -9,7 +9,10 @@ from django.db import transaction
 from django.utils import timezone
 
 
-DUPLICATE_HOLD_WINDOW = timedelta(days=4)
+# Business rule is inclusive by calendar-day count: a claim successfully sent
+# on the 1st becomes eligible to send again on the 4th at the same timestamp.
+# That is a 72-hour delay, matching the requested examples.
+DUPLICATE_HOLD_WINDOW = timedelta(days=3)
 RETRY_DELAY = timedelta(minutes=15)
 DUPLICATE_HOLD_CODES = {"DUPLICATE_RECENT_MIR", "DUPLICATE_CLAIM_NUMBER"}
 BLOCKING_SEVERITIES = {"HOLD", "REFUSE"}
@@ -21,7 +24,7 @@ def mir_claim_number(value) -> str:
 
 
 def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict]:
-    """Return the most recent successfully sent MIR claim inside the four-day window."""
+    """Return the most recent successfully sent MIR claim still inside the hold window."""
     if client is None:
         return {}
     wanted = {str(value or "").strip() for value in claim_numbers if str(value or "").strip()}
@@ -120,7 +123,7 @@ def _has_other_blocking_finding(findings, candidate) -> bool:
 
 
 def _reschedule_pending_duplicates(client, claim_number, sent_at, mir_filename, exclude=None):
-    """Move every other pending copy of this claim to four days after the newest send."""
+    """Move every other pending copy of this claim to the fourth day after the newest send."""
     if client is None or not claim_number:
         return
     from .models import EDI835File
@@ -356,9 +359,6 @@ def release_due_held_claims(now=None, limit=25) -> dict:
                 raise RuntimeError(release_record.error_message)
 
             sent_at = timezone.now()
-            # The SFTP upload has completed at this point, so mark this source
-            # occurrence sent before the global PUSHED hook reschedules other
-            # pending copies of the same claim number.
             _mark_release_attempt(
                 source.id,
                 candidate["claim_index"],
