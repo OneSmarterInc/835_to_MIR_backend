@@ -1,0 +1,85 @@
+from datetime import datetime, timezone as dt_timezone
+
+from django.test import TestCase
+
+from accounts.models import Client
+from edi835.held_claims import DUPLICATE_HOLD_WINDOW, recent_sent_claim_history
+from edi835.models import EDI835File, MIRClaim, MIRFile
+
+
+class DuplicateHoldWindowTests(TestCase):
+    def setUp(self):
+        self.client = Client.objects.create(
+            name="Duplicate Test Client",
+            client_code="DUP-TEST",
+            email="duplicate@example.com",
+        )
+        self.other_client = Client.objects.create(
+            name="Other Client",
+            client_code="DUP-OTHER",
+            email="other@example.com",
+        )
+
+    def _sent_claim(self, claim_number, sent_at, *, client=None, status="PUSHED"):
+        client = client or self.client
+        source = EDI835File.objects.create(
+            client=client,
+            original_filename=f"{claim_number}.835",
+            stored_filename=f"{claim_number}.835",
+            status="ARCHIVED",
+        )
+        mir_file = MIRFile.objects.create(
+            source_835=source,
+            client=client,
+            mir_filename=f"{claim_number}.MIR",
+            file_content="test",
+            file_hash=(claim_number.lower() + "0" * 64)[:64],
+            file_size=4,
+            claim_count=1,
+            physical_row_count=1,
+            service_count=0,
+            status=status,
+        )
+        MIRFile.objects.filter(id=mir_file.id).update(updated_at=sent_at)
+        mir_file.refresh_from_db()
+        MIRClaim.objects.create(
+            mir_file=mir_file,
+            claim_sequence=1,
+            claim_control_number=f"{claim_number}REF001",
+            header_raw=" " * 334,
+        )
+        return mir_file
+
+    def test_fourth_day_is_eligible_at_same_timestamp(self):
+        sent_at = datetime(2026, 9, 1, 10, 0, tzinfo=dt_timezone.utc)
+        self._sent_claim("CLAIM100", sent_at)
+
+        day_three = datetime(2026, 9, 3, 10, 0, tzinfo=dt_timezone.utc)
+        history = recent_sent_claim_history(self.client, {"CLAIM100"}, now=day_three)
+        self.assertIn("CLAIM100", history)
+        self.assertEqual(
+            history["CLAIM100"]["eligible_send_at"],
+            datetime(2026, 9, 4, 10, 0, tzinfo=dt_timezone.utc),
+        )
+
+        fourth_day = datetime(2026, 9, 4, 10, 0, tzinfo=dt_timezone.utc)
+        self.assertEqual(
+            recent_sent_claim_history(self.client, {"CLAIM100"}, now=fourth_day),
+            {},
+        )
+
+    def test_hold_window_is_72_hours_to_match_inclusive_fourth_day_rule(self):
+        self.assertEqual(DUPLICATE_HOLD_WINDOW.total_seconds(), 72 * 60 * 60)
+
+    def test_only_pushed_history_for_same_client_counts(self):
+        sent_at = datetime(2026, 9, 2, 9, 30, tzinfo=dt_timezone.utc)
+        now = datetime(2026, 9, 3, 9, 30, tzinfo=dt_timezone.utc)
+        self._sent_claim("NOTPUSHED", sent_at, status="GENERATED")
+        self._sent_claim("OTHERCLIENT", sent_at, client=self.other_client)
+
+        history = recent_sent_claim_history(
+            self.client,
+            {"NOTPUSHED", "OTHERCLIENT"},
+            now=now,
+        )
+        self.assertEqual(history, {})
