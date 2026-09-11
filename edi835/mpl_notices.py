@@ -58,7 +58,7 @@ def notice_email_body(notice):
     normalized = notice.normalized_email or {}
     body = normalized.get("body") or {}
     content = body.get("content") if isinstance(body, dict) else ""
-    return str(content or notice_email_body(notice) or "").replace("\x00", "").strip()
+    return str(content or notice.raw_email_body or "").replace("\x00", "").strip()
 
 def split_latest_message(body):
     text = (body or "").replace("\r\n", "\n").strip()
