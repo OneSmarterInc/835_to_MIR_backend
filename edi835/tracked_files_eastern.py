@@ -1,23 +1,16 @@
-"""Client-facing tracked-file timestamp normalization.
+"""Fast tracked-file history for client and admin portals.
 
-The client Conversion and Archive tables consume /edi835/api/tracked-files/.
-For client users, expose ISO timestamps in America/New_York so legacy table
-rendering that slices the ISO string still shows the correct US Eastern wall
-clock time. Staff/admin responses remain unchanged apart from conversion-hold
-metadata that is needed by both portals.
+Normal UI reads are database-only. They do not run folder observers or per-file
+filesystem checks, so a newly created/converted/sent record can appear as soon
+as it is committed to the database. A caller that genuinely needs to reconcile
+folder presence can explicitly request ``?full_sync=1``.
 
-Background polling can request ``?lightweight=1``. That path reads the latest
-tracked-file metadata directly from the database and deliberately skips the
-folder observer and per-file filesystem checks performed by the full endpoint.
-Repeated callers that do not yet know about ``lightweight=1`` are also
-protected: only one full filesystem-backed refresh is allowed per scope during
-a short interval; intervening polls use the database-only path. This prevents
-history polling from starving validation/conversion requests while retaining
-periodic folder synchronization.
+Conversion findings remain available through ``include_conversion_findings=1``
+but are loaded in one separate query only for files that actually have held
+claims. This keeps ordinary history responses small as the archive grows.
 """
 
 import json
-import time
 from zoneinfo import ZoneInfo
 
 from django.http import JsonResponse
@@ -27,8 +20,6 @@ from .views import tracked_files_list as _tracked_files_list
 
 
 EASTERN = ZoneInfo("America/New_York")
-FULL_REFRESH_INTERVAL_SECONDS = 15.0
-_LAST_FULL_REFRESH = {}
 
 
 def _to_eastern_iso(value):
@@ -49,35 +40,6 @@ def _is_truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _refresh_scope_key(request):
-    user = getattr(request, "user", None)
-    return (
-        getattr(user, "pk", None),
-        getattr(user, "client_id", None),
-        bool(getattr(user, "is_staff", False)),
-        str(request.GET.get("scope") or ""),
-    )
-
-
-def _use_lightweight_refresh(request, explicitly_lightweight=False):
-    if explicitly_lightweight:
-        return True
-    if _is_truthy(request.GET.get("full_sync")):
-        _LAST_FULL_REFRESH[_refresh_scope_key(request)] = time.monotonic()
-        return False
-
-    key = _refresh_scope_key(request)
-    now = time.monotonic()
-    previous = _LAST_FULL_REFRESH.get(key)
-    if previous is not None and now - previous < FULL_REFRESH_INTERVAL_SECONDS:
-        return True
-
-    # Reserve the full-refresh slot before starting the potentially expensive
-    # folder scan. Concurrent/repeated polls immediately take the fast path.
-    _LAST_FULL_REFRESH[key] = now
-    return False
-
-
 def _enrich_conversion_holds(payload, include_findings=True):
     """Expose persisted claim-level hold data through the existing history API."""
     items = payload.get("files", []) if isinstance(payload, dict) else []
@@ -85,16 +47,12 @@ def _enrich_conversion_holds(payload, include_findings=True):
     if not ids:
         return payload
 
-    fields = [
-        "id",
-        "delivered_claims_count",
-        "held_claims_count",
-    ]
+    fields = ["id", "delivered_claims_count", "held_claims_count"]
     if include_findings:
         fields.append("conversion_findings")
 
-    hold_rows = EDI835File.objects.filter(id__in=ids).values(*fields)
-    by_id = {str(row["id"]): row for row in hold_rows}
+    rows = EDI835File.objects.filter(id__in=ids).values(*fields)
+    by_id = {str(row["id"]): row for row in rows}
     for item in items:
         row = by_id.get(str(item.get("id")))
         if not row:
@@ -111,11 +69,16 @@ def _enrich_conversion_holds(payload, include_findings=True):
 
 
 def _lightweight_payload(request, include_findings=False):
-    """Return tracked-file metadata without folder scans or filesystem checks."""
+    """Return latest tracked-file metadata using database queries only."""
     client = getattr(request.user, "client", None)
-    deferred_fields = ["input_file_content", "mir_file__file_content"]
-    if not include_findings:
-        deferred_fields.append("conversion_findings")
+
+    # Large text/JSON columns are never needed to render the history table.
+    # Findings are hydrated separately below only for rows with active holds.
+    deferred_fields = [
+        "input_file_content",
+        "conversion_findings",
+        "mir_file__file_content",
+    ]
 
     if request.user.is_staff:
         records = EDI835File.objects.select_related("client", "mir_file").defer(
@@ -137,8 +100,10 @@ def _lightweight_payload(request, include_findings=False):
         )
 
     data = []
+    held_ids = []
     for record in records:
         mir_record = getattr(record, "mir_file", None)
+        held_count = record.held_claims_count or 0
         item = {
             "id": str(record.id),
             "client_id": str(record.client_id) if record.client_id else None,
@@ -151,7 +116,7 @@ def _lightweight_payload(request, include_findings=False):
             "services_count": record.services_count,
             "records_count": record.records_count,
             "delivered_claims_count": record.delivered_claims_count or 0,
-            "held_claims_count": record.held_claims_count or 0,
+            "held_claims_count": held_count,
             "uploaded_at": record.uploaded_at.isoformat() if record.uploaded_at else None,
             "processing_started_at": record.processing_started_at.isoformat() if record.processing_started_at else None,
             "processing_completed_at": record.processing_completed_at.isoformat() if record.processing_completed_at else None,
@@ -166,23 +131,33 @@ def _lightweight_payload(request, include_findings=False):
             "ingestion_source": record.ingestion_source or "MANUAL",
         }
         if include_findings:
-            item["conversion_findings"] = record.conversion_findings or []
+            item["conversion_findings"] = []
+            if held_count:
+                held_ids.append(record.id)
         data.append(item)
+
+    if include_findings and held_ids:
+        finding_rows = EDI835File.objects.filter(id__in=held_ids).values(
+            "id", "conversion_findings"
+        )
+        findings_by_id = {
+            str(row["id"]): row.get("conversion_findings") or []
+            for row in finding_rows
+        }
+        for item in data:
+            item["conversion_findings"] = findings_by_id.get(item["id"], [])
 
     return {"files": data}
 
 
 def tracked_files_list_eastern(request):
     include_findings = _is_truthy(request.GET.get("include_conversion_findings", "1"))
-    requested_lightweight = _is_truthy(request.GET.get("lightweight"))
     authenticated = bool(getattr(request.user, "is_authenticated", False))
-    lightweight = authenticated and _use_lightweight_refresh(
-        request, explicitly_lightweight=requested_lightweight
-    )
 
-    # Keep authentication and the historical endpoint contract intact. The
-    # database-only fast path is used only for authenticated callers.
-    if lightweight:
+    # Normal portal requests must never wait for filesystem reconciliation.
+    # Full sync remains available as an explicit maintenance/reconciliation
+    # operation instead of being injected into every fifteenth-second poll.
+    if authenticated and not _is_truthy(request.GET.get("full_sync")):
         payload = _lightweight_payload(request, include_findings=include_findings)
         status_code = 200
     else:
