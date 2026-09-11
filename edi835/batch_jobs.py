@@ -1,6 +1,6 @@
 """Small durable file-backed queue for resource-heavy batch conversions.
 
-Jobs intentionally live outside Gunicorn memory.  A separate systemd worker
+Jobs intentionally live outside Gunicorn memory. A separate systemd worker
 claims them and writes status atomically so web restarts do not lose progress.
 """
 
@@ -15,6 +15,10 @@ from django.conf import settings
 from django.utils import timezone
 
 
+MANUAL_CONVERSION_PRIORITY = 0
+DEFAULT_JOB_PRIORITY = 20
+
+
 def jobs_dir() -> Path:
     path = Path(settings.MEDIA_ROOT) / "edi835" / "batch_jobs"
     path.mkdir(parents=True, exist_ok=True)
@@ -22,7 +26,6 @@ def jobs_dir() -> Path:
 
 
 def _path(job_id: str) -> Path:
-    # UUID parsing prevents path traversal and gives callers one canonical key.
     import uuid
     return jobs_dir() / f"{uuid.UUID(str(job_id))}.json"
 
@@ -45,6 +48,16 @@ def write_job(job: dict) -> None:
     os.replace(temporary, path)
 
 
+def job_priority(job: dict) -> int:
+    """Interactive Process MIR jobs always outrank scheduled/background work."""
+    if job.get("job_type") == "MANUAL_CONVERSION":
+        return MANUAL_CONVERSION_PRIORITY
+    try:
+        return int(job.get("priority", DEFAULT_JOB_PRIORITY))
+    except (TypeError, ValueError):
+        return DEFAULT_JOB_PRIORITY
+
+
 def queued_jobs() -> list[dict]:
     jobs = []
     for path in jobs_dir().glob("*.json"):
@@ -62,7 +75,10 @@ def queued_jobs() -> list[dict]:
                 except (TypeError, ValueError):
                     pass
             jobs.append(job)
-    return sorted(jobs, key=lambda item: item.get("started_at") or "")
+    return sorted(
+        jobs,
+        key=lambda item: (job_priority(item), item.get("started_at") or ""),
+    )
 
 
 def active_job_for(scope_key: str) -> dict | None:
