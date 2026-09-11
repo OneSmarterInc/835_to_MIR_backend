@@ -72,25 +72,39 @@ def split_latest_message(body):
 
 
 def extract_claim_identifiers(text, supplied=None):
+    """Extract claim IDs without treating issue codes or prose as claims.
+
+    MPL emails use long numeric claim numbers. Alphanumeric identifiers remain
+    supported only when supplied by a trusted caller or explicitly introduced
+    by a claim label (for example, "claim CLM12345").
+    """
     identifiers = []
     seen = set()
 
-    def add(value):
-        candidate = str(value or "").strip().upper()
-        if (
-            candidate
-            and candidate not in seen
-            and 5 <= len(candidate) <= 100
-            and re.fullmatch(r"[A-Z0-9][A-Z0-9_-]*", candidate)
-            and sum(character.isdigit() for character in candidate) >= 4
-        ):
+    def add(value, *, allow_alphanumeric=False):
+        candidate = str(value or "").strip().upper().strip(".,;:()[]{}")
+        is_numeric_claim = bool(re.fullmatch(r"\\d{15,25}", candidate))
+        is_labeled_claim = (
+            allow_alphanumeric
+            and bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{4,99}", candidate))
+            and any(character.isdigit() for character in candidate)
+        )
+        if candidate and candidate not in seen and (is_numeric_claim or is_labeled_claim):
             seen.add(candidate)
             identifiers.append(candidate)
 
     for value in supplied or []:
+        add(value, allow_alphanumeric=True)
+
+    body = str(text or "").replace("\\u00a0", " ")
+    for value in re.findall(r"(?<!\\d)(\\d{15,25})(?!\\d)", body):
         add(value)
-    for value in re.findall(r"(?<![A-Z0-9_-])([A-Z0-9][A-Z0-9_-]{4,99})(?![A-Z0-9_-])", text or "", re.I):
-        add(value)
+    for value in re.findall(
+        r"\\bclaim(?:\\s+(?:number|id))?\\s*(?:#|:|-)?\\s*([A-Z0-9][A-Z0-9_-]{4,99})",
+        body,
+        re.I,
+    ):
+        add(value, allow_alphanumeric=True)
     return identifiers
 
 
@@ -531,9 +545,10 @@ def process_notice(notice_id):
         notice.source_matches = [
             item for item in all_source_matches if item.get("sources")
         ]
-        notice.extracted_claim_numbers = [
-            item["claim_number"] for item in notice.source_matches
-        ]
+        # Keep every valid claim extracted from the email visible. Source
+        # matching is separate: an absent database match must not erase a
+        # legitimate claim number reported by the sender.
+        notice.extracted_claim_numbers = identifiers
         notice.status = "MATCHING_CLAIMS"
         notice.save()
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
@@ -544,7 +559,18 @@ def process_notice(notice_id):
             notice.ai_response_source = unmatched_ai["source"]
             notice.ai_suggestions = unmatched_ai["suggestions"]
             notice.status = "REVIEW_REQUIRED"
-            notice.last_error = "None of the extracted claim numbers matched stored 837 claim data for this client."
+            if not identifiers:
+                notice.last_error = "No valid claim numbers were found in the email."
+            elif notice.source_matches:
+                notice.last_error = (
+                    "No extracted claim number matched stored 837 data for this client; "
+                    "matches from other claim sources are shown below."
+                )
+            else:
+                notice.last_error = (
+                    "None of the extracted claim numbers matched stored 837, MIR, 835, "
+                    "or reconciliation data for this client."
+                )
             notice.processing_completed_at = timezone.now()
             notice.save()
             return notice
