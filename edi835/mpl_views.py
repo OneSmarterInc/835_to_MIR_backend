@@ -47,7 +47,7 @@ def _graph_recipients(value):
 
 
 def _graph_message(*, subject, body, sender, received_at=None, to="", cc="", bcc="",
-                   message_id="", conversation_id="", has_attachments=False):
+                   graph_id="", internet_message_id="", conversation_id="", has_attachments=False):
     sender_items = _graph_recipients(sender)
     sender_value = sender_items[0] if sender_items else {
         "emailAddress": {"name": _clean_outlook_text(sender), "address": ""}
@@ -55,13 +55,13 @@ def _graph_message(*, subject, body, sender, received_at=None, to="", cc="", bcc
     timestamp = _graph_datetime(received_at)
     return {
         "@odata.type": "#microsoft.graph.message",
-        "id": _clean_outlook_text(message_id),
+        "id": _clean_outlook_text(graph_id),
         "createdDateTime": timestamp,
         "lastModifiedDateTime": timestamp,
         "receivedDateTime": timestamp,
         "sentDateTime": timestamp,
         "hasAttachments": bool(has_attachments),
-        "internetMessageId": _clean_outlook_text(message_id),
+        "internetMessageId": _clean_outlook_text(internet_message_id),
         "subject": _clean_outlook_text(subject),
         "bodyPreview": clean_preview(body),
         "importance": "normal",
@@ -134,7 +134,7 @@ def _parse_msg_upload(upload):
             to=getattr(message, "to", ""),
             cc=getattr(message, "cc", ""),
             bcc=getattr(message, "bcc", ""),
-            message_id=getattr(message, "messageId", ""),
+            internet_message_id=getattr(message, "messageId", ""),
             conversation_id=getattr(message, "conversationId", ""),
             has_attachments=bool(getattr(message, "attachments", [])),
         )
