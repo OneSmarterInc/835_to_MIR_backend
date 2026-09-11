@@ -72,6 +72,62 @@ class Command(BaseCommand):
                 return
             time.sleep(max(0.25, options["poll_seconds"]))
 
+    def _manual_conversion(self, job, user, client):
+        """Run one validated manual 835 conversion outside the web request."""
+        from edi835.models import EDI835File
+        from edi835.services import process_edi835_file_content
+
+        source = EDI835File.objects.select_related("client").filter(id=job.get("file_id")).first()
+        if source is None:
+            return 404, {"success": False, "error": "Validated 835 file was not found."}
+        if str(source.client_id or "") != str(getattr(client, "id", "") or ""):
+            return 403, {"success": False, "error": "Conversion job client does not match the source file."}
+
+        content = (source.input_file_content or "").strip()
+        if not content:
+            return 409, {"success": False, "error": "Validated 835 source content is unavailable."}
+
+        result = process_edi835_file_content(
+            content,
+            original_filename=source.original_filename or source.stored_filename or "file.835",
+            file_id=source.id,
+            client=client,
+        )
+        record = result.get("db_record") or EDI835File.objects.filter(id=source.id).first()
+
+        if not result.get("success"):
+            payload = {
+                "success": False,
+                "error": f"Failed to convert EDI file: {result.get('error') or 'Conversion failed.'}",
+                "partial": result.get("partial", False),
+                "file_id": str(record.id) if record else str(source.id),
+                "output_path": getattr(record, "output_path", "") if record else "",
+                "delivered_claims_count": getattr(record, "delivered_claims_count", 0) if record else 0,
+                "held_claims_count": getattr(record, "held_claims_count", 0) if record else 0,
+                "findings": result.get("findings", []),
+            }
+            return 400, payload
+
+        mir_record = getattr(record, "mir_file", None) if record else None
+        mir_filename = getattr(mir_record, "mir_filename", "") or ""
+        payload = {
+            "success": True,
+            "text": result.get("mir_text", ""),
+            "claims_count": result.get("claims_count", 0),
+            "services_count": result.get("services_count", 0),
+            "records_count": result.get("records_count", 0),
+            "file_id": str(record.id) if record else str(source.id),
+            "output_path": getattr(record, "output_path", "") if record else "",
+            "archive_path": getattr(record, "archive_path", "") if record else "",
+            "mir_filename": mir_filename,
+            "filename": mir_filename,
+            "partial": result.get("partial", False),
+            "delivered_claims_count": getattr(record, "delivered_claims_count", 0) if record else 0,
+            "held_claims_count": getattr(record, "held_claims_count", 0) if record else 0,
+            "findings": result.get("findings", []),
+        }
+        return 200, payload
+
     def _process(self, job):
         job["state"] = "RUNNING"
         job["attempt_count"] = int(job.get("attempt_count") or 0) + 1
@@ -86,7 +142,7 @@ class Command(BaseCommand):
             if user is None and not job.get("system_automation"):
                 raise ValueError("The user who started this batch job no longer exists.")
             if user is None:
-                # Server schedules must run without a signed-in user.  This
+                # Server schedules must run without a signed-in user. This
                 # principal authorizes tenant selection but is deliberately
                 # unauthenticated so it is never persisted as a human actor.
                 user = SimpleNamespace(
@@ -97,13 +153,21 @@ class Command(BaseCommand):
             from accounts.models import Client
             client = Client.objects.get(id=job.get("client_id"))
 
+            # Manual Process MIR requests are intentionally handled here so a
+            # 1,000+ claim conversion cannot exceed nginx/Gunicorn timeouts.
+            if job.get("job_type") == "MANUAL_CONVERSION":
+                status_code, payload = self._manual_conversion(job, user, client)
+                job["state"] = "COMPLETED" if payload.get("success") else "FAILED"
+                job["status_code"] = status_code
+                job["result"] = payload
+                job["finished_at"] = timezone.now().isoformat()
+                write_job(job)
+                return
+
             # Scheduled directional automations explicitly carry an
             # automation_direction. Manual Conversion -> Test jobs do not;
             # they use automation_type=ALL and must continue through the
-            # existing full batch pipeline below. Previously the worker
-            # invented INCOMING for those ALL jobs and sent (ALL, INCOMING)
-            # to the directional dispatcher, which raises
-            # "Unsupported SFTP automation operation."
+            # existing full batch pipeline below.
             direction = job.get("automation_direction")
             directional = None
             if direction:
