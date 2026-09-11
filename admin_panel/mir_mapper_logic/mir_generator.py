@@ -22,6 +22,7 @@ from .rule_registry import (
     evaluate_preventive_rules,
     is_blocking,
 )
+from edi835.progress import report_progress
 
 
 def _put(buffer: List[str], field: dict, value: str) -> None:
@@ -174,6 +175,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
                          process_date: date | None = None) -> Tuple[List[str], Dict[str, Any]]:
     records: List[str] = []
     claim_list = list(claims)
+    claims_total = len(claim_list)
     total_claims = 0
     total_services = 0
     split_claims = 0
@@ -183,6 +185,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
     warning_findings = 0
     findings: list[dict] = []
     output_bytes = 0
+    report_progress(stage="PREPARING", claims_total=claims_total, claims_processed=0, progress_percent=0)
     fields = get_mappings(client)
     existing_icns = _persisted_icns(claim_list, client)
     seen_icns: set[str] = set()
@@ -195,16 +198,23 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
         if _normalized_claim_number(claim)
     }
     if client is not None and incoming_claim_numbers:
+        report_progress(stage="CHECKING_DUPLICATES", claims_total=claims_total, claims_processed=0, progress_percent=0)
         from edi835.held_claims import recent_sent_claim_history
         recent_history = recent_sent_claim_history(client, incoming_claim_numbers)
 
     for claim_index, claim in enumerate(claim_list, start=1):
+        processed_before = claim_index - 1
+        report_progress(
+            stage="PROCESSING_CLAIMS",
+            claims_total=claims_total,
+            claims_processed=processed_before,
+            progress_percent=round((processed_before / claims_total) * 100, 1) if claims_total else 100,
+            current_claim=str(claim.claim_number or ""),
+        )
         total_claims += 1
         services = claim.services or []
         total_services += len(services)
 
-        # Duplicate checking is done on logical claims before service chunking,
-        # so one claim with >50 services may still span multiple MIR records.
         claim_number_key = _normalized_claim_number(claim)
         duplicate_claim_number_finding = None
         if claim_number_key:
@@ -338,6 +348,13 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
         if max_sequence > 1:
             split_claims += 1
 
+    report_progress(
+        stage="BUILDING_OUTPUT",
+        claims_total=claims_total,
+        claims_processed=claims_total,
+        progress_percent=100,
+        current_claim="",
+    )
     return records, {
         "claims": total_claims,
         "services": total_services,
