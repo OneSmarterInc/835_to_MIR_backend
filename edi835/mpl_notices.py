@@ -83,7 +83,7 @@ def extract_claim_identifiers(text, supplied=None):
 
     def add(value, *, allow_alphanumeric=False):
         candidate = str(value or "").strip().upper().strip(".,;:()[]{}")
-        is_numeric_claim = bool(re.fullmatch(r"\\d{15,25}", candidate))
+        is_numeric_claim = bool(re.fullmatch(r"\d{15,25}", candidate))
         is_labeled_claim = (
             allow_alphanumeric
             and bool(re.fullmatch(r"[A-Z0-9][A-Z0-9_-]{4,99}", candidate))
@@ -96,11 +96,11 @@ def extract_claim_identifiers(text, supplied=None):
     for value in supplied or []:
         add(value, allow_alphanumeric=True)
 
-    body = str(text or "").replace("\\u00a0", " ")
-    for value in re.findall(r"(?<!\\d)(\\d{15,25})(?!\\d)", body):
+    body = str(text or "").replace("\u00a0", " ")
+    for value in re.findall(r"(?<!\d)(\d{15,25})(?!\d)", body):
         add(value)
     for value in re.findall(
-        r"\\bclaim(?:\\s+(?:number|id))?\\s*(?:#|:|-)?\\s*([A-Z0-9][A-Z0-9_-]{4,99})",
+        r"\bclaim(?:\s+(?:number|id))?\s*(?:#|:|-)?\s*([A-Z0-9][A-Z0-9_-]{4,99})",
         body,
         re.I,
     ):
