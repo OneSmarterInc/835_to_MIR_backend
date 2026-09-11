@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 from django.db import transaction
+from django.db.models.functions import Left
 from django.utils import timezone
 
 
@@ -24,7 +25,7 @@ def mir_claim_number(value) -> str:
 
 
 def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict]:
-    """Return the most recent successfully sent MIR claim still inside the hold window."""
+    """Return recent sent matches using one DB-filtered lookup for incoming claims."""
     if client is None:
         return {}
     wanted = {str(value or "").strip() for value in claim_numbers if str(value or "").strip()}
@@ -35,12 +36,17 @@ def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict
 
     now = now or timezone.now()
     cutoff = now - DUPLICATE_HOLD_WINDOW
+    # MIRClaim stores claim_control_number as CLP01+CLP07. Filter the first 17
+    # characters in PostgreSQL instead of streaming every recently pushed claim
+    # through Python. This keeps 1,000+ claim conversions fast as history grows.
     rows = (
         MIRClaim.objects.select_related("mir_file")
+        .annotate(claim_number_key=Left("claim_control_number", 17))
         .filter(
             mir_file__client=client,
             mir_file__status="PUSHED",
             mir_file__updated_at__gt=cutoff,
+            claim_number_key__in=wanted,
         )
         .order_by("-mir_file__updated_at")
     )
@@ -48,7 +54,7 @@ def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict
     result: dict[str, dict] = {}
     for row in rows.iterator(chunk_size=1000):
         claim_number = mir_claim_number(row.claim_control_number)
-        if claim_number not in wanted or claim_number in result:
+        if claim_number in result:
             continue
         sent_at = row.mir_file.updated_at
         eligible_send_at = sent_at + DUPLICATE_HOLD_WINDOW
@@ -122,9 +128,10 @@ def _has_other_blocking_finding(findings, candidate) -> bool:
     return False
 
 
-def _reschedule_pending_duplicates(client, claim_number, sent_at, mir_filename, exclude=None):
-    """Move every other pending copy of this claim to the fourth day after the newest send."""
-    if client is None or not claim_number:
+def _reschedule_pending_duplicates_bulk(client, claim_numbers, sent_at, mir_filename, exclude=None):
+    """Reschedule many sent claim numbers with one held-file scan."""
+    wanted = {str(value or "").strip() for value in claim_numbers if str(value or "").strip()}
+    if client is None or not wanted:
         return
     from .models import EDI835File
 
@@ -135,7 +142,7 @@ def _reschedule_pending_duplicates(client, claim_number, sent_at, mir_filename, 
         for finding in findings:
             if str(finding.get("rule_code") or "") not in DUPLICATE_HOLD_CODES:
                 continue
-            if str(finding.get("claim_number") or "").strip() != claim_number:
+            if str(finding.get("claim_number") or "").strip() not in wanted:
                 continue
             if str(finding.get("release_status") or "").upper() == "SENT":
                 continue
@@ -155,8 +162,18 @@ def _reschedule_pending_duplicates(client, claim_number, sent_at, mir_filename, 
             source.save(update_fields=["conversion_findings", "held_claims_count"])
 
 
+def _reschedule_pending_duplicates(client, claim_number, sent_at, mir_filename, exclude=None):
+    _reschedule_pending_duplicates_bulk(
+        client,
+        {claim_number},
+        sent_at,
+        mir_filename,
+        exclude=exclude,
+    )
+
+
 def note_mir_sent(mir_file) -> None:
-    """Record the exact successful send time and activate/reschedule duplicate holds."""
+    """Record successful send time and activate/reschedule duplicate holds in bulk."""
     sent_at = mir_file.updated_at or timezone.now()
     source = mir_file.source_835
     sent_claim_numbers = {
@@ -185,13 +202,12 @@ def note_mir_sent(mir_file) -> None:
         source.held_claims_count = _recompute_held_count(findings)
         source.save(update_fields=["conversion_findings", "held_claims_count"])
 
-    for claim_number in sent_claim_numbers:
-        _reschedule_pending_duplicates(
-            mir_file.client,
-            claim_number,
-            sent_at,
-            mir_file.mir_filename,
-        )
+    _reschedule_pending_duplicates_bulk(
+        mir_file.client,
+        sent_claim_numbers,
+        sent_at,
+        mir_file.mir_filename,
+    )
 
 
 def _mark_release_attempt(source_id, claim_index, *, status, now, error="", mir_filename=""):
