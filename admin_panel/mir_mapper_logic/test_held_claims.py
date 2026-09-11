@@ -53,6 +53,59 @@ class HeldClaimGenerationTests(unittest.TestCase):
             {"CO_EXCEEDS_CHARGE", "NEGATIVE_COVERED_CHARGE", "MP003"},
         )
 
+    def test_later_duplicate_claim_number_is_held_and_first_is_delivered(self):
+        first = Claim(
+            claim_number="DUP100",
+            claim_reference="REF-A",
+            status="1",
+            group_number="GROUP1",
+            services=[service("100", "80")],
+        )
+        duplicate = Claim(
+            claim_number="DUP100",
+            claim_reference="REF-B",
+            status="1",
+            group_number="GROUP1",
+            services=[service("100", "80")],
+        )
+
+        records, summary = generate_mir_records([first, duplicate])
+
+        self.assertEqual(len(records), 1)
+        self.assertEqual(summary["claims"], 2)
+        self.assertEqual(summary["delivered_claims"], 1)
+        self.assertEqual(summary["held_claims"], 1)
+        duplicate_findings = [
+            finding for finding in summary["findings"]
+            if finding["rule_code"] == "DUPLICATE_CLAIM_NUMBER"
+        ]
+        self.assertEqual(len(duplicate_findings), 1)
+        self.assertEqual(duplicate_findings[0]["claim_number"], "DUP100")
+        self.assertEqual(duplicate_findings[0]["severity"], "HOLD")
+        self.assertIn("first occurrence was processed", duplicate_findings[0]["reason"])
+
+    def test_single_claim_split_across_records_is_not_a_duplicate(self):
+        service_count = config.MAX_SERVICE_LINES_PER_RECORD + 1
+        claim = Claim(
+            claim_number="SPLIT100",
+            claim_reference="REF-SPLIT",
+            status="1",
+            group_number="GROUP1",
+            services=[service("100", "80") for _ in range(service_count)],
+        )
+
+        records, summary = generate_mir_records([claim])
+
+        self.assertEqual(len(records), 2)
+        self.assertEqual(summary["claims"], 1)
+        self.assertEqual(summary["delivered_claims"], 1)
+        self.assertEqual(summary["held_claims"], 0)
+        self.assertEqual(summary["split_claims"], 1)
+        self.assertFalse(any(
+            finding["rule_code"] == "DUPLICATE_CLAIM_NUMBER"
+            for finding in summary["findings"]
+        ))
+
     def test_unknown_patient_responsibility_reason_is_retained_as_finding(self):
         claim = Claim(
             claim_number="PR31",
