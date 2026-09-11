@@ -65,9 +65,6 @@ def _service_block(service: ServiceLine, claim: Claim, sequence: int, max_sequen
             continue
         value = evaluate_field(
             field, claim, service, sequence, max_sequence, line_count,
-            inherited_reason, fields, process_date,
-        ) if False else evaluate_field(
-            field, claim, service, sequence, max_sequence, line_count,
             inherited_reason, process_date=process_date,
         )
         _put(b, field, value)
@@ -126,8 +123,6 @@ def _claim_findings(claim: Claim) -> list[dict]:
                 patient_liability=liability, payment=service.paid,
             ))
 
-        # Keep the newer financial-safety rules, but convert a service-level
-        # mapping failure into a claim hold instead of aborting the whole file.
         try:
             validate_patient_responsibility_mapping(service, claim.status, inherited_reason)
         except UnsupportedPatientResponsibilityError as exc:
@@ -193,8 +188,6 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
     seen_icns: set[str] = set()
     seen_claim_numbers: set[str] = set()
 
-    # One database read covers every incoming claim. Only successfully pushed
-    # MIR claims from the previous four days participate in the quarantine.
     recent_history = {}
     incoming_claim_numbers = {
         _normalized_claim_number(claim)
@@ -210,11 +203,8 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
         services = claim.services or []
         total_services += len(services)
 
-        # A single MIR may contain only the first occurrence of a claim number.
-        # Later input claims with the same number are held. This check happens
-        # before service-line chunking, so one legitimate claim that needs more
-        # than MAX_SERVICE_LINES_PER_RECORD can still split into multiple MIR
-        # records with the same claim number.
+        # Duplicate checking is done on logical claims before service chunking,
+        # so one claim with >50 services may still span multiple MIR records.
         claim_number_key = _normalized_claim_number(claim)
         duplicate_claim_number_finding = None
         if claim_number_key:
@@ -290,9 +280,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
 
         max_sequence = len(chunks)
         if max_sequence > config.MAX_RECORD_SEQUENCE:
-            maximum_services = (
-                config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE
-            )
+            maximum_services = config.MAX_SERVICE_LINES_PER_RECORD * config.MAX_RECORD_SEQUENCE
             findings.append(_finding(
                 claim, "RECORD_SEQUENCE_LIMIT_EXCEEDED",
                 "Claim requires more MIR records than the configured sequence limit.",
