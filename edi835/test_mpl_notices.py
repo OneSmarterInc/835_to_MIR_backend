@@ -8,9 +8,11 @@ from accounts.models import Client, User
 from edi835.models import EDI837Claim, EDI837File, MPLNotice
 from edi835.mpl_notices import (
     NoticeValidationError,
+    approved_actions_for_claim,
     extract_claim_identifiers,
     parse_subject,
     process_notice,
+    reported_issue_rules,
     split_latest_message,
 )
 
@@ -71,6 +73,26 @@ class MPLClaimExtractionTests(TestCase):
     def test_does_not_extract_dates_mir_fields_or_ordinary_words(self):
         body = "Period 2026-08-21. Check MIR1019, CON89, HEADER, DIRECT and UE115."
         self.assertEqual(extract_claim_identifiers(body), [])
+
+
+class MPLPromptGroundingTests(TestCase):
+    def test_only_known_email_issue_codes_receive_approved_definitions(self):
+        rules = reported_issue_rules(
+            "UE084 needs review. MP013 is present. UE999 is unknown."
+        )
+        self.assertEqual(list(rules), ["UE084", "MP013"])
+        self.assertNotIn("UE999", rules)
+
+    def test_issue_specific_actions_are_added_without_duplicates(self):
+        actions = approved_actions_for_claim(
+            "UE011 claim already processed.",
+            [],
+        )
+        self.assertIn(
+            "Confirm prior processing in 835 and reconciliation history before taking further action.",
+            actions,
+        )
+        self.assertEqual(len(actions), len(set(actions)))
 
 
 class MPLNoticeAPITests(TestCase):
