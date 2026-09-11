@@ -109,6 +109,26 @@ class MPLNoticeAPITests(TestCase):
         self.assertIn("NO_PREFIX_NOTICE", codes)
         self.assertEqual(link.analysis.model_id, "deterministic-fallback")
 
+    def test_unmatched_email_claims_remain_visible(self):
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=(
+                "UE084 - use PR31. Claims 33020262300027000 and "
+                "33020262091936200 require review."
+            ),
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        process_notice(notice.id)
+        notice.refresh_from_db()
+        self.assertEqual(
+            notice.extracted_claim_numbers,
+            ["33020262300027000", "33020262091936200"],
+        )
+        self.assertEqual(notice.source_matches, [])
+        self.assertNotIn("UE084", notice.extracted_claim_numbers)
+
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
         process_notice(notice.id)
