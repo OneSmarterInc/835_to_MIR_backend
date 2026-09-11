@@ -167,6 +167,11 @@ def _persisted_icns(claims: list[Claim], client=None) -> set[str]:
     )
 
 
+def _normalized_claim_number(claim: Claim) -> str:
+    """Return the claim number key used to prevent duplicate claims in one MIR."""
+    return str(claim.claim_number or "").strip()
+
+
 def generate_mir_records(claims: Iterable[Claim], client=None,
                          process_date: date | None = None) -> Tuple[List[str], Dict[str, Any]]:
     records: List[str] = []
@@ -183,11 +188,30 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
     fields = get_mappings(client)
     existing_icns = _persisted_icns(claim_list, client)
     seen_icns: set[str] = set()
+    seen_claim_numbers: set[str] = set()
 
     for claim in claim_list:
         total_claims += 1
         services = claim.services or []
         total_services += len(services)
+
+        # A single MIR may contain only the first occurrence of a claim number.
+        # Later input claims with the same number are held. This check happens
+        # before service-line chunking, so one legitimate claim that needs more
+        # than MAX_SERVICE_LINES_PER_RECORD can still split into multiple MIR
+        # records with the same claim number.
+        claim_number_key = _normalized_claim_number(claim)
+        duplicate_claim_number_finding = None
+        if claim_number_key:
+            if claim_number_key in seen_claim_numbers:
+                duplicate_claim_number_finding = _finding(
+                    claim,
+                    "DUPLICATE_CLAIM_NUMBER",
+                    "Duplicate claim number detected in this MIR. The first occurrence was processed; this later occurrence was held.",
+                    duplicate_claim_number=claim_number_key,
+                )
+            else:
+                seen_claim_numbers.add(claim_number_key)
 
         preventive_findings = evaluate_preventive_rules(
             claim,
@@ -210,6 +234,8 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
             refused_claims += 1
 
         claim_findings = preventive_findings + _claim_findings(claim)
+        if duplicate_claim_number_finding is not None:
+            claim_findings.insert(0, duplicate_claim_number_finding)
         if claim_findings:
             findings.extend(claim_findings)
         if any(is_blocking(finding) for finding in claim_findings):
