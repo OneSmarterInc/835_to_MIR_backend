@@ -6,7 +6,13 @@ from django.utils import timezone
 
 from accounts.models import Client, User
 from edi835.models import EDI837Claim, EDI837File, MPLNotice
-from edi835.mpl_notices import (\n    NoticeValidationError,\n    extract_claim_identifiers,\n    parse_subject,\n    process_notice,\n    split_latest_message,\n)
+from edi835.mpl_notices import (
+    NoticeValidationError,
+    extract_claim_identifiers,
+    parse_subject,
+    process_notice,
+    split_latest_message,
+)
 
 
 class MPLSubjectTests(TestCase):
