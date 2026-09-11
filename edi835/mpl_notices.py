@@ -525,8 +525,11 @@ def call_local_model(notice, claim, timeline, findings, actions):
     if not required_keys.issubset(result):
         return None
 
-    allowed_finding_codes = {item["code"] for item in findings}
-    if result.get("primary_issue_code", "") not in allowed_finding_codes | {""}:
+    allowed_issue_codes = (
+        {item["code"] for item in findings}
+        | set(issue_rules)
+    )
+    if result.get("primary_issue_code", "") not in allowed_issue_codes | {""}:
         return None
 
     invented_claims = set(extract_claim_identifiers(json.dumps(result))) - {
