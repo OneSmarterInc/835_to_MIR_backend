@@ -45,9 +45,6 @@ class Command(BaseCommand):
                 time.sleep(max(0.25, options["poll_seconds"]))
                 continue
 
-            # The worker already runs continuously. Reuse it for duplicate
-            # releases instead of adding a second scheduler. Scan at most once
-            # a minute so held-claim checks do not compete with batch jobs.
             now = timezone.now()
             if last_held_release_scan is None or (now - last_held_release_scan).total_seconds() >= 60:
                 try:
@@ -75,6 +72,7 @@ class Command(BaseCommand):
     def _manual_conversion(self, job, user, client):
         """Run one validated manual 835 conversion outside the web request."""
         from edi835.models import EDI835File
+        from edi835.progress import reset_progress_callback, set_progress_callback
         from edi835.services import process_edi835_file_content
 
         source = EDI835File.objects.select_related("client").filter(id=job.get("file_id")).first()
@@ -87,12 +85,49 @@ class Command(BaseCommand):
         if not content:
             return 409, {"success": False, "error": "Validated 835 source content is unavailable."}
 
-        result = process_edi835_file_content(
-            content,
-            original_filename=source.original_filename or source.stored_filename or "file.835",
-            file_id=source.id,
-            client=client,
-        )
+        last_write = [0.0]
+        last_stage = [None]
+
+        def progress_callback(payload):
+            # Updating one JSON file on every claim would add unnecessary fsync
+            # overhead. Keep in-memory fields current and persist at most twice
+            # per second, immediately on stage changes and at 100%.
+            job.update(payload)
+            now_mono = time.monotonic()
+            total = int(job.get("claims_total") or 0)
+            processed = int(job.get("claims_processed") or 0)
+            stage = job.get("stage")
+            must_write = (
+                stage != last_stage[0]
+                or (total > 0 and processed >= total)
+                or now_mono - last_write[0] >= 0.5
+            )
+            if must_write:
+                job["progress_updated_at"] = timezone.now().isoformat()
+                write_job(job)
+                last_write[0] = now_mono
+                last_stage[0] = stage
+
+        token = set_progress_callback(progress_callback)
+        try:
+            job.update({
+                "stage": "STARTING",
+                "claims_total": int(source.claims_count or 0),
+                "claims_processed": 0,
+                "progress_percent": 0,
+                "current_claim": "",
+                "progress_updated_at": timezone.now().isoformat(),
+            })
+            write_job(job)
+            result = process_edi835_file_content(
+                content,
+                original_filename=source.original_filename or source.stored_filename or "file.835",
+                file_id=source.id,
+                client=client,
+            )
+        finally:
+            reset_progress_callback(token)
+
         record = result.get("db_record") or EDI835File.objects.filter(id=source.id).first()
 
         if not result.get("success"):
@@ -142,9 +177,6 @@ class Command(BaseCommand):
             if user is None and not job.get("system_automation"):
                 raise ValueError("The user who started this batch job no longer exists.")
             if user is None:
-                # Server schedules must run without a signed-in user. This
-                # principal authorizes tenant selection but is deliberately
-                # unauthenticated so it is never persisted as a human actor.
                 user = SimpleNamespace(
                     id=None, name="System Automation", email="",
                     is_staff=True, is_active=True, is_authenticated=False,
@@ -153,21 +185,23 @@ class Command(BaseCommand):
             from accounts.models import Client
             client = Client.objects.get(id=job.get("client_id"))
 
-            # Manual Process MIR requests are intentionally handled here so a
-            # 1,000+ claim conversion cannot exceed nginx/Gunicorn timeouts.
             if job.get("job_type") == "MANUAL_CONVERSION":
                 status_code, payload = self._manual_conversion(job, user, client)
                 job["state"] = "COMPLETED" if payload.get("success") else "FAILED"
                 job["status_code"] = status_code
                 job["result"] = payload
                 job["finished_at"] = timezone.now().isoformat()
+                if payload.get("success"):
+                    job["stage"] = "COMPLETED"
+                    job["progress_percent"] = 100
+                    if job.get("claims_total"):
+                        job["claims_processed"] = job["claims_total"]
+                else:
+                    job["stage"] = "FAILED"
+                job["progress_updated_at"] = job["finished_at"]
                 write_job(job)
                 return
 
-            # Scheduled directional automations explicitly carry an
-            # automation_direction. Manual Conversion -> Test jobs do not;
-            # they use automation_type=ALL and must continue through the
-            # existing full batch pipeline below.
             direction = job.get("automation_direction")
             directional = None
             if direction:
@@ -200,7 +234,6 @@ class Command(BaseCommand):
                 "automation_type": job.get("automation_type") or "ALL",
             }).encode("utf-8")
             request_context = SimpleNamespace(method="POST", body=body, user=user)
-            # Import after Django has initialized and after the job is claimed.
             from edi835.views import _execute_batch_conversion
             response = _execute_batch_conversion(request_context)
             payload = json.loads(response.content.decode("utf-8"))
@@ -211,6 +244,9 @@ class Command(BaseCommand):
             job["state"] = "FAILED"
             job["status_code"] = 500
             job["result"] = {"success": False, "error": f"Batch worker failed: {exc}"}
+            if job.get("job_type") == "MANUAL_CONVERSION":
+                job["stage"] = "FAILED"
+                job["progress_updated_at"] = timezone.now().isoformat()
         if job.get("state") == "FAILED" and job["attempt_count"] <= int(job.get("retry_count") or 0):
             from datetime import timedelta
             job["state"] = "QUEUED"
