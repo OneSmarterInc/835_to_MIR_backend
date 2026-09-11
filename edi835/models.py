@@ -663,6 +663,7 @@ class MPLNotice(models.Model):
     program = models.CharField(max_length=30, blank=True, default="")
     notice_type = models.CharField(max_length=30, blank=True, default="")
     raw_email_body = models.TextField()
+    normalized_email = models.JSONField(default=dict, blank=True)
     source_filename = models.CharField(max_length=255, blank=True, default="")
     source_content_type = models.CharField(max_length=100, blank=True, default="application/vnd.ms-outlook")
     source_file = models.BinaryField(null=True, blank=True)
