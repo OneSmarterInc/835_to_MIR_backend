@@ -32,6 +32,71 @@ CORRECTION_CATALOGUE = {
 }
 
 
+APPROVED_EMAIL_ISSUE_RULES = {
+    "MP011": {
+        "meaning": "Reported timely-filing and member-liability issue.",
+        "inspect": ["service and filing dates", "current reject code", "MIR1019 member liability"],
+        "actions": [
+            "Verify timely-filing evidence and the applicable operational rule.",
+            "Confirm member liability is zero when the approved rule requires it.",
+        ],
+    },
+    "MP013": {
+        "meaning": "Reported missing group-number issue.",
+        "inspect": ["837 group fields", "MIR group fields"],
+        "actions": ["Compare the group number in the submitted 837 and returned MIR records."],
+    },
+    "MP003": {
+        "meaning": "Reported allowance and liability mismatch.",
+        "inspect": ["MIR1017 allowance", "MIR1018 TPA amount", "MIR1019 member liability"],
+        "actions": ["Verify that the approved MIR1018 and MIR1019 values reconcile to MIR1017."],
+    },
+    "RR001": {
+        "meaning": "Returned claim reportedly differs from the submitted 837.",
+        "inspect": ["claim charges", "service-line count", "service dates"],
+        "actions": ["Compare the returned record line by line with the original submitted 837."],
+    },
+    "UE036": {
+        "meaning": "Reported room-rate acknowledgement issue.",
+        "inspect": ["claim and room type", "current reject code", "applicable allowance rule"],
+        "actions": ["Verify the room-rate rule and current rejection data before applying an approved correction."],
+    },
+    "UE084": {
+        "meaning": "Reported rejection-handling issue.",
+        "inspect": ["current rejection data", "payer instruction", "member liability"],
+        "actions": ["Verify the requested reject-code handling against current claim evidence and approved procedures."],
+    },
+    "UE011": {
+        "meaning": "Claim reportedly already processed or submitted as a duplicate.",
+        "inspect": ["835 payment history", "reconciliation history", "duplicate submissions"],
+        "actions": ["Confirm prior processing in 835 and reconciliation history before taking further action."],
+    },
+}
+
+
+def reported_issue_rules(body):
+    """Return only approved issue definitions explicitly present in this claim context."""
+    codes = []
+    for code in re.findall(r"\b(?:MP|RR|UE)\d{3}\b", body or "", re.I):
+        normalized = code.upper()
+        if normalized not in codes:
+            codes.append(normalized)
+    return {
+        code: APPROVED_EMAIL_ISSUE_RULES[code]
+        for code in codes
+        if code in APPROVED_EMAIL_ISSUE_RULES
+    }
+
+
+def approved_actions_for_claim(email_context, findings):
+    actions = approved_actions(findings)
+    for rule in reported_issue_rules(email_context).values():
+        for action in rule["actions"]:
+            if action not in actions:
+                actions.append(action)
+    return actions
+
+
 class NoticeValidationError(ValueError):
     pass
 
@@ -367,46 +432,144 @@ def call_local_model(notice, claim, timeline, findings, actions):
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
     if not base_url:
         return None
-    model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
+
+    model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q8_0")
+    email_context = claim_email_context(
+        notice_email_body(notice),
+        claim.claim_control_number,
+    )
+    issue_rules = reported_issue_rules(email_context)
     evidence = {
-        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice_email_body(notice), claim.claim_control_number)},
-        "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
-        "timeline": timeline[-8:], "verified_findings": findings[:8],
-        "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions[:10])],
+        "claim_number": claim.claim_control_number,
+        "email_report": {
+            "text": email_context,
+            "issue_codes": list(issue_rules),
+            "approved_issue_rules": issue_rules,
+        },
+        "source_timeline": timeline[-8:],
+        "verified_findings": findings[:8],
+        "approved_actions": [
+            {"id": f"A{index + 1}", "text": action}
+            for index, action in enumerate(actions[:10])
+        ],
+    }
+    system_prompt = (
+        "/no_think\n"
+        "Analyze exactly one healthcare claim. The email report is an allegation; "
+        "verified_findings and source_timeline are application evidence. "
+        "approved_issue_rules define only the listed email codes. Unknown codes require manual review. "
+        "Use only supplied facts. Never invent claim numbers, filenames, statuses, amounts, code meanings, "
+        "or corrective actions. Never guarantee approval. Choose actions only by approved_actions id. "
+        "If evidence is absent or conflicting, say so. Return one JSON object with exactly these keys: "
+        "summary, reported_issue, verified_evidence, missing_evidence, primary_issue_code, "
+        "needs_response, recommended_actions, confidence, requires_human_review. "
+        "verified_evidence and missing_evidence are arrays of short strings. recommended_actions is an "
+        "array of objects containing action_id and reason. confidence is a number from 0 to 1. "
+        "requires_human_review must be true."
+    )
+    example_input = {
+        "claim_number": "CLAIM_A",
+        "email_report": {"text": "UE999 reported.", "issue_codes": ["UE999"], "approved_issue_rules": {}},
+        "source_timeline": [],
+        "verified_findings": [],
+        "approved_actions": [{"id": "A1", "text": "Review the email and evidence manually."}],
+    }
+    example_output = {
+        "summary": "The email reports an issue, but no application evidence or approved code definition was supplied.",
+        "reported_issue": "UE999 was reported but is not defined by an approved rule.",
+        "verified_evidence": [],
+        "missing_evidence": ["Source claim evidence and an approved definition for UE999 are missing."],
+        "primary_issue_code": "",
+        "needs_response": True,
+        "recommended_actions": [{"action_id": "A1", "reason": "The issue cannot be verified automatically."}],
+        "confidence": 0.2,
+        "requires_human_review": True,
     }
     payload = json.dumps({
-        "model": model_id, "temperature": 0.0, "max_tokens": 500, "response_format": {"type": "json_object"},
+        "model": model_id,
+        "temperature": 0.0,
+        "max_tokens": 450,
+        "response_format": {"type": "json_object"},
         "messages": [
-            {"role": "system", "content": "/no_think\nAnalyze one healthcare claim. Treat reported_issue_context as the sender's unverified report, and timeline plus verified_findings as application evidence. Explain whether the stored 837, MIR, 835, and reconciliation evidence supports the report. Suggest only review or correction steps grounded in supplied evidence and approved_actions. Return JSON only. Never invent claims, files, facts, actions, or guarantee approval. Required keys: summary, primary_issue_code, explanation, needs_response, recommended_actions, confidence, requires_human_review."},
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": json.dumps(example_input)},
+            {"role": "assistant", "content": json.dumps(example_output)},
             {"role": "user", "content": json.dumps(evidence)},
         ],
     }).encode()
     headers = {"Content-Type": "application/json"}
     if os.getenv("MPL_AI_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
+
     try:
-        request = Request(f"{base_url}/chat/completions", data=payload, headers=headers, method="POST")
-        with urlopen(request, timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120"))) as response:
+        request = Request(
+            f"{base_url}/chat/completions",
+            data=payload,
+            headers=headers,
+            method="POST",
+        )
+        with urlopen(
+            request,
+            timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120")),
+        ) as response:
             outer = json.loads(response.read().decode())
-        content = outer["choices"][0]["message"]["content"]
-        result = parse_model_json(content)
+        result = parse_model_json(outer["choices"][0]["message"]["content"])
     except (HTTPError, URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError):
         return None
-    allowed_codes = {item["code"] for item in findings}
-    if not isinstance(result, dict) or result.get("primary_issue_code", "") not in allowed_codes | {""}:
+
+    required_keys = {
+        "summary", "reported_issue", "verified_evidence", "missing_evidence",
+        "primary_issue_code", "needs_response", "recommended_actions",
+        "confidence", "requires_human_review",
+    }
+    if not required_keys.issubset(result):
         return None
+
+    allowed_finding_codes = {item["code"] for item in findings}
+    if result.get("primary_issue_code", "") not in allowed_finding_codes | {""}:
+        return None
+
+    invented_claims = set(extract_claim_identifiers(json.dumps(result))) - {
+        str(claim.claim_control_number).upper()
+    }
+    if invented_claims:
+        return None
+
+    if not isinstance(result.get("verified_evidence"), list) or not isinstance(
+        result.get("missing_evidence"), list
+    ):
+        return None
+
+    action_lookup = {
+        f"A{index + 1}": action
+        for index, action in enumerate(actions[:10])
+    }
     valid_actions = []
+    seen_action_ids = set()
     for item in result.get("recommended_actions", []):
-        try:
-            number = int(item.get("catalogue_action_number"))
-        except (TypeError, ValueError, AttributeError):
+        if not isinstance(item, dict):
             continue
-        if 1 <= number <= len(actions):
-            valid_actions.append({"catalogue_action_number": number, "explanation": str(item.get("explanation") or actions[number - 1])})
-    result.update({"recommended_actions": valid_actions, "requires_human_review": True, "model_id": model_id})
+        action_id = str(item.get("action_id") or "").upper()
+        if action_id not in action_lookup or action_id in seen_action_ids:
+            continue
+        seen_action_ids.add(action_id)
+        valid_actions.append({
+            "action_id": action_id,
+            "explanation": action_lookup[action_id],
+        })
+
+    try:
+        confidence = min(max(float(result.get("confidence", 0)), 0), 1)
+    except (TypeError, ValueError):
+        return None
+
+    result.update({
+        "recommended_actions": valid_actions,
+        "confidence": confidence,
+        "requires_human_review": True,
+        "model_id": model_id,
+    })
     return result
-
-
 
 def call_unmatched_notice_model(notice, identifiers, source_matches):
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
@@ -595,7 +758,7 @@ def process_notice(notice_id):
             email_context = claim_email_context(notice_email_body(notice), link.claim.claim_control_number)
             if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", email_context, re.I):
                 findings.append(_finding("NO_PREFIX_NOTICE", "error", "The MPL email reports that the returned claim has no prefix.", "MPL email"))
-            actions = approved_actions(findings)
+            actions = approved_actions_for_claim(email_context, findings)
             notice.status = "ANALYZING"
             notice.save()
             ai = call_local_model(notice, link.claim, timeline, findings, actions)
