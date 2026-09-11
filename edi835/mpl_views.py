@@ -3,7 +3,7 @@ import os
 import re
 import tempfile
 from datetime import datetime
-from email.utils import parsedate_to_datetime
+from email.utils import getaddresses, parsedate_to_datetime
 
 import extract_msg
 from bs4 import BeautifulSoup
@@ -27,6 +27,58 @@ def _body(request):
 
 def _clean_outlook_text(value):
     return str(value or "").replace("\x00", "").strip()
+
+
+def _graph_datetime(value):
+    if not value:
+        return None
+    if timezone.is_naive(value):
+        value = timezone.make_aware(value)
+    return value.isoformat().replace("+00:00", "Z")
+
+
+def _graph_recipients(value):
+    recipients = []
+    for name, address in getaddresses([_clean_outlook_text(value).replace(";", ",")]):
+        name, address = name.strip(), address.strip()
+        if name or address:
+            recipients.append({"emailAddress": {"name": name or address, "address": address}})
+    return recipients
+
+
+def _graph_message(*, subject, body, sender, received_at=None, to="", cc="", bcc="",
+                   message_id="", conversation_id="", has_attachments=False):
+    sender_items = _graph_recipients(sender)
+    sender_value = sender_items[0] if sender_items else {
+        "emailAddress": {"name": _clean_outlook_text(sender), "address": ""}
+    }
+    timestamp = _graph_datetime(received_at)
+    return {
+        "@odata.type": "#microsoft.graph.message",
+        "id": _clean_outlook_text(message_id),
+        "createdDateTime": timestamp,
+        "lastModifiedDateTime": timestamp,
+        "receivedDateTime": timestamp,
+        "sentDateTime": timestamp,
+        "hasAttachments": bool(has_attachments),
+        "internetMessageId": _clean_outlook_text(message_id),
+        "subject": _clean_outlook_text(subject),
+        "bodyPreview": clean_preview(body),
+        "importance": "normal",
+        "conversationId": _clean_outlook_text(conversation_id),
+        "isRead": True,
+        "body": {"contentType": "text", "content": _clean_outlook_text(body)},
+        "sender": sender_value,
+        "from": sender_value,
+        "toRecipients": _graph_recipients(to),
+        "ccRecipients": _graph_recipients(cc),
+        "bccRecipients": _graph_recipients(bcc),
+        "replyTo": [],
+    }
+
+
+def clean_preview(body):
+    return re.sub(r"\s+", " ", _clean_outlook_text(body)).strip()[:255]
 
 
 def _extract_msg_body(message):
@@ -74,6 +126,18 @@ def _parse_msg_upload(upload):
                 received_at = None
         if received_at and timezone.is_naive(received_at):
             received_at = timezone.make_aware(received_at)
+        normalized_email = _graph_message(
+            subject=subject,
+            body=body,
+            sender=sender,
+            received_at=received_at,
+            to=getattr(message, "to", ""),
+            cc=getattr(message, "cc", ""),
+            bcc=getattr(message, "bcc", ""),
+            message_id=getattr(message, "messageId", ""),
+            conversation_id=getattr(message, "conversationId", ""),
+            has_attachments=bool(getattr(message, "attachments", [])),
+        )
         if not subject:
             raise NoticeValidationError("The .msg file does not contain an email subject.")
         if not body:
@@ -86,6 +150,7 @@ def _parse_msg_upload(upload):
             "body": body,
             "sender": sender,
             "received_at": received_at,
+            "normalized_email": normalized_email,
         }
     except NoticeValidationError:
         raise
@@ -148,6 +213,7 @@ def mpl_notices(request):
                 program=parsed["program"],
                 notice_type=parsed["notice_type"],
                 raw_email_body=email_body,
+                normalized_email=parsed_upload["normalized_email"],
                 requested_claim_numbers=claim_numbers[:50],
                 source_filename=parsed_upload["filename"],
                 source_content_type=parsed_upload["content_type"],
@@ -178,7 +244,14 @@ def mpl_notices(request):
                 received_at=received_at, reporting_year=data.get("reporting_year"),
                 reporting_period_start=parsed["period_start"], reporting_period_end=parsed["period_end"],
                 program=parsed["program"], notice_type=parsed["notice_type"],
-                raw_email_body=email_body, requested_claim_numbers=claim_numbers[:50],
+                raw_email_body=email_body,
+                normalized_email=data.get("normalized_email") or _graph_message(
+                    subject=subject,
+                    body=email_body,
+                    sender=str(data.get("sender") or ""),
+                    received_at=received_at,
+                ),
+                requested_claim_numbers=claim_numbers[:50],
                 created_by=request.user,
             )
         return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)}, status=201)
