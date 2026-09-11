@@ -190,3 +190,9 @@ def store_mir_file(
 def set_mir_push_status(mir_file: MIRFile, pushed: bool) -> None:
     mir_file.status = "PUSHED" if pushed else "PUSH_FAILED"
     mir_file.save(update_fields=["status", "updated_at"])
+    if pushed:
+        # Successful SFTP delivery is the clock start for the four-day
+        # duplicate window. Keep this hook next to the authoritative PUSHED
+        # transition so manual, batch, and automatic sends all behave alike.
+        from .held_claims import note_mir_sent
+        note_mir_sent(mir_file)
