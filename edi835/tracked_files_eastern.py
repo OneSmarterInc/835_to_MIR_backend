@@ -9,12 +9,15 @@ metadata that is needed by both portals.
 Background polling can request ``?lightweight=1``. That path reads the latest
 tracked-file metadata directly from the database and deliberately skips the
 folder observer and per-file filesystem checks performed by the full endpoint.
-This keeps validation/conversion requests from competing with repeated history
-refreshes while preserving the original full-sync behavior for normal/manual
-loads.
+Repeated callers that do not yet know about ``lightweight=1`` are also
+protected: only one full filesystem-backed refresh is allowed per scope during
+a short interval; intervening polls use the database-only path. This prevents
+history polling from starving validation/conversion requests while retaining
+periodic folder synchronization.
 """
 
 import json
+import time
 from zoneinfo import ZoneInfo
 
 from django.http import JsonResponse
@@ -24,6 +27,8 @@ from .views import tracked_files_list as _tracked_files_list
 
 
 EASTERN = ZoneInfo("America/New_York")
+FULL_REFRESH_INTERVAL_SECONDS = 15.0
+_LAST_FULL_REFRESH = {}
 
 
 def _to_eastern_iso(value):
@@ -42,6 +47,35 @@ def _to_eastern_iso(value):
 
 def _is_truthy(value):
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _refresh_scope_key(request):
+    user = getattr(request, "user", None)
+    return (
+        getattr(user, "pk", None),
+        getattr(user, "client_id", None),
+        bool(getattr(user, "is_staff", False)),
+        str(request.GET.get("scope") or ""),
+    )
+
+
+def _use_lightweight_refresh(request, explicitly_lightweight=False):
+    if explicitly_lightweight:
+        return True
+    if _is_truthy(request.GET.get("full_sync")):
+        _LAST_FULL_REFRESH[_refresh_scope_key(request)] = time.monotonic()
+        return False
+
+    key = _refresh_scope_key(request)
+    now = time.monotonic()
+    previous = _LAST_FULL_REFRESH.get(key)
+    if previous is not None and now - previous < FULL_REFRESH_INTERVAL_SECONDS:
+        return True
+
+    # Reserve the full-refresh slot before starting the potentially expensive
+    # folder scan. Concurrent/repeated polls immediately take the fast path.
+    _LAST_FULL_REFRESH[key] = now
+    return False
 
 
 def _enrich_conversion_holds(payload, include_findings=True):
@@ -79,9 +113,13 @@ def _enrich_conversion_holds(payload, include_findings=True):
 def _lightweight_payload(request, include_findings=False):
     """Return tracked-file metadata without folder scans or filesystem checks."""
     client = getattr(request.user, "client", None)
+    deferred_fields = ["input_file_content", "mir_file__file_content"]
+    if not include_findings:
+        deferred_fields.append("conversion_findings")
+
     if request.user.is_staff:
         records = EDI835File.objects.select_related("client", "mir_file").defer(
-            "input_file_content", "mir_file__file_content"
+            *deferred_fields
         )
         if request.user.is_superuser and request.GET.get("scope") == "global":
             records = records.filter(client__isnull=True)
@@ -94,7 +132,7 @@ def _lightweight_payload(request, include_findings=False):
         records = (
             EDI835File.objects.filter(client=client)
             .select_related("client", "mir_file")
-            .defer("input_file_content", "mir_file__file_content")
+            .defer(*deferred_fields)
             .order_by("-uploaded_at")[:200]
         )
 
@@ -136,11 +174,15 @@ def _lightweight_payload(request, include_findings=False):
 
 def tracked_files_list_eastern(request):
     include_findings = _is_truthy(request.GET.get("include_conversion_findings", "1"))
-    lightweight = _is_truthy(request.GET.get("lightweight"))
+    requested_lightweight = _is_truthy(request.GET.get("lightweight"))
+    authenticated = bool(getattr(request.user, "is_authenticated", False))
+    lightweight = authenticated and _use_lightweight_refresh(
+        request, explicitly_lightweight=requested_lightweight
+    )
 
     # Keep authentication and the historical endpoint contract intact. The
-    # fast path is used only for already-authenticated background polling.
-    if lightweight and getattr(request.user, "is_authenticated", False):
+    # database-only fast path is used only for authenticated callers.
+    if lightweight:
         payload = _lightweight_payload(request, include_findings=include_findings)
         status_code = 200
     else:
