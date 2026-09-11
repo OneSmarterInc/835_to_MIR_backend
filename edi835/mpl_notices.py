@@ -52,6 +52,14 @@ def parse_subject(subject, reporting_year=None, received_at=None):
     }
 
 
+
+def notice_email_body(notice):
+    """Return the canonical body from the Microsoft Graph-shaped message."""
+    normalized = notice.normalized_email or {}
+    body = normalized.get("body") or {}
+    content = body.get("content") if isinstance(body, dict) else ""
+    return str(content or notice_email_body(notice) or "").replace("\x00", "").strip()
+
 def split_latest_message(body):
     text = (body or "").replace("\r\n", "\n").strip()
     lower = text.lower()
@@ -226,7 +234,7 @@ def search_claim_sources(notice, identifiers):
 
 def match_claims(notice):
     identifiers = extract_claim_identifiers(
-        f"{notice.subject}\n{notice.raw_email_body}",
+        f"{notice.subject}\n{notice_email_body(notice)}",
         notice.requested_claim_numbers,
     )
     matches = []
@@ -347,7 +355,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         return None
     model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
     evidence = {
-        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice.raw_email_body, claim.claim_control_number)},
+        "email": {"program": notice.program, "period_start": str(notice.reporting_period_start), "period_end": str(notice.reporting_period_end), "reported_issue_context": claim_email_context(notice_email_body(notice), claim.claim_control_number)},
         "claim": {"claim_number": claim.claim_control_number, "status": "under_review"},
         "timeline": timeline[-8:], "verified_findings": findings[:8],
         "approved_actions": [{"number": index + 1, "text": action} for index, action in enumerate(actions[:10])],
@@ -404,12 +412,12 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         return fallback
 
     contexts = [
-        claim_email_context(notice.raw_email_body, identifier)
+        claim_email_context(notice_email_body(notice), identifier)
         for identifier in identifiers[:8]
     ]
     reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:3000]
     if not reported_email:
-        reported_email = clean_email_for_analysis(notice.raw_email_body)[:3000]
+        reported_email = clean_email_for_analysis(notice_email_body(notice))[:3000]
 
     compact_matches = [
         {
@@ -513,10 +521,10 @@ def process_notice(notice_id):
         parsed = parse_subject(notice.subject, notice.reporting_year, notice.received_at)
         notice.reporting_period_start, notice.reporting_period_end = parsed["period_start"], parsed["period_end"]
         notice.program, notice.notice_type = parsed["program"], parsed["notice_type"]
-        notice.latest_message_body, notice.quoted_email_history = split_latest_message(notice.raw_email_body)
+        notice.latest_message_body, notice.quoted_email_history = split_latest_message(notice_email_body(notice))
         notice.latest_message_body = clean_email_for_analysis(notice.latest_message_body)
         identifiers = extract_claim_identifiers(
-            f"{notice.subject}\n{notice.raw_email_body}",
+            f"{notice.subject}\n{notice_email_body(notice)}",
             notice.requested_claim_numbers,
         )
         all_source_matches = search_claim_sources(notice, identifiers)
@@ -558,7 +566,7 @@ def process_notice(notice_id):
         notice.save()
         for link in links:
             timeline, files, findings = collect_evidence(link.claim)
-            email_context = claim_email_context(notice.raw_email_body, link.claim.claim_control_number)
+            email_context = claim_email_context(notice_email_body(notice), link.claim.claim_control_number)
             if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", email_context, re.I):
                 findings.append(_finding("NO_PREFIX_NOTICE", "error", "The MPL email reports that the returned claim has no prefix.", "MPL email"))
             actions = approved_actions(findings)
@@ -600,5 +608,5 @@ def claim_summary(link):
 def serialize_notice(notice, detail=False):
     data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": notice.source_matches, "ai_response": notice.ai_response, "ai_response_source": notice.ai_response_source, "ai_suggestions": notice.ai_suggestions}
     if detail:
-        data.update({"email_body": notice.raw_email_body, "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
+        data.update({"email_body": notice_email_body(notice), "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
     return data
