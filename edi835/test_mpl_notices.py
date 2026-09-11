@@ -6,7 +6,7 @@ from django.utils import timezone
 
 from accounts.models import Client, User
 from edi835.models import EDI837Claim, EDI837File, MPLNotice
-from edi835.mpl_notices import NoticeValidationError, parse_subject, process_notice, split_latest_message
+from edi835.mpl_notices import (\n    NoticeValidationError,\n    extract_claim_identifiers,\n    parse_subject,\n    process_notice,\n    split_latest_message,\n)
 
 
 class MPLSubjectTests(TestCase):
@@ -34,6 +34,37 @@ class MPLSubjectTests(TestCase):
         latest, history = split_latest_message("Please review this claim.\n\nFrom: Scott\nSent: Tuesday\nOlder email")
         self.assertEqual(latest, "Please review this claim.")
         self.assertIn("From: Scott", history)
+
+
+class MPLClaimExtractionTests(TestCase):
+    def test_extracts_real_mpl_claim_numbers_and_excludes_issue_codes(self):
+        body = """
+        UE084 - use PR31
+        MP013 - missing group
+        RR001 Error
+        33020262300027000
+        33020262091936200
+        33020262253998500--UE036
+        MP001/MP002
+        """
+        self.assertEqual(
+            extract_claim_identifiers(body),
+            [
+                "33020262300027000",
+                "33020262091936200",
+                "33020262253998500",
+            ],
+        )
+
+    def test_accepts_explicitly_labeled_legacy_alphanumeric_claim(self):
+        self.assertEqual(
+            extract_claim_identifiers("Please review claim CLM12345."),
+            ["CLM12345"],
+        )
+
+    def test_does_not_extract_dates_mir_fields_or_ordinary_words(self):
+        body = "Period 2026-08-21. Check MIR1019, CON89, HEADER, DIRECT and UE115."
+        self.assertEqual(extract_claim_identifiers(body), [])
 
 
 class MPLNoticeAPITests(TestCase):
