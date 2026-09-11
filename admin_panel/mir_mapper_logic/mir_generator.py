@@ -65,6 +65,9 @@ def _service_block(service: ServiceLine, claim: Claim, sequence: int, max_sequen
             continue
         value = evaluate_field(
             field, claim, service, sequence, max_sequence, line_count,
+            inherited_reason, fields, process_date,
+        ) if False else evaluate_field(
+            field, claim, service, sequence, max_sequence, line_count,
             inherited_reason, process_date=process_date,
         )
         _put(b, field, value)
@@ -190,7 +193,19 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
     seen_icns: set[str] = set()
     seen_claim_numbers: set[str] = set()
 
-    for claim in claim_list:
+    # One database read covers every incoming claim. Only successfully pushed
+    # MIR claims from the previous four days participate in the quarantine.
+    recent_history = {}
+    incoming_claim_numbers = {
+        _normalized_claim_number(claim)
+        for claim in claim_list
+        if _normalized_claim_number(claim)
+    }
+    if client is not None and incoming_claim_numbers:
+        from edi835.held_claims import recent_sent_claim_history
+        recent_history = recent_sent_claim_history(client, incoming_claim_numbers)
+
+    for claim_index, claim in enumerate(claim_list, start=1):
         total_claims += 1
         services = claim.services or []
         total_services += len(services)
@@ -207,11 +222,28 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
                 duplicate_claim_number_finding = _finding(
                     claim,
                     "DUPLICATE_CLAIM_NUMBER",
-                    "Duplicate claim number detected in this MIR. The first occurrence was processed; this later occurrence was held.",
+                    "Duplicate claim number detected in this MIR. The first occurrence is processed; this later occurrence is held until four days after the first successful send.",
                     duplicate_claim_number=claim_number_key,
+                    claim_index=claim_index,
+                    release_status="WAITING_FOR_FIRST_SEND",
                 )
             else:
                 seen_claim_numbers.add(claim_number_key)
+
+        historical_duplicate_finding = None
+        history = recent_history.get(claim_number_key) if claim_number_key else None
+        if history:
+            historical_duplicate_finding = _finding(
+                claim,
+                "DUPLICATE_RECENT_MIR",
+                "This claim was already sent in a MIR within the last four days and is held until the four-day waiting period expires.",
+                claim_index=claim_index,
+                previous_sent_at=history["previous_sent_at"].isoformat(),
+                eligible_send_at=history["eligible_send_at"].isoformat(),
+                previous_mir_filename=history["previous_mir_filename"],
+                previous_mir_id=history["previous_mir_id"],
+                release_status="HELD",
+            )
 
         preventive_findings = evaluate_preventive_rules(
             claim,
@@ -234,8 +266,12 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
             refused_claims += 1
 
         claim_findings = preventive_findings + _claim_findings(claim)
+        if historical_duplicate_finding is not None:
+            claim_findings.insert(0, historical_duplicate_finding)
         if duplicate_claim_number_finding is not None:
             claim_findings.insert(0, duplicate_claim_number_finding)
+        for finding in claim_findings:
+            finding.setdefault("claim_index", str(claim_index))
         if claim_findings:
             findings.extend(claim_findings)
         if any(is_blocking(finding) for finding in claim_findings):
@@ -264,6 +300,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
                 maximum_services=maximum_services,
                 required_records=max_sequence,
                 maximum_records=config.MAX_RECORD_SEQUENCE,
+                claim_index=claim_index,
             ))
             continue
 
@@ -299,6 +336,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
                 claim, code,
                 "Claim could not fit the MIR layout and was held.",
                 detail=detail,
+                claim_index=claim_index,
             ))
             continue
 
