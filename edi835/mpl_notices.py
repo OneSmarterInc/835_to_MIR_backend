@@ -428,7 +428,16 @@ def parse_model_json(content):
     return result
 
 
+def local_ai_enabled():
+    """AI is opt-in so CPU inference cannot slow the production web server."""
+    return os.getenv("MPL_AI_ENABLED", "false").strip().lower() in {
+        "1", "true", "yes", "on",
+    }
+
+
 def call_local_model(notice, claim, timeline, findings, actions):
+    if not local_ai_enabled():
+        return None
     base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
     if not base_url:
         return None
@@ -575,7 +584,11 @@ def call_local_model(notice, claim, timeline, findings, actions):
     return result
 
 def call_unmatched_notice_model(notice, identifiers, source_matches):
-    base_url = os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
+    base_url = (
+        os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
+        if local_ai_enabled()
+        else ""
+    )
     fallback = {
         "summary": (
             f"Extracted {len(identifiers)} claim number(s) from the email. None matched stored "
