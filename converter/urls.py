@@ -1,10 +1,12 @@
 from django.urls import path
 from .views import api_convert, api_validate, download_mir, api_get_file_content, api_download_archive_zip
+from .async_conversion import api_convert_async
 from edi835.views import api_sftp_connect
 from edi835.batch_test_837_v3 import api_start_batch_conversion_with_837
 from project835.drf_compat import authenticated_api
 
 api_convert = authenticated_api(api_convert)
+api_convert_async = authenticated_api(api_convert_async)
 api_validate = authenticated_api(api_validate)
 download_mir = authenticated_api(download_mir)
 api_get_file_content = authenticated_api(api_get_file_content)
@@ -14,6 +16,7 @@ api_start_batch_conversion = authenticated_api(api_start_batch_conversion_with_8
 
 urlpatterns = [
     path("api/convert/", api_convert, name="api_convert"),
+    path("api/convert-async/", api_convert_async, name="api_convert_async"),
     path("api/validate/", api_validate, name="api_validate"),
     path("api/start-batch-conversion/", api_start_batch_conversion, name="api_start_batch_conversion"),
     path("api/download/", download_mir, name="download_mir"),
