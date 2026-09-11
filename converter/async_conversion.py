@@ -33,6 +33,13 @@ def _public_job(job: dict) -> dict:
         "state": job.get("state"),
         "file_id": job.get("file_id"),
         "queued": job.get("state") in {"QUEUED", "RUNNING"},
+        "priority": job.get("priority", 0 if job.get("job_type") == "MANUAL_CONVERSION" else 20),
+        "stage": job.get("stage"),
+        "claims_total": int(job.get("claims_total") or 0),
+        "claims_processed": int(job.get("claims_processed") or 0),
+        "progress_percent": float(job.get("progress_percent") or 0),
+        "current_claim": job.get("current_claim") or "",
+        "progress_updated_at": job.get("progress_updated_at"),
         "started_at": job.get("started_at"),
         "worker_started_at": job.get("worker_started_at"),
         "finished_at": job.get("finished_at"),
@@ -105,11 +112,18 @@ def api_convert_async(request):
     job = {
         "id": str(uuid.uuid4()),
         "job_type": "MANUAL_CONVERSION",
+        "priority": 0,
         "scope_key": scope_key,
         "state": "QUEUED",
+        "stage": "QUEUED",
         "file_id": str(record.id),
         "client_id": str(record.client_id or ""),
         "owner_user_id": str(getattr(user, "id", "") or ""),
+        "claims_total": int(record.claims_count or 0),
+        "claims_processed": 0,
+        "progress_percent": 0,
+        "current_claim": "",
+        "progress_updated_at": now.isoformat(),
         "started_at": now.isoformat(),
         "worker_started_at": None,
         "finished_at": None,
@@ -120,8 +134,6 @@ def api_convert_async(request):
     }
     write_job(job)
 
-    # Validation already created this row as PROCESSING. Reassert that state so
-    # Conversion/Checks/Archive can show the new run immediately while the worker runs.
     if record.status != "PROCESSING":
         record.status = "PROCESSING"
         record.processing_started_at = now
@@ -135,5 +147,5 @@ def api_convert_async(request):
         record.save(update_fields=["processing_started_at"])
 
     payload = _public_job(job)
-    payload["message"] = "MIR conversion queued for background processing."
+    payload["message"] = "MIR conversion queued at highest priority for background processing."
     return JsonResponse(payload, status=202)
