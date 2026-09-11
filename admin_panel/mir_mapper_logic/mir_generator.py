@@ -6,6 +6,10 @@ from decimal import Decimal
 from typing import Any, Dict, Iterable, List, Tuple
 
 from . import config
+from .financial_validation import (
+    UnsupportedPatientResponsibilityError,
+    validate_patient_responsibility_mapping,
+)
 from .mapping_engine import evaluate_field
 from .mapping_store import get_mappings
 from .mir_mapper import claim_primary_reason
@@ -95,6 +99,7 @@ def _finding(claim: Claim, code: str, reason: str, service_line: int | None = No
 
 def _claim_findings(claim: Claim) -> list[dict]:
     findings: list[dict] = []
+    inherited_reason = claim_primary_reason(claim)
     for line_number, service in enumerate(claim.services or [], start=1):
         contractual = co_adjustment_total(service)
         covered = covered_charge(service)
@@ -117,18 +122,31 @@ def _claim_findings(claim: Claim) -> list[dict]:
                 "Payment exceeds the derived covered amount.", line_number,
                 patient_liability=liability, payment=service.paid,
             ))
-        for adjustment in service.adjustments:
-            if (
-                adjustment.group == config.X12_PATIENT_RESP_GROUP
-                and adjustment.reason not in config.ORDINARY_PATIENT_RESPONSIBILITY_REASONS
-                and adjustment.reason != "45"
-            ):
-                findings.append(_finding(
-                    claim, "UNMAPPED_PR_REASON",
-                    f"Patient-responsibility reason PR{adjustment.reason} has no MIR reduction slot.",
-                    line_number, adjustment_reason=f"PR{adjustment.reason}",
-                    adjustment_amount=adjustment.amount,
-                ))
+
+        # Keep the newer financial-safety rules, but convert a service-level
+        # mapping failure into a claim hold instead of aborting the whole file.
+        try:
+            validate_patient_responsibility_mapping(service, claim.status, inherited_reason)
+        except UnsupportedPatientResponsibilityError as exc:
+            adjustment = next(
+                (
+                    item for item in service.adjustments
+                    if item.group == config.X12_PATIENT_RESP_GROUP
+                    and item.reason not in config.ORDINARY_PATIENT_RESPONSIBILITY_REASONS
+                    and item.reason != "45"
+                ),
+                None,
+            )
+            findings.append(_finding(
+                claim,
+                "UNMAPPED_PR_REASON",
+                str(exc),
+                line_number,
+                adjustment_reason=(
+                    f"{adjustment.group}{adjustment.reason}" if adjustment else None
+                ),
+                adjustment_amount=(adjustment.amount if adjustment else None),
+            ))
     return findings
 
 
