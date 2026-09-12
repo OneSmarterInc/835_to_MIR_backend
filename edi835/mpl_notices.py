@@ -526,10 +526,28 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 .order_by("claim_sequence")
                 .first()
             )
+            stored_835_internal = ""
+            for segment in re.split(r"[~\r\n]+", source.input_file_content or ""):
+                fields = segment.strip().split("*")
+                if (
+                    len(fields) > 7
+                    and fields[0].upper() == "CLP"
+                    and fields[1].strip().upper() == identifier.upper()
+                ):
+                    # The archived 835 is stored in the database. Its CLP01
+                    # contains the Highmark number and CLP07 contains the
+                    # alphanumeric suffix used by the corresponding MIR.
+                    base, suffix = fields[1].strip(), fields[7].strip()
+                    stored_835_internal = (
+                        base if suffix.upper() in {"", base.upper()}
+                        else f"{base}{suffix}"
+                    )
+                    break
             append_source("835", source.id, {
                 "type": "835",
                 "internal_claim_number": alphanumeric_claim_number(
                     getattr(linked_mir_claim, "claim_control_number", ""),
+                    stored_835_internal,
                     authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
