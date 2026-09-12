@@ -54,6 +54,47 @@ class EDI835File(models.Model):
         return f"{self.original_filename} ({self.id})"
 
 
+
+class EDI835Claim(models.Model):
+    """Normalized claim-level record parsed from one stored 835 CLP loop."""
+
+    edi_file = models.ForeignKey(
+        EDI835File, on_delete=models.CASCADE, related_name="claims"
+    )
+    claim_sequence = models.PositiveIntegerField()
+    highmark_claim_number = models.CharField(max_length=100, db_index=True)
+    internal_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    claim_status = models.CharField(max_length=20, blank=True, default="")
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    service_count = models.PositiveIntegerField(default=0)
+    raw_claim = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "835_claim"
+        ordering = ["claim_sequence"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["edi_file", "claim_sequence"],
+                name="uniq_835_claim_sequence",
+            )
+        ]
+        indexes = [
+            models.Index(
+                fields=["edi_file", "highmark_claim_number"],
+                name="edi835_file_highmark_idx",
+            ),
+            models.Index(
+                fields=["internal_claim_number"],
+                name="edi835_internal_idx",
+            ),
+        ]
+
+
+
 class SFTPConfig(models.Model):
     PURPOSES = [
         ("DEFAULT", "Default SFTP"),
