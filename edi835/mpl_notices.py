@@ -411,31 +411,31 @@ def internal_claim_number_from_835(content, highmark_claim_number):
                 ),
                 "",
             )
-            return f"{base}{suffix}" if suffix else ""
+            return suffix
     return ""
 
 
 def internal_claim_number_from_source(highmark_claim_number, *database_values):
-    """Return the complete internal claim identifier stored for one source row."""
+    """Return only the internal suffix verified inside one source database row."""
     wanted = str(highmark_claim_number or "").strip().upper()
     if not wanted:
         return ""
 
-    # MIR and RECON rows commonly store the internal identifier as the
-    # Highmark number plus an alphanumeric suffix, sometimes after an HI
-    # record prefix. Read that complete token directly from the stored row.
-    token_pattern = re.compile(
-        rf"(?<![A-Z0-9])(?:HI)?({re.escape(wanted)}[A-Z0-9]+)(?![A-Z0-9])",
+    # MIR and RECON store the Highmark identifier followed immediately by
+    # the internal alphanumeric suffix. Return the suffix alone.
+    suffix_pattern = re.compile(
+        rf"(?<![A-Z0-9])(?:HI)?{re.escape(wanted)}([A-Z0-9]+)(?![A-Z0-9])",
         re.I,
     )
     normalized = [str(value or "").strip() for value in database_values]
     for value in normalized:
-        match = token_pattern.search(value)
+        match = suffix_pattern.search(value)
         if match:
-            return match.group(1)
+            suffix = match.group(1)
+            if re.search(r"[A-Z]", suffix, re.I) and re.search(r"\d", suffix):
+                return suffix
 
-    # An explicitly normalized database column can use a different
-    # alphanumeric identifier rather than the Highmark-number prefix.
+    # A normalized internal-claim column may already contain only the suffix.
     for value in normalized:
         if (
             value
@@ -461,35 +461,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
     for identifier in identifiers[:50]:
         sources = []
         seen_sources = set()
-
-        # The email identifier is the Highmark claim number. Resolve the
-        # corresponding internal claim number from normalized 837 database
-        # records; never copy the email identifier into the internal column.
-        internal_number_rows = list(
-            EDI837Claim.objects.filter(
-                client=notice.client,
-                highmark_claim_number__iexact=identifier,
-            )
-            .exclude(internal_claim_number="")
-            .values_list("internal_claim_number", flat=True)
-            .distinct()[:10]
-        )
-        if not internal_number_rows:
-            internal_number_rows = list(
-                EDI837Claim.objects.filter(client=notice.client)
-                .filter(
-                    Q(claim_control_number__iexact=identifier)
-                    | Q(reference_9c__iexact=identifier)
-                    | Q(patient_control_number__iexact=identifier)
-                    | Q(raw_claim__contains=identifier)
-                )
-                .exclude(internal_claim_number="")
-                .values_list("internal_claim_number", flat=True)
-                .distinct()[:10]
-            )
-        authoritative_internal_number = ", ".join(
-            dict.fromkeys(str(value).strip() for value in internal_number_rows if value)
-        )
 
         def append_source(source_type, source_id, payload):
             key = (source_type, str(source_id))
@@ -522,10 +493,9 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "internal_claim_number": internal_claim_number_from_source(
                     identifier,
                     claim_837.internal_claim_number,
+                    claim_837.raw_claim,
                     claim_837.reference_9c,
                     claim_837.claim_control_number,
-                    claim_837.raw_claim,
-                    authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
                 "status": source.status,
@@ -556,7 +526,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                     identifier,
                     mir_claim.header_raw,
                     mir_claim.claim_control_number,
-                    authoritative_internal_number,
                 ),
                 "filename": source.mir_filename,
                 "status": mir_claim.claim_status or source.status,
@@ -597,10 +566,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "internal_claim_number": internal_claim_number_from_source(
                     identifier,
                     stored_835_internal,
-                    getattr(linked_mir_claim, "header_raw", ""),
-                    getattr(linked_mir_claim, "claim_control_number", ""),
                     source.input_file_content,
-                    authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
                 "status": source.status,
@@ -633,7 +599,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                     recon_claim.raw_record,
                     recon_claim.claim_control_number,
                     recon_claim.patient_control_number,
-                    authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
                 "status": recon_claim.claim_status or source.status,
