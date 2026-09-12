@@ -682,7 +682,8 @@ def call_local_model(notice, claim, timeline, findings, actions):
     system_prompt = (
         "/no_think\n"
         "Analyze exactly one healthcare claim. The email report is an allegation; "
-        "verified_findings and source_timeline are application evidence. "
+        "verified_findings and source_timeline are application evidence. Evidence priority is: "
+        "verified findings, authoritative_check_rules, approved_issue_rules, then raw email wording. "
         "approved_issue_rules define only the listed email codes. Unknown codes require manual review. "
         "Use only supplied facts. Never invent claim numbers, filenames, statuses, amounts, code meanings, "
         "or corrective actions. Never guarantee approval. Choose actions only by approved_actions id. "
@@ -832,6 +833,7 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
     compact_matches = [
         {
             "claim_number": item.get("claim_number"),
+            "reported_issues": item.get("reported_issues", []),
             "sources": [
                 {
                     "type": source.get("type"),
@@ -849,6 +851,9 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         "reported_email": reported_email,
         "extracted_claim_numbers": identifiers[:50],
         "source_matches": compact_matches,
+        "unknown_codes": unknown_reported_codes(reported_email),
+        "approved_issue_rules": reported_issue_rules(reported_email),
+        "authoritative_check_rules": authoritative_rule_catalog(reported_issue_rules(reported_email)),
         "database_result": (
             "Claim numbers were extracted from the email, but none matched stored 837 claim data. "
             "MIR, 835, or reconciliation matches may still be listed in source_matches."
@@ -867,8 +872,9 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                     "investigation steps using only the supplied evidence. If extracted_claim_numbers is "
                     "non-empty, explicitly say claims were extracted; never say the email contains no claim "
                     "data. Distinguish extraction from the absence of a stored 837 match. Mention MIR, 835, "
-                    "or reconciliation matches only when present in source_matches. Do not invent facts, "
-                    "corrections, or guarantee approval. Return JSON only with keys summary and suggestions; "
+                    "or reconciliation matches only when present in source_matches. Explicitly list any unknown_codes "
+                    "and unclear statements as things requiring human clarification. Treat check rules as authoritative "
+                    "over email wording. Do not invent facts, corrections, or guarantee approval. Return JSON only with keys summary and suggestions; "
                     "suggestions must be an array of short, actionable strings."
                 ),
             },
