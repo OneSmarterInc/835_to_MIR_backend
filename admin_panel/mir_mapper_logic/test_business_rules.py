@@ -1,6 +1,7 @@
 import unittest
 from decimal import Decimal
 
+from .mir_generator import _duplicate_checks_enabled
 from .mir_mapper import (
     claim_disposition,
     mir_patient_liability,
@@ -151,6 +152,14 @@ class MirBusinessRuleTests(unittest.TestCase):
                     r"MIR reduction slot 3 cannot contain both (PR3 and PR119|PR119 and PR3)",
                 ):
                     payment_reduction_slots(service)
+
+    def test_duplicate_controls_apply_at_50_service_lines(self):
+        claim = Claim(services=[ServiceLine() for _ in range(50)])
+        self.assertTrue(_duplicate_checks_enabled(claim))
+
+    def test_duplicate_controls_are_skipped_above_50_service_lines(self):
+        claim = Claim(services=[ServiceLine() for _ in range(51)])
+        self.assertFalse(_duplicate_checks_enabled(claim))
 
 
 if __name__ == "__main__":
