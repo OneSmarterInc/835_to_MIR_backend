@@ -522,6 +522,34 @@ def edi837_search(request):
         for source_type, item in blank_sources.items():
             target.setdefault(source_type, item)
 
+    def patient_from_sources(item_835, mir, recon):
+        if mir:
+            name = " ".join(filter(None, (
+                str(mir.patient_first_name or "").strip(),
+                str(mir.patient_last_name or "").strip(),
+            ))).strip()
+            if name:
+                return name
+        for source in (recon, item_835):
+            data = getattr(source, "segment_data", None) or {}
+            direct = str(data.get("patient_name") or "").strip()
+            if direct:
+                return direct
+            first = str(data.get("patient_first_name") or data.get("first_name") or "").strip()
+            last = str(data.get("patient_last_name") or data.get("last_name") or "").strip()
+            name = " ".join(filter(None, (first, last))).strip()
+            if name:
+                return name
+        if item_835:
+            for segment in (item_835.segment_data or {}).get("segments", []):
+                fields = str(segment).split("*")
+                if len(fields) > 4 and fields[0].upper() == "NM1" and fields[1].upper() == "QC":
+                    return " ".join(filter(None, (
+                        fields[4].strip() if len(fields) > 4 else "",
+                        fields[3].strip() if len(fields) > 3 else "",
+                    ))).strip()
+        return ""
+
     rows = []
     ordered_groups = sorted(
         grouped.values(), key=lambda item: (item["highmark"], item["internal"].upper())
@@ -534,6 +562,7 @@ def edi837_search(request):
         )
         mir_internal = source_numbers(mir.claim_control_number)[1] if mir else ""
         recon_internal = source_numbers(recon.claim_control_number)[1] if recon else ""
+        fallback_patient = patient_from_sources(item_835, mir, recon)
         lifecycle = {
             "835": {
                 "exists": bool(item_835),
@@ -570,14 +599,16 @@ def edi837_search(request):
             row = _claim_row(claim_837)
             row.update({
                 "has_837": True, "highmark_claim_number": highmark,
-                "internal_claim_number": internal, "lifecycle": lifecycle,
+                "internal_claim_number": internal,
+                "patient_name": row.get("patient_name") or fallback_patient,
+                "lifecycle": lifecycle,
             })
         else:
             member_id = (mir.member_id if mir else "") or (recon.member_id if recon else "")
             row = {
                 "id": f"universal:{highmark}:{internal}", "claim_number": highmark,
                 "highmark_claim_number": highmark, "internal_claim_number": internal,
-                "patient_name": "", "member_id": member_id,
+                "patient_name": fallback_patient, "member_id": member_id,
                 "total_charge_amount": str(item_835.total_charge_amount if item_835 else 0),
                 "service_count": item_835.service_count if item_835 else 0,
                 "file_name": "", "processed_at": None, "has_837": False,
