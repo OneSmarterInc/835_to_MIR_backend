@@ -30,6 +30,7 @@ class Command(BaseCommand):
             self.stderr.write(f"Marked {recovered_automations} interrupted automation run(s) as failed.")
         stopping = False
         last_held_release_scan = None
+        last_long_hold_alert_scan = None
 
         def stop(*_args):
             nonlocal stopping
@@ -58,6 +59,25 @@ class Command(BaseCommand):
                     self.stderr.write(f"Could not release due held claims: {exc}")
                 finally:
                     last_held_release_scan = now
+
+            # Seven-day non-duplicate hold alerts change slowly, so scan once an
+            # hour instead of adding a full held-file scan to every worker poll.
+            if last_long_hold_alert_scan is None or (now - last_long_hold_alert_scan).total_seconds() >= 3600:
+                try:
+                    from edi835.long_hold_alerts import send_overdue_nonduplicate_hold_alerts
+                    alert_result = send_overdue_nonduplicate_hold_alerts(now=now)
+                    if alert_result.get("emailed_claims"):
+                        self.stdout.write(
+                            f"Emailed {alert_result['emailed_claims']} claim(s) held more than 7 days."
+                        )
+                    if alert_result.get("email_failures"):
+                        self.stderr.write(
+                            f"{alert_result['email_failures']} seven-day hold alert email(s) failed and will retry."
+                        )
+                except Exception as exc:
+                    self.stderr.write(f"Could not send seven-day hold alerts: {exc}")
+                finally:
+                    last_long_hold_alert_scan = now
 
             pending = queued_jobs()
             if pending:
