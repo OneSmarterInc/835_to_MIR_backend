@@ -545,16 +545,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-uploaded_at")[:3]
         )
         for source in files_835:
-            linked_mir_claim = (
-                MIRClaim.objects.filter(mir_file__source_835=source)
-                .filter(
-                    Q(claim_control_number__iexact=identifier)
-                    | Q(claim_control_number__istartswith=identifier)
-                    | Q(header_raw__contains=identifier)
-                )
-                .order_by("claim_sequence")
-                .first()
-            )
             # The archived 835 is stored in the database. Its CLP01
             # contains the Highmark number and CLP07 contains the suffix used
             # by the corresponding MIR.
