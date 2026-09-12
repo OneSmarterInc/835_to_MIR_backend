@@ -284,7 +284,12 @@ def _candidate_rows(now, limit):
                 continue
             if str(finding.get("release_status") or "").upper() not in {"HELD", "RETRY"}:
                 continue
-            eligible = _parse_iso(finding.get("eligible_send_at"))
+            previous_sent = _parse_iso(finding.get("previous_sent_at"))
+            eligible = (
+                duplicate_eligible_send_at(previous_sent)
+                if previous_sent
+                else _parse_iso(finding.get("eligible_send_at"))
+            )
             if eligible is None or eligible > now:
                 continue
             last_attempt = _parse_iso(finding.get("last_release_attempt_at"))

@@ -5,6 +5,7 @@ from django.test import TestCase
 from accounts.models import Client
 from edi835.held_claims import (
     DUPLICATE_HOLD_WINDOW,
+    _candidate_rows,
     duplicate_eligible_send_at,
     recent_sent_claim_history,
 )
@@ -85,6 +86,37 @@ class DuplicateHoldWindowTests(TestCase):
 
     def test_fourth_calendar_day_uses_three_day_date_offset(self):
         self.assertEqual(DUPLICATE_HOLD_WINDOW.total_seconds(), 72 * 60 * 60)
+
+    def test_legacy_stored_deadline_uses_new_530_pm_eastern_release_time(self):
+        source = EDI835File.objects.create(
+            client=self.client,
+            original_filename="legacy.835",
+            stored_filename="legacy.835",
+            status="ARCHIVED",
+            input_file_content="legacy source content",
+            held_claims_count=1,
+            conversion_findings=[{
+                "rule_code": "DUPLICATE_RECENT_MIR",
+                "severity": "HOLD",
+                "release_status": "HELD",
+                "claim_index": "1",
+                "claim_number": "LEGACY100",
+                "previous_sent_at": "2026-09-01T10:00:00+00:00",
+                "eligible_send_at": "2026-09-04T10:00:00+00:00",
+            }],
+        )
+
+        before_new_deadline = datetime(2026, 9, 4, 21, 29, tzinfo=dt_timezone.utc)
+        self.assertEqual(_candidate_rows(before_new_deadline, 25), [])
+
+        at_new_deadline = datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc)
+        candidates = _candidate_rows(at_new_deadline, 25)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0]["source_id"], str(source.id))
+        self.assertEqual(
+            candidates[0]["eligible_send_at"],
+            datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc),
+        )
 
     def test_only_pushed_history_for_same_client_counts(self):
         sent_at = datetime(2026, 9, 2, 9, 30, tzinfo=dt_timezone.utc)
