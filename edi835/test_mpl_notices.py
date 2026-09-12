@@ -6,7 +6,7 @@ from django.test import TestCase
 from django.utils import timezone
 
 from accounts.models import Client, User
-from edi835.models import EDI837Claim, EDI837File, MPLNotice
+from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLNotice, RECONClaim, RECONFile)
 from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
@@ -18,6 +18,7 @@ from edi835.mpl_notices import (
     parse_subject,
     process_notice,
     reported_issue_rules,
+    search_claim_sources,
     unknown_reported_codes,
     unmatched_notice_actions,
     split_latest_message,
@@ -229,6 +230,55 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual([item["claim_number"] for item in notice.source_matches], notice.extracted_claim_numbers)
         self.assertTrue(all(not item["sources"] for item in notice.source_matches))
         self.assertNotIn("UE084", notice.extracted_claim_numbers)
+
+    def test_source_search_finds_claim_across_all_archived_formats(self):
+        claim_number = "33020262300027000"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record, uploaded_by=self.user,
+            original_filename="claim.837", stored_filename="claim.837",
+            file_content="x", file_hash="1" * 64, status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837, client=self.client_record, claim_sequence=1,
+            claim_control_number="different", raw_claim=f"REF*F8*{claim_number}~",
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record, original_filename="claim.835",
+            stored_filename="claim.835", input_file_content=f"CLP*{claim_number}~",
+            status="ARCHIVED",
+        )
+        mir_file = MIRFile.objects.create(
+            source_835=edi835, client=self.client_record,
+            mir_filename="claim.mir", file_content="x", file_hash="2" * 64,
+        )
+        MIRClaim.objects.create(
+            mir_file=mir_file, claim_sequence=1,
+            claim_control_number="different",
+            header_raw=(claim_number + "X").ljust(334),
+        )
+        recon_file = RECONFile.objects.create(
+            client=self.client_record, uploaded_by=self.user,
+            original_filename="claim.recon", stored_filename="claim.recon",
+            file_content="x", file_hash="3" * 64, status="PROCESSED",
+        )
+        RECONClaim.objects.create(
+            recon_file=recon_file, client=self.client_record, claim_sequence=1,
+            claim_control_number="different",
+            raw_record=f"CLAIM|{claim_number}|PROCESSED",
+        )
+
+        result = search_claim_sources(notice, [claim_number])
+        self.assertEqual(
+            {source["type"] for source in result[0]["sources"]},
+            {"837", "MIR", "835", "RECON"},
+        )
 
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
