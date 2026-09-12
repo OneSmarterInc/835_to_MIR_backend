@@ -17,6 +17,7 @@ from edi835.mpl_notices import (
     extract_claim_identifiers,
     extract_claim_issue_map,
     internal_claim_number_from_835,
+    internal_claim_number_from_source,
     local_ai_enabled,
     parse_subject,
     process_notice,
@@ -92,6 +93,23 @@ class MPLClaimExtractionTests(TestCase):
         self.assertEqual(
             internal_claim_number_from_835(content, "45520262120111800"),
             "",
+        )
+
+
+    def test_reads_complete_internal_number_from_database_source_row(self):
+        self.assertEqual(
+            internal_claim_number_from_source(
+                "89020262161295900",
+                "HI89020262161295900QZG591    20260909202609094",
+            ),
+            "89020262161295900QZG591",
+        )
+        self.assertEqual(
+            internal_claim_number_from_source(
+                "86520262000982500",
+                "86520262000982500QYD579    J5YBD0001425",
+            ),
+            "86520262000982500QYD579",
         )
 
     def test_file_viewer_returns_one_row_per_claim_for_all_sources(self):
@@ -324,7 +342,7 @@ class MPLNoticeAPITests(TestCase):
         )
         edi835 = EDI835File.objects.create(
             client=self.client_record, original_filename="claim.835",
-            stored_filename="claim.835", input_file_content=f"CLP*{claim_number}~",
+            stored_filename="claim.835", input_file_content=f"CLP*{claim_number}*1*100*80*0*12*PAY835~",
             status="ARCHIVED",
         )
         mir_file = MIRFile.objects.create(
@@ -334,7 +352,7 @@ class MPLNoticeAPITests(TestCase):
         MIRClaim.objects.create(
             mir_file=mir_file, claim_sequence=1,
             claim_control_number="different",
-            header_raw=(claim_number + "X").ljust(334),
+            header_raw=("HI" + claim_number + "MIR123").ljust(334),
         )
         recon_file = RECONFile.objects.create(
             client=self.client_record, uploaded_by=self.user,
@@ -344,7 +362,7 @@ class MPLNoticeAPITests(TestCase):
         RECONClaim.objects.create(
             recon_file=recon_file, client=self.client_record, claim_sequence=1,
             claim_control_number="different",
-            raw_record=f"CLAIM|{claim_number}|PROCESSED",
+            raw_record=f"{claim_number}REC456    CLAIM|PROCESSED",
         )
 
         result = search_claim_sources(notice, [claim_number])
@@ -352,6 +370,13 @@ class MPLNoticeAPITests(TestCase):
             {source["type"] for source in result[0]["sources"]},
             {"837", "MIR", "835", "RECON"},
         )
+        internal_by_type = {
+            source["type"]: source["internal_claim_number"]
+            for source in result[0]["sources"]
+        }
+        self.assertEqual(internal_by_type["835"], claim_number + "PAY835")
+        self.assertEqual(internal_by_type["MIR"], claim_number + "MIR123")
+        self.assertEqual(internal_by_type["RECON"], claim_number + "REC456")
 
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
