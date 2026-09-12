@@ -398,6 +398,35 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         sources = []
         seen_sources = set()
 
+        # The email identifier is the Highmark claim number. Resolve the
+        # corresponding internal claim number from normalized 837 database
+        # records; never copy the email identifier into the internal column.
+        internal_number_rows = list(
+            EDI837Claim.objects.filter(
+                client=notice.client,
+                highmark_claim_number__iexact=identifier,
+            )
+            .exclude(internal_claim_number="")
+            .values_list("internal_claim_number", flat=True)
+            .distinct()[:10]
+        )
+        if not internal_number_rows:
+            internal_number_rows = list(
+                EDI837Claim.objects.filter(client=notice.client)
+                .filter(
+                    Q(claim_control_number__iexact=identifier)
+                    | Q(reference_9c__iexact=identifier)
+                    | Q(patient_control_number__iexact=identifier)
+                    | Q(raw_claim__contains=identifier)
+                )
+                .exclude(internal_claim_number="")
+                .values_list("internal_claim_number", flat=True)
+                .distinct()[:10]
+            )
+        authoritative_internal_number = ", ".join(
+            dict.fromkeys(str(value).strip() for value in internal_number_rows if value)
+        )
+
         def append_source(source_type, source_id, payload):
             key = (source_type, str(source_id))
             if key not in seen_sources:
@@ -426,12 +455,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = claim_837.edi_file
             append_source("837", source.id, {
                 "type": "837",
-                "internal_claim_number": (
-                    claim_837.internal_claim_number
-                    or claim_837.claim_control_number
-                    or claim_837.highmark_claim_number
-                    or identifier
-                ),
+                "internal_claim_number": claim_837.internal_claim_number or "",
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -457,7 +481,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = mir_claim.mir_file
             append_source("MIR", source.id, {
                 "type": "MIR",
-                "internal_claim_number": mir_claim.claim_control_number or identifier,
+                "internal_claim_number": authoritative_internal_number,
                 "filename": source.mir_filename,
                 "status": mir_claim.claim_status or source.status,
                 "date": source.converted_at.isoformat() if source.converted_at else None,
@@ -487,7 +511,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                         matched_clp_numbers.append(candidate)
             append_source("835", source.id, {
                 "type": "835",
-                "internal_claim_number": ", ".join(matched_clp_numbers) or identifier,
+                "internal_claim_number": authoritative_internal_number,
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -514,11 +538,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = recon_claim.recon_file
             append_source("RECON", source.id, {
                 "type": "RECON",
-                "internal_claim_number": (
-                    recon_claim.claim_control_number
-                    or recon_claim.patient_control_number
-                    or identifier
-                ),
+                "internal_claim_number": authoritative_internal_number,
                 "filename": source.original_filename,
                 "status": recon_claim.claim_status or source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
