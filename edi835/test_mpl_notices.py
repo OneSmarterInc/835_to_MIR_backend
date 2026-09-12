@@ -84,11 +84,11 @@ class MPLClaimExtractionTests(TestCase):
         )
         self.assertEqual(
             internal_claim_number_from_835(content, "86520261762674200"),
-            "86520261762674200QZL067",
+            "QZL067",
         )
         self.assertEqual(
             internal_claim_number_from_835(content, "89020262161295900"),
-            "89020262161295900ABC123",
+            "ABC123",
         )
         self.assertEqual(
             internal_claim_number_from_835(content, "45520262120111800"),
@@ -102,14 +102,14 @@ class MPLClaimExtractionTests(TestCase):
                 "89020262161295900",
                 "HI89020262161295900QZG591    20260909202609094",
             ),
-            "89020262161295900QZG591",
+            "QZG591",
         )
         self.assertEqual(
             internal_claim_number_from_source(
                 "86520262000982500",
                 "86520262000982500QYD579    J5YBD0001425",
             ),
-            "86520262000982500QYD579",
+            "QYD579",
         )
 
     def test_file_viewer_returns_one_row_per_claim_for_all_sources(self):
@@ -374,9 +374,9 @@ class MPLNoticeAPITests(TestCase):
             source["type"]: source["internal_claim_number"]
             for source in result[0]["sources"]
         }
-        self.assertEqual(internal_by_type["835"], claim_number + "PAY835")
-        self.assertEqual(internal_by_type["MIR"], claim_number + "MIR123")
-        self.assertEqual(internal_by_type["RECON"], claim_number + "REC456")
+        self.assertEqual(internal_by_type["835"], "PAY835")
+        self.assertEqual(internal_by_type["MIR"], "MIR123")
+        self.assertEqual(internal_by_type["RECON"], "REC456")
 
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
