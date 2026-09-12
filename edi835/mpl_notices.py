@@ -144,7 +144,7 @@ def unknown_reported_codes(body):
     """List reported MPL codes that have no approved local definition."""
     reported = {
         code.upper()
-        for code in re.findall(r"\\b(?:MP|RR|UE)\\d{3}\\b", body or "", re.I)
+        for code in re.findall(r"\b(?:MP|RR|UE)\d{3}\b", body or "", re.I)
     }
     approved = set(APPROVED_EMAIL_ISSUE_RULES) | {
         rule.code for rule in RULE_REGISTRY.definitions()
