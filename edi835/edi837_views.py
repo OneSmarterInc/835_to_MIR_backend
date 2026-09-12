@@ -19,7 +19,7 @@ from project835.field_crypto import SFTPCredentialError, get_sftp_runtime_creden
 from .claim_numbers import split_claim_number
 from .edi837_service import export_single_claim, ingest_837
 from .file_types import has_valid_file_extension
-from .models import EDI837Claim, EDI837File, MIRClaim, RECONClaim
+from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, RECONClaim
 from .services import resolve_sftp_config
 
 
@@ -353,6 +353,7 @@ def edi837_sftp_batch_rename(request):
 @authenticated_api_required
 @json_api_errors
 def edi837_search(request):
+    """Universal claim search anchored to normalized 837 claim records."""
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
     client = _client_for_request(request, request.GET.get("client_id"))
@@ -361,18 +362,80 @@ def edi837_search(request):
     query = str(request.GET.get("q") or "").strip()
     claims = EDI837Claim.objects.filter(client=client).select_related("edi_file")
     if query:
-        claims = claims.filter(
-            Q(claim_control_number__icontains=query) | Q(highmark_claim_number__icontains=query)
-            | Q(internal_claim_number__icontains=query) | Q(patient_control_number__icontains=query)
-            | Q(reference_9c__icontains=query)
+        identifiers = {query}
+
+        # Resolve searches entered using MIR or RECON source identifiers back
+        # to their normalized Highmark number.
+        mir_matches = (
+            MIRClaim.objects.filter(mir_file__client=client)
+            .filter(
+                Q(claim_control_number__icontains=query)
+                | Q(member_id__icontains=query)
+                | Q(header_raw__icontains=query)
+                | Q(mir_file__mir_filename__icontains=query)
+            )[:200]
         )
+        recon_matches = (
+            RECONClaim.objects.filter(client=client)
+            .filter(
+                Q(claim_control_number__icontains=query)
+                | Q(patient_control_number__icontains=query)
+                | Q(member_id__icontains=query)
+                | Q(raw_record__icontains=query)
+                | Q(recon_file__original_filename__icontains=query)
+            )[:200]
+        )
+        for value in [
+            *(item.claim_control_number for item in mir_matches),
+            *(item.claim_control_number for item in recon_matches),
+            *(item.patient_control_number for item in recon_matches),
+        ]:
+            parts = split_claim_number(value)
+            identifiers.update(filter(None, (
+                value,
+                parts.get("highmark_claim_number"),
+                parts.get("internal_claim_number"),
+            )))
+
+        # 835 files predate normalized claim rows. Search their database copy
+        # strictly and collect CLP01 Highmark identifiers for the matching
+        # file/segment. This remains bounded until the 835 backfill completes.
+        files_835 = EDI835File.objects.filter(client=client).filter(
+            Q(original_filename__icontains=query)
+            | Q(stored_filename__icontains=query)
+            | Q(input_file_content__icontains=query)
+        )[:20]
+        for source in files_835:
+            filename_match = query.lower() in source.original_filename.lower() or query.lower() in source.stored_filename.lower()
+            for segment in str(source.input_file_content or "").replace("\r", "\n").replace("~", "\n").split("\n"):
+                fields = segment.strip().split("*")
+                if len(fields) > 1 and fields[0].upper() == "CLP" and (filename_match or query.lower() in segment.lower()):
+                    identifiers.add(fields[1].strip())
+
+        filters = (
+            Q(claim_control_number__icontains=query)
+            | Q(highmark_claim_number__icontains=query)
+            | Q(internal_claim_number__icontains=query)
+            | Q(patient_control_number__icontains=query)
+            | Q(reference_9c__icontains=query)
+            | Q(member_id__icontains=query)
+            | Q(patient_first_name__icontains=query)
+            | Q(patient_last_name__icontains=query)
+            | Q(edi_file__original_filename__icontains=query)
+        )
+        for identifier in identifiers:
+            filters |= Q(highmark_claim_number__iexact=identifier)
+            filters |= Q(claim_control_number__iexact=identifier)
+            filters |= Q(claim_control_number__istartswith=identifier)
+        claims = claims.filter(filters).distinct()
     else:
         claims = claims.none()
     try:
         limit = min(200, max(1, int(request.GET.get("limit", "50"))))
     except ValueError:
         limit = 50
-    rows = [_claim_row(claim) for claim in claims.order_by("claim_control_number", "-edi_file__processed_at")[:limit]]
+    selected = list(claims.order_by("claim_control_number", "-edi_file__processed_at")[:limit])
+    rows = [{**_claim_row(claim), "lifecycle": _claim_lifecycle(claim)} for claim in selected]
     return JsonResponse({"success": True, "query": query, "count": len(rows), "results": rows})
 
 
