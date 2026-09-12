@@ -14,6 +14,7 @@ from edi835.mpl_notices import (
     conversion_findings_for_claim,
     extract_claim_identifiers,
     extract_claim_issue_map,
+    internal_claim_number_from_835,
     local_ai_enabled,
     parse_subject,
     process_notice,
@@ -70,6 +71,25 @@ class MPLClaimExtractionTests(TestCase):
                 "33020262091936200",
                 "33020262253998500",
             ],
+        )
+
+    def test_builds_alphanumeric_internal_number_from_stored_835_clp(self):
+        content = (
+            "ST*835*0001~"
+            "CLP*86520261762674200*1*385.06*34.22*77*QZL067*AA*1~"
+            "CLP*89020262161295900*1*100*80*0*12*ABC123~"
+        )
+        self.assertEqual(
+            internal_claim_number_from_835(content, "86520261762674200"),
+            "86520261762674200QZL067",
+        )
+        self.assertEqual(
+            internal_claim_number_from_835(content, "89020262161295900"),
+            "89020262161295900ABC123",
+        )
+        self.assertEqual(
+            internal_claim_number_from_835(content, "45520262120111800"),
+            "",
         )
 
     def test_accepts_explicitly_labeled_legacy_alphanumeric_claim(self):
