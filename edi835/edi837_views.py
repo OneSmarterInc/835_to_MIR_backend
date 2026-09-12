@@ -558,7 +558,7 @@ def edi837_search(request):
             arrived_at = source_file.processed_at or source_file.uploaded_at
             status = source_file.status
             candidates = []
-        needles = [value.upper() for value in (highmark, internal) if value(value := str(value or "").strip())]
+        needles = [text.upper() for raw in (highmark, internal) if (text := str(raw or "").strip())]
         matched_findings = []
         for finding in candidates:
             searchable = json.dumps(finding, default=str).upper()
@@ -690,13 +690,43 @@ def edi837_search(request):
                 ),
             },
         }
+        history = sorted(
+            sources.get("history", []), key=lambda event: event.get("arrived_at") or ""
+        )
+        findings = []
+        seen_findings = set()
+        for event in history:
+            for finding in event.get("findings", []):
+                signature = json.dumps(finding, sort_keys=True, default=str)
+                if signature not in seen_findings:
+                    findings.append(finding)
+                    seen_findings.add(signature)
+        finding_codes = {
+            str(item.get("rule_code") or item.get("code") or item.get("error_code") or "").upper()
+            for item in findings if isinstance(item, dict)
+        }
+        is_duplicate = "DUPLICATE_ICN" in finding_codes
+        is_held = any(
+            str(item.get("decision") or item.get("severity") or "").upper()
+            in {"HOLD", "HELD", "REFUSE", "ERROR"}
+            for item in findings if isinstance(item, dict)
+        )
+        operational = {
+            "duplicate": is_duplicate,
+            "held": is_held,
+            "status": "HELD" if is_held else ("DUPLICATE" if is_duplicate else "CLEAR"),
+            "findings": findings,
+            "history": history,
+            "occurrence_count": len(history),
+        }
+
         if claim_837:
             row = _claim_row(claim_837)
             row.update({
                 "has_837": True, "highmark_claim_number": highmark,
                 "internal_claim_number": internal,
                 "patient_name": row.get("patient_name") or fallback_patient,
-                "lifecycle": lifecycle,
+                "lifecycle": lifecycle, "operational": operational,
             })
         else:
             member_id = (mir.member_id if mir else "") or (recon.member_id if recon else "")
@@ -707,7 +737,7 @@ def edi837_search(request):
                 "total_charge_amount": str(item_835.total_charge_amount if item_835 else 0),
                 "service_count": item_835.service_count if item_835 else 0,
                 "file_name": "", "processed_at": None, "has_837": False,
-                "lifecycle": lifecycle,
+                "lifecycle": lifecycle, "operational": operational,
             }
         rows.append(row)
     return JsonResponse({"success": True, "query": query, "count": len(rows), "results": rows})
