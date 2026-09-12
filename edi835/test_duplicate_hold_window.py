@@ -3,7 +3,11 @@ from datetime import datetime, timezone as dt_timezone
 from django.test import TestCase
 
 from accounts.models import Client
-from edi835.held_claims import DUPLICATE_HOLD_WINDOW, recent_sent_claim_history
+from edi835.held_claims import (
+    DUPLICATE_HOLD_WINDOW,
+    duplicate_eligible_send_at,
+    recent_sent_claim_history,
+)
 from edi835.models import EDI835File, MIRClaim, MIRFile
 
 
@@ -50,25 +54,36 @@ class DuplicateHoldWindowTests(TestCase):
         )
         return mir_file
 
-    def test_fourth_day_is_eligible_at_same_timestamp(self):
+    def test_fourth_day_is_eligible_at_530_pm_eastern(self):
         sent_at = datetime(2026, 9, 1, 10, 0, tzinfo=dt_timezone.utc)
         self._sent_claim("CLAIM100", sent_at)
 
-        day_three = datetime(2026, 9, 3, 10, 0, tzinfo=dt_timezone.utc)
-        history = recent_sent_claim_history(self.client, {"CLAIM100"}, now=day_three)
+        before_deadline = datetime(2026, 9, 4, 21, 29, tzinfo=dt_timezone.utc)
+        history = recent_sent_claim_history(
+            self.client,
+            {"CLAIM100"},
+            now=before_deadline,
+        )
         self.assertIn("CLAIM100", history)
         self.assertEqual(
             history["CLAIM100"]["eligible_send_at"],
-            datetime(2026, 9, 4, 10, 0, tzinfo=dt_timezone.utc),
+            datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc),
         )
 
-        fourth_day = datetime(2026, 9, 4, 10, 0, tzinfo=dt_timezone.utc)
+        at_deadline = datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc)
         self.assertEqual(
-            recent_sent_claim_history(self.client, {"CLAIM100"}, now=fourth_day),
+            recent_sent_claim_history(self.client, {"CLAIM100"}, now=at_deadline),
             {},
         )
 
-    def test_hold_window_is_72_hours_to_match_inclusive_fourth_day_rule(self):
+    def test_530_pm_eastern_is_dst_aware(self):
+        winter_sent_at = datetime(2026, 1, 1, 15, 0, tzinfo=dt_timezone.utc)
+        self.assertEqual(
+            duplicate_eligible_send_at(winter_sent_at),
+            datetime(2026, 1, 4, 22, 30, tzinfo=dt_timezone.utc),
+        )
+
+    def test_fourth_calendar_day_uses_three_day_date_offset(self):
         self.assertEqual(DUPLICATE_HOLD_WINDOW.total_seconds(), 72 * 60 * 60)
 
     def test_only_pushed_history_for_same_client_counts(self):

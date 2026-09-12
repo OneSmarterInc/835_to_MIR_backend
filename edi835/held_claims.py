@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
+from zoneinfo import ZoneInfo
 
 from django.db import transaction
 from django.db.models.functions import Left
@@ -11,9 +12,12 @@ from django.utils import timezone
 
 
 # Business rule is inclusive by calendar-day count: a claim successfully sent
-# on the 1st becomes eligible to send again on the 4th at the same timestamp.
-# That is a 72-hour delay, matching the requested examples.
+# on the 1st becomes eligible to send again on the 4th at 5:30 PM Eastern.
 DUPLICATE_HOLD_WINDOW = timedelta(days=3)
+DUPLICATE_HISTORY_LOOKBACK = timedelta(days=4)
+EASTERN_TIME_ZONE = ZoneInfo("America/New_York")
+ELIGIBLE_SEND_HOUR = 17
+ELIGIBLE_SEND_MINUTE = 30
 RETRY_DELAY = timedelta(minutes=15)
 DUPLICATE_HOLD_CODES = {"DUPLICATE_RECENT_MIR", "DUPLICATE_CLAIM_NUMBER"}
 BLOCKING_SEVERITIES = {"HOLD", "REFUSE"}
@@ -22,6 +26,25 @@ BLOCKING_SEVERITIES = {"HOLD", "REFUSE"}
 def mir_claim_number(value) -> str:
     """Return the CLP01/MIR100 portion from the stored 23-character MIR key."""
     return str(value or "")[:17].strip()
+
+
+def duplicate_eligible_send_at(sent_at):
+    """Return 5:30 PM Eastern on the fourth calendar day of the hold."""
+    if sent_at is None:
+        return None
+    if timezone.is_naive(sent_at):
+        sent_at = timezone.make_aware(sent_at, dt_timezone.utc)
+    sent_eastern = sent_at.astimezone(EASTERN_TIME_ZONE)
+    eligible_date = sent_eastern.date() + DUPLICATE_HOLD_WINDOW
+    eligible_eastern = datetime(
+        eligible_date.year,
+        eligible_date.month,
+        eligible_date.day,
+        ELIGIBLE_SEND_HOUR,
+        ELIGIBLE_SEND_MINUTE,
+        tzinfo=EASTERN_TIME_ZONE,
+    )
+    return eligible_eastern.astimezone(dt_timezone.utc)
 
 
 def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict]:
@@ -35,7 +58,7 @@ def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict
     from .models import MIRClaim
 
     now = now or timezone.now()
-    cutoff = now - DUPLICATE_HOLD_WINDOW
+    cutoff = now - DUPLICATE_HISTORY_LOOKBACK
     # MIRClaim stores claim_control_number as CLP01+CLP07. Filter the first 17
     # characters in PostgreSQL instead of streaming every recently pushed claim
     # through Python. This keeps 1,000+ claim conversions fast as history grows.
@@ -57,7 +80,7 @@ def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict
         if claim_number in result:
             continue
         sent_at = row.mir_file.updated_at
-        eligible_send_at = sent_at + DUPLICATE_HOLD_WINDOW
+        eligible_send_at = duplicate_eligible_send_at(sent_at)
         if eligible_send_at <= now:
             continue
         result[claim_number] = {
@@ -135,7 +158,7 @@ def _reschedule_pending_duplicates_bulk(client, claim_numbers, sent_at, mir_file
         return
     from .models import EDI835File
 
-    eligible = sent_at + DUPLICATE_HOLD_WINDOW
+    eligible = duplicate_eligible_send_at(sent_at)
     for source in EDI835File.objects.filter(client=client, held_claims_count__gt=0).iterator(chunk_size=100):
         findings = list(source.conversion_findings or [])
         changed = False
@@ -194,7 +217,7 @@ def note_mir_sent(mir_file) -> None:
             continue
         finding["release_status"] = "HELD"
         finding["previous_sent_at"] = sent_at.isoformat()
-        finding["eligible_send_at"] = (sent_at + DUPLICATE_HOLD_WINDOW).isoformat()
+        finding["eligible_send_at"] = duplicate_eligible_send_at(sent_at).isoformat()
         finding["previous_mir_filename"] = mir_file.mir_filename
         changed = True
     if changed:
