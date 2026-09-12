@@ -413,13 +413,13 @@ def edi837_search(request):
             )))
 
         normalized_835 = (
-            E            EDI835Claim.objects.filter(edi_file__client=client)
+            EDI835Claim.objects.filter(edi_file__client=client)
             .filter(
                 Q(highmark_claim_number__icontains=query)
                 | Q(internal_claim_number__icontains=query)
                 | Q(raw_claim__icontains=query)
                 | Q(edi_file__original_filename__icontains=query)
-                | Q(edi_file__stored_filename__icontains=query=query)
+                | Q(edi_file__stored_filename__icontains=query)
             )[:200]
         )
         for item in normalized_835:
