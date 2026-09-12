@@ -2,7 +2,7 @@ import json
 from datetime import date
 from unittest.mock import patch
 
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Client, User
@@ -168,6 +168,7 @@ class MPLPromptGroundingTests(TestCase):
         self.assertEqual(len(actions), len(set(actions)))
 
 
+@override_settings(SECURE_SSL_REDIRECT=False)
 class MPLNoticeAPITests(TestCase):
     def setUp(self):
         self.client_record = Client.objects.create(name="ABC Health", client_code="ABC", email="abc@example.com")
