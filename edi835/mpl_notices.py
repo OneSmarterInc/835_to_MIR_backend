@@ -12,6 +12,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .models import EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
+from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
 
 
 SUBJECT_PATTERN = re.compile(
@@ -121,6 +122,34 @@ def reported_issue_rules(body):
         for code in codes
         if code in APPROVED_EMAIL_ISSUE_RULES
     }
+
+
+def authoritative_rule_catalog(codes):
+    """Return Checks-screen rule definitions for reported codes, when implemented."""
+    wanted = {str(code).upper() for code in codes}
+    return {
+        rule.code: {
+            "name": rule.name,
+            "description": rule.description,
+            "severity": rule.severity.value,
+            "scope": rule.scope,
+            "source": rule.source,
+        }
+        for rule in RULE_REGISTRY.definitions()
+        if rule.code in wanted
+    }
+
+
+def unknown_reported_codes(body):
+    """List reported MPL codes that have no approved local definition."""
+    reported = {
+        code.upper()
+        for code in re.findall(r"\\b(?:MP|RR|UE)\\d{3}\\b", body or "", re.I)
+    }
+    approved = set(APPROVED_EMAIL_ISSUE_RULES) | {
+        rule.code for rule in RULE_REGISTRY.definitions()
+    }
+    return sorted(reported - approved)
 
 
 def approved_actions_for_claim(email_context, findings):
@@ -489,8 +518,42 @@ def match_claims(notice):
     return matches
 
 
-def _finding(code, severity, description, evidence):
-    return {"code": code, "severity": severity, "description": description, "evidence": evidence}
+def _finding(code, severity, description, evidence, details=None):
+    finding = {"code": code, "severity": severity, "description": description, "evidence": evidence}
+    if details:
+        finding["details"] = details
+    return finding
+
+
+def conversion_findings_for_claim(source_835, identifiers):
+    """Select stored Checks-screen/MIR-gate findings for one claim."""
+    wanted = {str(value or "").strip().upper() for value in identifiers if value}
+    selected = []
+    for raw in source_835.conversion_findings or []:
+        if not isinstance(raw, dict):
+            continue
+        candidates = {
+            str(raw.get(key) or "").strip().upper()
+            for key in ("claim_number", "claim_control_number", "icn")
+        }
+        candidates.discard("")
+        if wanted and not any(
+            candidate in wanted
+            or candidate[:17] in wanted
+            or any(value[:17] == candidate[:17] for value in wanted)
+            for candidate in candidates
+        ):
+            continue
+        code = str(raw.get("rule_code") or raw.get("code") or "MIR_CHECK").strip().upper()
+        description = str(raw.get("reason") or raw.get("description") or "Stored MIR conversion finding.").strip()
+        selected.append(_finding(
+            code,
+            str(raw.get("severity") or "warning").lower(),
+            description,
+            f"{source_835.original_filename} · Checks/MIR rule engine",
+            raw.get("evidence") or raw.get("provenance"),
+        ))
+    return selected
 
 
 def _file_item(kind, file_id, filename, event_at, status, download_url):
@@ -522,6 +585,7 @@ def collect_evidence(claim):
             _file_item("MIR", mf.id, mf.mir_filename, mf.converted_at, mf.status, f"/edi835/api/mpl-files/mir/{mf.id}/download/"),
             _file_item("835", source_835.id, source_835.original_filename, source_835.uploaded_at, source_835.status, f"/edi835/api/mpl-files/835/{source_835.id}/download/"),
         ])
+        findings.extend(conversion_findings_for_claim(source_835, match_values))
         if mir.service_count != claim.service_count:
             findings.append(_finding("SERVICE_COUNT_MISMATCH", "error", f"837 has {claim.service_count} service lines while MIR has {mir.service_count}.", mf.mir_filename))
         mir_dates = {line.service_date for line in mir.service_lines.all() if line.service_date}
@@ -605,6 +669,8 @@ def call_local_model(notice, claim, timeline, findings, actions):
             "text": email_context,
             "issue_codes": list(issue_rules),
             "approved_issue_rules": issue_rules,
+            "authoritative_check_rules": authoritative_rule_catalog(issue_rules),
+            "unknown_codes": unknown_reported_codes(email_context),
         },
         "source_timeline": timeline[-8:],
         "verified_findings": findings[:8],
@@ -621,7 +687,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         "Use only supplied facts. Never invent claim numbers, filenames, statuses, amounts, code meanings, "
         "or corrective actions. Never guarantee approval. Choose actions only by approved_actions id. "
         "If evidence is absent or conflicting, say so. Return one JSON object with exactly these keys: "
-        "summary, reported_issue, verified_evidence, missing_evidence, primary_issue_code, "
+        "summary, reported_issue, verified_evidence, missing_evidence, unknown_codes, unclear_items, primary_issue_code, "
         "needs_response, recommended_actions, confidence, requires_human_review. "
         "verified_evidence and missing_evidence are arrays of short strings. recommended_actions is an "
         "array of objects containing action_id and reason. confidence is a number from 0 to 1. "
@@ -639,6 +705,8 @@ def call_local_model(notice, claim, timeline, findings, actions):
         "reported_issue": "UE999 was reported but is not defined by an approved rule.",
         "verified_evidence": [],
         "missing_evidence": ["Source claim evidence and an approved definition for UE999 are missing."],
+        "unknown_codes": ["UE999"],
+        "unclear_items": ["The meaning of UE999 is not defined in the supplied code dictionary."],
         "primary_issue_code": "",
         "needs_response": True,
         "recommended_actions": [{"action_id": "A1", "reason": "The issue cannot be verified automatically."}],
@@ -679,7 +747,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
 
     required_keys = {
         "summary", "reported_issue", "verified_evidence", "missing_evidence",
-        "primary_issue_code", "needs_response", "recommended_actions",
+        "unknown_codes", "unclear_items", "primary_issue_code", "needs_response", "recommended_actions",
         "confidence", "requires_human_review",
     }
     if not required_keys.issubset(result):
@@ -698,9 +766,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
     if invented_claims:
         return None
 
-    if not isinstance(result.get("verified_evidence"), list) or not isinstance(
-        result.get("missing_evidence"), list
-    ):
+    if any(not isinstance(result.get(key), list) for key in ("verified_evidence", "missing_evidence", "unknown_codes", "unclear_items")):
         return None
 
     action_lookup = {
@@ -944,6 +1010,14 @@ def process_notice(notice_id):
                 for identifier in claim_identifiers
                 for issue in issue_map.get(identifier, [])
             ]
+            for unknown_code in unknown_reported_codes(email_context):
+                findings.append(_finding(
+                    "UNKNOWN_REPORTED_CODE",
+                    "warning",
+                    f"The email reports {unknown_code}, but no approved definition exists in the code dictionary.",
+                    "MPL email; definition unavailable",
+                    {"reported_code": unknown_code},
+                ))
             for issue in reported_issues:
                 label = ", ".join(issue.get("codes", [])) or issue.get("category", "REPORTED_ISSUE")
                 findings.append(_finding(
