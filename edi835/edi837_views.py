@@ -108,6 +108,13 @@ def _claim_lifecycle(claim):
                  .order_by("recon_file__uploaded_at").first())
     source_835 = mir.mir_file.source_835 if mir else None
     return {
+        "837": {
+            "exists": True,
+            "arrived_at": claim.edi_file.processed_at.isoformat() if claim.edi_file.processed_at else claim.edi_file.uploaded_at.isoformat(),
+            "file_name": claim.edi_file.original_filename,
+            "status": claim.edi_file.status,
+            "source": claim.edi_file.get_import_mode_display(),
+        },
         "835": {
             "exists": bool(source_835),
             "arrived_at": source_835.uploaded_at.isoformat() if source_835 else None,
