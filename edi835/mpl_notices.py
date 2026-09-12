@@ -426,6 +426,12 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = claim_837.edi_file
             append_source("837", source.id, {
                 "type": "837",
+                "internal_claim_number": (
+                    claim_837.internal_claim_number
+                    or claim_837.claim_control_number
+                    or claim_837.highmark_claim_number
+                    or identifier
+                ),
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -451,6 +457,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = mir_claim.mir_file
             append_source("MIR", source.id, {
                 "type": "MIR",
+                "internal_claim_number": mir_claim.claim_control_number or identifier,
                 "filename": source.mir_filename,
                 "status": mir_claim.claim_status or source.status,
                 "date": source.converted_at.isoformat() if source.converted_at else None,
@@ -469,8 +476,18 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-uploaded_at")[:3]
         )
         for source in files_835:
+            matched_clp_numbers = []
+            for segment in re.split(r"[~\r\n]+", source.input_file_content or ""):
+                fields = segment.strip().split("*")
+                if fields and fields[0].upper() == "CLP" and identifier in segment:
+                    # CLP01 is the submitter/patient control number for the
+                    # claim represented by this 835 payment segment.
+                    candidate = fields[1].strip() if len(fields) > 1 else ""
+                    if candidate and candidate not in matched_clp_numbers:
+                        matched_clp_numbers.append(candidate)
             append_source("835", source.id, {
                 "type": "835",
+                "internal_claim_number": ", ".join(matched_clp_numbers) or identifier,
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -497,6 +514,11 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = recon_claim.recon_file
             append_source("RECON", source.id, {
                 "type": "RECON",
+                "internal_claim_number": (
+                    recon_claim.claim_control_number
+                    or recon_claim.patient_control_number
+                    or identifier
+                ),
                 "filename": source.original_filename,
                 "status": recon_claim.claim_status or source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
