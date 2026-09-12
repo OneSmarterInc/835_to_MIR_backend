@@ -1,6 +1,7 @@
 """Evidence-first MPL notice processing for the local Qwen service."""
 
 import json
+import logging
 import os
 import re
 from datetime import date
@@ -13,6 +14,8 @@ from django.utils import timezone
 
 from .models import EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
 from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
+
+logger = logging.getLogger(__name__)
 
 
 SUBJECT_PATTERN = re.compile(
@@ -666,64 +669,36 @@ def call_local_model(notice, claim, timeline, findings, actions):
     evidence = {
         "claim_number": claim.claim_control_number,
         "email_report": {
-            "text": email_context,
+            "text": re.sub(r"\\s+", " ", email_context).strip()[:700],
             "issue_codes": list(issue_rules),
             "approved_issue_rules": issue_rules,
             "authoritative_check_rules": authoritative_rule_catalog(issue_rules),
             "unknown_codes": unknown_reported_codes(email_context),
         },
-        "source_timeline": timeline[-8:],
-        "verified_findings": findings[:8],
+        "source_timeline": timeline[-4:],
+        "verified_findings": findings[:5],
         "approved_actions": [
             {"id": f"A{index + 1}", "text": action}
-            for index, action in enumerate(actions[:10])
+            for index, action in enumerate(actions[:6])
         ],
     }
     system_prompt = (
-        "/no_think\n"
-        "Analyze exactly one healthcare claim. The email report is an allegation; "
-        "verified_findings and source_timeline are application evidence. Evidence priority is: "
-        "verified findings, authoritative_check_rules, approved_issue_rules, then raw email wording. "
-        "approved_issue_rules define only the listed email codes. Unknown codes require manual review. "
-        "Use only supplied facts. Never invent claim numbers, filenames, statuses, amounts, code meanings, "
-        "or corrective actions. Never guarantee approval. Choose actions only by approved_actions id. "
-        "If evidence is absent or conflicting, say so. Return one JSON object with exactly these keys: "
-        "summary, reported_issue, verified_evidence, missing_evidence, unknown_codes, unclear_items, primary_issue_code, "
-        "needs_response, recommended_actions, confidence, requires_human_review. "
-        "verified_evidence and missing_evidence are arrays of short strings. recommended_actions is an "
-        "array of objects containing action_id and reason. confidence is a number from 0 to 1. "
-        "requires_human_review must be true."
+        "/no_think\nAnalyze one healthcare claim from supplied evidence. Priority: verified findings, "
+        "authoritative check rules, approved email rules, then email wording. Email statements are unverified. "
+        "Never invent facts, code meanings, or actions; disclose unknown codes, unclear items, conflicts, and missing evidence. "
+        "Use approved action IDs only. Never guarantee approval. Return JSON keys: summary, reported_issue, "
+        "verified_evidence, missing_evidence, unknown_codes, unclear_items, primary_issue_code, needs_response, "
+        "recommended_actions, confidence, requires_human_review. Arrays must be arrays; recommended_actions items use "
+        "action_id and reason; confidence is 0..1; requires_human_review is true."
     )
-    example_input = {
-        "claim_number": "CLAIM_A",
-        "email_report": {"text": "UE999 reported.", "issue_codes": ["UE999"], "approved_issue_rules": {}},
-        "source_timeline": [],
-        "verified_findings": [],
-        "approved_actions": [{"id": "A1", "text": "Review the email and evidence manually."}],
-    }
-    example_output = {
-        "summary": "The email reports an issue, but no application evidence or approved code definition was supplied.",
-        "reported_issue": "UE999 was reported but is not defined by an approved rule.",
-        "verified_evidence": [],
-        "missing_evidence": ["Source claim evidence and an approved definition for UE999 are missing."],
-        "unknown_codes": ["UE999"],
-        "unclear_items": ["The meaning of UE999 is not defined in the supplied code dictionary."],
-        "primary_issue_code": "",
-        "needs_response": True,
-        "recommended_actions": [{"action_id": "A1", "reason": "The issue cannot be verified automatically."}],
-        "confidence": 0.2,
-        "requires_human_review": True,
-    }
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": 450,
+        "max_tokens": 280,
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps(example_input)},
-            {"role": "assistant", "content": json.dumps(example_output)},
-            {"role": "user", "content": json.dumps(evidence)},
+            {"role": "user", "content": json.dumps(evidence, separators=(",", ":"))},
         ],
     }).encode()
     headers = {"Content-Type": "application/json"}
@@ -743,7 +718,8 @@ def call_local_model(notice, claim, timeline, findings, actions):
         ) as response:
             outer = json.loads(response.read().decode())
         result = parse_model_json(outer["choices"][0]["message"]["content"])
-    except (HTTPError, URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError):
+    except (HTTPError, URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("MPL claim AI request failed; using deterministic analysis: %s", exc)
         return None
 
     required_keys = {
@@ -824,16 +800,23 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
 
     contexts = [
         claim_email_context(notice_email_body(notice), identifier)
-        for identifier in identifiers[:8]
+        for identifier in identifiers[:4]
     ]
-    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:3000]
+    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:900]
     if not reported_email:
-        reported_email = clean_email_for_analysis(notice_email_body(notice))[:3000]
+        reported_email = clean_email_for_analysis(notice_email_body(notice))[:900]
 
     compact_matches = [
         {
             "claim_number": item.get("claim_number"),
-            "reported_issues": item.get("reported_issues", []),
+            "reported_issues": [
+                {
+                    "codes": issue.get("codes", []),
+                    "category": issue.get("category", ""),
+                    "description": str(issue.get("description") or "")[:180],
+                }
+                for issue in item.get("reported_issues", [])[:2]
+            ],
             "sources": [
                 {
                     "type": source.get("type"),
@@ -841,15 +824,15 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                     "status": source.get("status"),
                     "details": source.get("details"),
                 }
-                for source in item.get("sources", [])[:4]
+                for source in item.get("sources", [])[:2]
             ],
         }
-        for item in source_matches[:12]
+        for item in source_matches[:8]
     ]
     model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q8_0")
     evidence = {
         "reported_email": reported_email,
-        "extracted_claim_numbers": identifiers[:50],
+        "extracted_claim_numbers": identifiers[:12],
         "source_matches": compact_matches,
         "unknown_codes": unknown_reported_codes(reported_email),
         "approved_issue_rules": reported_issue_rules(reported_email),
@@ -862,20 +845,16 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": 350,
+        "max_tokens": 220,
         "response_format": {"type": "json_object"},
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "/no_think\nSummarize the sender's reported claim issues and suggest safe, concrete "
-                    "investigation steps using only the supplied evidence. If extracted_claim_numbers is "
-                    "non-empty, explicitly say claims were extracted; never say the email contains no claim "
-                    "data. Distinguish extraction from the absence of a stored 837 match. Mention MIR, 835, "
-                    "or reconciliation matches only when present in source_matches. Explicitly list any unknown_codes "
-                    "and unclear statements as things requiring human clarification. Treat check rules as authoritative "
-                    "over email wording. Do not invent facts, corrections, or guarantee approval. Return JSON only with keys summary and suggestions; "
-                    "suggestions must be an array of short, actionable strings."
+                    "/no_think\nUse only supplied evidence. Claims were extracted but did not match stored 837 data. "
+                    "Summarize reported issues, MIR/835/reconciliation matches, unknown codes, unclear statements, "
+                    "and missing evidence. Check rules outrank email wording. Do not invent facts or promise approval. "
+                    "Return JSON only with summary:string and suggestions:string[]."
                 ),
             },
             {"role": "user", "content": json.dumps(evidence)},
@@ -920,7 +899,8 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
             "suggestions": suggestions or fallback["suggestions"],
             "source": model_id,
         }
-    except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+    except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("MPL unmatched AI request failed; using deterministic fallback: %s", exc)
         return fallback
 
 
