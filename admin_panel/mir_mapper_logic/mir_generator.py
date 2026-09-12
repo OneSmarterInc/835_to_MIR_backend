@@ -171,6 +171,17 @@ def _normalized_claim_number(claim: Claim) -> str:
     return str(claim.claim_number or "").strip()
 
 
+def _duplicate_checks_enabled(claim: Claim) -> bool:
+    """Apply duplicate controls only to claims with at most one MIR record of services.
+
+    Business policy intentionally exempts claims with more than 50 service lines
+    from duplicate claim-number and duplicate-ICN controls. Those claims still
+    run every non-duplicate preventive/financial rule and are split/truncated by
+    the normal service-overflow behavior below.
+    """
+    return len(claim.services or []) <= config.MAX_SERVICE_LINES_PER_RECORD
+
+
 def generate_mir_records(claims: Iterable[Claim], client=None,
                          process_date: date | None = None) -> Tuple[List[str], Dict[str, Any]]:
     records: List[str] = []
@@ -195,7 +206,7 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
     incoming_claim_numbers = {
         _normalized_claim_number(claim)
         for claim in claim_list
-        if _normalized_claim_number(claim)
+        if _normalized_claim_number(claim) and _duplicate_checks_enabled(claim)
     }
     if client is not None and incoming_claim_numbers:
         report_progress(stage="CHECKING_DUPLICATES", claims_total=claims_total, claims_processed=0, progress_percent=0)
@@ -214,24 +225,26 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
         total_claims += 1
         services = claim.services or []
         total_services += len(services)
+        duplicate_checks_enabled = _duplicate_checks_enabled(claim)
 
         claim_number_key = _normalized_claim_number(claim)
         duplicate_claim_number_finding = None
         if claim_number_key:
             if claim_number_key in seen_claim_numbers:
-                duplicate_claim_number_finding = _finding(
-                    claim,
-                    "DUPLICATE_CLAIM_NUMBER",
-                    "Duplicate claim number detected in this MIR. The first occurrence is processed; this later occurrence is held until four days after the first successful send.",
-                    duplicate_claim_number=claim_number_key,
-                    claim_index=claim_index,
-                    release_status="WAITING_FOR_FIRST_SEND",
-                )
+                if duplicate_checks_enabled:
+                    duplicate_claim_number_finding = _finding(
+                        claim,
+                        "DUPLICATE_CLAIM_NUMBER",
+                        "Duplicate claim number detected in this MIR. The first occurrence is processed; this later occurrence is held until four days after the first successful send.",
+                        duplicate_claim_number=claim_number_key,
+                        claim_index=claim_index,
+                        release_status="WAITING_FOR_FIRST_SEND",
+                    )
             else:
                 seen_claim_numbers.add(claim_number_key)
 
         historical_duplicate_finding = None
-        history = recent_history.get(claim_number_key) if claim_number_key else None
+        history = recent_history.get(claim_number_key) if claim_number_key and duplicate_checks_enabled else None
         if history:
             historical_duplicate_finding = _finding(
                 claim,
@@ -247,8 +260,8 @@ def generate_mir_records(claims: Iterable[Claim], client=None,
 
         preventive_findings = evaluate_preventive_rules(
             claim,
-            existing_icns=existing_icns,
-            seen_icns=seen_icns,
+            existing_icns=existing_icns if duplicate_checks_enabled else (),
+            seen_icns=seen_icns if duplicate_checks_enabled else (),
         )
         icn = claim_control_number(claim)
         if icn:
