@@ -442,6 +442,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .filter(
                 Q(claim_control_number__iexact=identifier)
                 | Q(claim_control_number__istartswith=identifier)
+                | Q(header_raw__contains=identifier)
             )
             .select_related("mir_file")
             .order_by("-mir_file__converted_at", "-id")[:3]
@@ -487,6 +488,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 | Q(claim_control_number__istartswith=identifier)
                 | Q(patient_control_number__iexact=identifier)
                 | Q(patient_control_number__istartswith=identifier)
+                | Q(raw_record__contains=identifier)
             )
             .select_related("recon_file")
             .order_by("-recon_file__uploaded_at", "-id")[:3]
