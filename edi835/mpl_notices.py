@@ -384,6 +384,23 @@ def claim_email_context(body, claim_number):
 
 
 
+def internal_claim_number_from_835(content, highmark_claim_number):
+    """Return CLP01 + CLP07 for a Highmark claim in stored 835 content."""
+    wanted = str(highmark_claim_number or "").strip().upper()
+    if not wanted:
+        return ""
+    for segment in re.split(r"[~\r\n]+", content or ""):
+        fields = segment.strip().split("*")
+        if (
+            len(fields) > 7
+            and fields[0].upper() == "CLP"
+            and fields[1].strip().upper() == wanted
+        ):
+            base, suffix = fields[1].strip(), fields[7].strip()
+            return base if suffix.upper() in {"", base.upper()} else f"{base}{suffix}"
+    return ""
+
+
 def search_claim_sources(notice, identifiers, issue_map=None):
     """Find every archived source containing each extracted claim identifier.
 
@@ -526,23 +543,12 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 .order_by("claim_sequence")
                 .first()
             )
-            stored_835_internal = ""
-            for segment in re.split(r"[~\r\n]+", source.input_file_content or ""):
-                fields = segment.strip().split("*")
-                if (
-                    len(fields) > 7
-                    and fields[0].upper() == "CLP"
-                    and fields[1].strip().upper() == identifier.upper()
-                ):
-                    # The archived 835 is stored in the database. Its CLP01
-                    # contains the Highmark number and CLP07 contains the
-                    # alphanumeric suffix used by the corresponding MIR.
-                    base, suffix = fields[1].strip(), fields[7].strip()
-                    stored_835_internal = (
-                        base if suffix.upper() in {"", base.upper()}
-                        else f"{base}{suffix}"
-                    )
-                    break
+            # The archived 835 is stored in the database. Its CLP01
+            # contains the Highmark number and CLP07 contains the suffix used
+            # by the corresponding MIR.
+            stored_835_internal = internal_claim_number_from_835(
+                source.input_file_content, identifier
+            )
             append_source("835", source.id, {
                 "type": "835",
                 "internal_claim_number": alphanumeric_claim_number(
