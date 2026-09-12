@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
-
 from django.http import JsonResponse
 
 from .held_claims import DUPLICATE_HOLD_CODES, mir_claim_number
@@ -74,7 +72,7 @@ def _provenance_maps(client_ids):
             client_id = str(row.get("client_id") or "")
             release_filename = str(finding.get("release_mir_filename") or "").strip()
             if release_filename:
-                exact[(client_id, release_filename, claim_number)] = item
+                exact.setdefault((client_id, release_filename, claim_number), item)
             fallback.setdefault((client_id, claim_number), item)
 
     return exact, fallback
@@ -95,7 +93,7 @@ def api_held_release_history(request):
 
         claims = []
         if mir is not None:
-            for claim in mir.claims.all().order_by("claim_sequence"):
+            for claim in mir.claims.all():
                 claim_number = mir_claim_number(claim.claim_control_number)
                 provenance = exact.get(
                     (client_id, mir_filename, claim_number)
