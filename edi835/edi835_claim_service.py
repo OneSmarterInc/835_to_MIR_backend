@@ -78,7 +78,7 @@ def normalize_835_file(edi_file, *, replace=False):
             paid_amount=row["paid_amount"],
             patient_responsibility=row["patient_responsibility"],
             service_count=row["service_count"],
-            raw_claim="~".~".join(row["segments"]) + "~",
+            raw_claim="~".join(row["segments"]) + "~",
             segment_data={"segments": row["segments"]},
         )
         for index, row in enumerate(rows, start=1)
