@@ -777,22 +777,67 @@ def call_local_model(notice, claim, timeline, findings, actions):
     })
     return result
 
+UNMATCHED_CATEGORY_ACTIONS = {
+    "NO_PREFIX_RETURN": "Verify the expected prefix in configuration and the generated MIR, then regenerate only after the mapping is approved.",
+    "COB_REVIEW": "Compare COB amounts and responsibility fields across the 837, 835, MIR, and reconciliation record before correction.",
+    "ADJUSTMENT_PENDING": "Confirm that the original claim processed and the reconciliation record finalized before closing or resubmitting the adjustment.",
+    "NOT_PROCESSED": "Use the matched 835 and reconciliation status to determine why the claim did not process, then route it through the approved operations workflow.",
+    "INCLUSIVE_PRICING": "Verify the applicable inclusive-pricing rule, procedure data, and allowance before making a claim change.",
+    "F_AND_A": "Verify the F&A classification and processing instruction against the archived claim records before operations handling.",
+}
+
+
+def unmatched_notice_actions(source_matches):
+    """Build valid, issue-specific actions without accepting free-form model advice."""
+    actions = []
+    unknown = set()
+    source_types = set()
+
+    def add(action):
+        if action and action not in actions:
+            actions.append(action)
+
+    for match in source_matches:
+        for source in match.get("sources", []):
+            source_types.add(str(source.get("type") or "").upper())
+        for issue in match.get("reported_issues", []):
+            for code in issue.get("codes", []):
+                normalized = str(code).upper()
+                rule = APPROVED_EMAIL_ISSUE_RULES.get(normalized)
+                if rule:
+                    for action in rule.get("actions", []):
+                        add(action)
+                else:
+                    unknown.add(normalized)
+            add(UNMATCHED_CATEGORY_ACTIONS.get(issue.get("category")))
+
+    if "MIR" in source_types:
+        add("Compare the matched MIR claim status, reason, service count, and mapped values with the email allegation.")
+    if "835" in source_types:
+        add("Inspect the matched 835 claim status, adjustment reasons, payment amounts, and service lines before changing the claim.")
+    if "RECON" in source_types:
+        add("Confirm the matched reconciliation status, charge, paid amount, and patient responsibility before resubmission.")
+    for code in sorted(unknown):
+        add(f"Obtain the approved code-dictionary definition for {code}; do not infer its meaning from the email alone.")
+
+    if not actions:
+        add("Locate the corresponding 837 or obtain the approved source claim record before deciding on a correction.")
+    return actions[:10]
+
+
 def call_unmatched_notice_model(notice, identifiers, source_matches):
     base_url = (
         os.getenv("MPL_AI_BASE_URL", "").rstrip("/")
         if local_ai_enabled()
         else ""
     )
+    approved_suggestions = unmatched_notice_actions(source_matches)
     fallback = {
         "summary": (
             f"Extracted {len(identifiers)} claim number(s) from the email. None matched stored "
             "837 data for this client, so the reported issues cannot yet be verified against an 837 claim."
         ),
-        "suggestions": [
-            "Confirm that the correct client is selected.",
-            "Confirm that the relevant 837 files have been uploaded and processed.",
-            "Review any MIR, 835, or reconciliation source matches shown below before taking corrective action.",
-        ],
+        "suggestions": approved_suggestions,
         "source": "deterministic-fallback",
     }
     if not base_url:
@@ -854,7 +899,7 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                     "/no_think\nUse only supplied evidence. Claims were extracted but did not match stored 837 data. "
                     "Summarize reported issues, MIR/835/reconciliation matches, unknown codes, unclear statements, "
                     "and missing evidence. Check rules outrank email wording. Do not invent facts or promise approval. "
-                    "Return JSON only with summary:string and suggestions:string[]."
+                    "Return JSON only with summary:string and suggestions:string[]. Suggestions are ignored; corrective actions are supplied by the application."
                 ),
             },
             {"role": "user", "content": json.dumps(evidence)},
@@ -878,25 +923,9 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         ):
             return fallback
 
-        suggestions = []
-        seen = set()
-        for item in result.get("suggestions", []):
-            suggestion = str(item).strip()
-            key = re.sub(r"\W+", " ", suggestion.lower()).strip()
-            if (
-                not suggestion
-                or not key
-                or key in seen
-                or re.match(r"^no claim data (?:was|is)", suggestion, re.I)
-            ):
-                continue
-            seen.add(key)
-            suggestions.append(suggestion)
-            if len(suggestions) == 8:
-                break
         return {
             "summary": summary,
-            "suggestions": suggestions or fallback["suggestions"],
+            "suggestions": approved_suggestions,
             "source": model_id,
         }
     except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
