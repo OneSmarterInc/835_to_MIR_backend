@@ -99,14 +99,13 @@ def _claim_lifecycle(claim):
     if highmark:
         lookup |= Q(claim_control_number__istartswith=highmark)
     mir = recon = claim_835 = None
-    if identifiers:
+    if highmark:
+        # A source row is valid only when this exact Highmark claim exists in
+        # that exact normalized 835 file. Never borrow an internal number from
+        # another claim merely because a loose identifier happens to match.
         claim_835 = (
             EDI835Claim.objects.select_related("edi_file")
-            .filter(edi_file__client=claim.client)
-            .filter(
-                Q(highmark_claim_number__in=identifiers)
-                | Q(internal_claim_number__in=identifiers)
-            )
+            .filter(edi_file__client=claim.client, highmark_claim_number__iexact=highmark)
             .order_by("edi_file__uploaded_at", "claim_sequence")
             .first()
         )
