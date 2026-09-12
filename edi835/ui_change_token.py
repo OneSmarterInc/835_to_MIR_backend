@@ -44,6 +44,23 @@ def _scope(qs, client_ids, field="client_id"):
     return qs.filter(**{f"{field}__in": client_ids})
 
 
+def _held_detail_hash(client_ids):
+    """Detect finding/resolution/email-state edits that do not alter file timestamps."""
+    rows = (
+        _scope(EDI835File.objects.filter(held_claims_count__gt=0), client_ids)
+        .order_by("-uploaded_at")
+        .values_list("id", "held_claims_count", "conversion_findings")[:200]
+    )
+    digest = hashlib.sha256()
+    for file_id, held_count, findings in rows:
+        digest.update(str(file_id).encode("utf-8"))
+        digest.update(str(held_count or 0).encode("utf-8"))
+        digest.update(
+            json.dumps(findings or [], sort_keys=True, separators=(",", ":"), default=str).encode("utf-8")
+        )
+    return digest.hexdigest()
+
+
 def _token_payload(request):
     client_ids = _client_ids_for_request(request)
 
@@ -63,6 +80,7 @@ def _token_payload(request):
         errors=Count("id", filter=Q(status="ERROR")),
         in_sftp=Count("id", filter=Q(present_in_sftp=True)),
     )
+    edi["held_detail_hash"] = _held_detail_hash(client_ids)
 
     mir = _scope(MIRFile.objects.all(), client_ids).aggregate(
         count=Count("id"),
