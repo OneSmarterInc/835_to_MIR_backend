@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from decimal import Decimal, InvalidOperation
 
 from django.db import transaction
@@ -12,6 +13,8 @@ from admin_panel.mir_mapper_logic.mapping_store import get_mappings
 
 from .models import EDI835File, MIRClaim, MIRClaimChunk, MIRFile, MIRServiceLine
 
+
+logger = logging.getLogger(__name__)
 
 # One-based MIR-MO specification position. Python slicing subtracts one.
 MIR_FIRST_SERVICE_PAID_POSITION = 429
@@ -196,3 +199,22 @@ def set_mir_push_status(mir_file: MIRFile, pushed: bool) -> None:
         # transition so manual, batch, and automatic sends all behave alike.
         from .held_claims import note_mir_sent
         note_mir_sent(mir_file)
+
+        # Held-release emails are operational notifications only. Once SFTP has
+        # succeeded, an SMTP problem must never turn the delivered MIR back into
+        # a failed/retry release. Log email failures and preserve PUSHED state.
+        source = getattr(mir_file, "source_835", None)
+        if str(getattr(source, "ingestion_source", "") or "").upper() == "HELD_RELEASE":
+            try:
+                from .held_release_email import send_held_release_sftp_notice
+
+                if not send_held_release_sftp_notice(mir_file):
+                    logger.warning(
+                        "Held-release MIR %s was pushed to SFTP but its email notification was not sent.",
+                        mir_file.mir_filename,
+                    )
+            except Exception:
+                logger.exception(
+                    "Held-release MIR %s was pushed to SFTP but email notification raised an error.",
+                    mir_file.mir_filename,
+                )
