@@ -341,6 +341,58 @@ def mpl_analysis_review(request, notice_id, claim_id):
     return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)})
 
 
+def _mpl_file_claim_rows(file_type, record, content):
+    """Return one database-backed display row per claim in an archived file."""
+    normalized_type = file_type.lower()
+    if normalized_type == "837":
+        return [
+            claim.raw_claim.strip()
+            for claim in record.claims.order_by("claim_sequence")
+            if claim.raw_claim.strip()
+        ]
+    if normalized_type == "mir":
+        rows = []
+        claims = record.claims.prefetch_related("chunks").order_by("claim_sequence")
+        for claim in claims:
+            chunks = [
+                chunk.raw_row.strip()
+                for chunk in claim.chunks.order_by("chunk_number")
+                if chunk.raw_row.strip()
+            ]
+            rows.append(" ".join(chunks) if chunks else claim.header_raw.strip())
+        return [row for row in rows if row]
+    if normalized_type == "recon":
+        return [
+            claim.raw_record.strip()
+            for claim in record.claims.order_by("claim_sequence")
+            if claim.raw_record.strip()
+        ]
+    if normalized_type == "835":
+        delimiter = "~"
+        segments = [part.strip() for part in str(content or "").split(delimiter) if part.strip()]
+        rows, envelope, claim = [], [], []
+
+        def flush(items):
+                       if items:
+                                              rows.append(delimiter.join(items) + delimiter)
+
+        for segment in segments:
+            if segment.split("*", 1)[0].upper() == "CLP":
+                flush(claim)
+                if not claim:
+                    flush(envelope)
+                envelope, claim = [], [segment]
+            elif claim:
+                claim.append(segment)
+            else:
+                envelope.append(segment)
+        flush(claim)
+        if not claim:
+            flush(envelope)
+        return rows
+    return str(content or "").splitlines()
+
+
 @require_http_methods(["GET"])
 def mpl_related_file(request, file_type, file_id):
     models = {
@@ -360,6 +412,14 @@ def mpl_related_file(request, file_type, file_id):
         return JsonResponse({"success": False, "error": "Access denied."}, status=403)
     content = getattr(record, content_field, "") or ""
     filename = getattr(record, filename_field, "mpl-evidence.txt")
+    if request.GET.get("view") == "1":
+        return JsonResponse({
+            "success": True,
+            "type": file_type.upper(),
+            "filename": filename,
+            "content": content,
+            "claim_rows": _mpl_file_claim_rows(file_type, record, content),
+        })
     response = HttpResponse(content.encode("utf-8"), content_type="application/octet-stream")
     response["Content-Disposition"] = f'attachment; filename="{filename.replace(chr(34), "")}"'
     response["X-Content-Type-Options"] = "nosniff"
