@@ -1060,7 +1060,7 @@ def claim_summary(link):
         "matching_confidence": float(link.matching_confidence), "confirmed": link.confirmed_by_user, "analysis": None,
     }
     if analysis:
-        data["analysis"] = {"summary": analysis.summary, "primary_issue_code": analysis.primary_issue_code, "needs_response": analysis.needs_response, "confidence": float(analysis.confidence), "timeline": analysis.timeline, "findings": analysis.findings, "recommended_actions": analysis.recommended_actions, "related_files": analysis.related_files, "review_status": analysis.review_status, "model_id": analysis.model_id}
+        data["analysis"] = {"summary": analysis.summary, "primary_issue_code": analysis.primary_issue_code, "needs_response": analysis.needs_response, "confidence": float(analysis.confidence), "timeline": analysis.timeline, "findings": analysis.findings, "recommended_actions": analysis.recommended_actions, "related_files": analysis.related_files, "review_status": analysis.review_status, "model_id": analysis.model_id, "unknown_codes": (analysis.raw_model_output or {}).get("unknown_codes", []), "unclear_items": (analysis.raw_model_output or {}).get("unclear_items", []), "missing_evidence": (analysis.raw_model_output or {}).get("missing_evidence", [])}
     return data
 
 
