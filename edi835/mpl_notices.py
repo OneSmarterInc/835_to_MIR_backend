@@ -427,6 +427,14 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             dict.fromkeys(str(value).strip() for value in internal_number_rows if value)
         )
 
+        def alphanumeric_claim_number(*values):
+            """Prefer the complete, source-specific alphanumeric claim key."""
+            normalized = [str(value or "").strip() for value in values]
+            for value in normalized:
+                if value and re.search(r"[A-Za-z]", value):
+                    return value
+            return next((value for value in normalized if value), "")
+
         def append_source(source_type, source_id, payload):
             key = (source_type, str(source_id))
             if key not in seen_sources:
@@ -455,7 +463,12 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = claim_837.edi_file
             append_source("837", source.id, {
                 "type": "837",
-                "internal_claim_number": claim_837.internal_claim_number or "",
+                "internal_claim_number": alphanumeric_claim_number(
+                    claim_837.claim_control_number,
+                    claim_837.internal_claim_number,
+                    claim_837.reference_9c,
+                    authoritative_internal_number,
+                ),
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -481,7 +494,10 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = mir_claim.mir_file
             append_source("MIR", source.id, {
                 "type": "MIR",
-                "internal_claim_number": authoritative_internal_number,
+                "internal_claim_number": alphanumeric_claim_number(
+                    mir_claim.claim_control_number,
+                    authoritative_internal_number,
+                ),
                 "filename": source.mir_filename,
                 "status": mir_claim.claim_status or source.status,
                 "date": source.converted_at.isoformat() if source.converted_at else None,
@@ -500,9 +516,22 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-uploaded_at")[:3]
         )
         for source in files_835:
+            linked_mir_claim = (
+                MIRClaim.objects.filter(mir_file__source_835=source)
+                .filter(
+                    Q(claim_control_number__iexact=identifier)
+                    | Q(claim_control_number__istartswith=identifier)
+                    | Q(header_raw__contains=identifier)
+                )
+                .order_by("claim_sequence")
+                .first()
+            )
             append_source("835", source.id, {
                 "type": "835",
-                "internal_claim_number": authoritative_internal_number,
+                "internal_claim_number": alphanumeric_claim_number(
+                    getattr(linked_mir_claim, "claim_control_number", ""),
+                    authoritative_internal_number,
+                ),
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
@@ -529,7 +558,11 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = recon_claim.recon_file
             append_source("RECON", source.id, {
                 "type": "RECON",
-                "internal_claim_number": authoritative_internal_number,
+                "internal_claim_number": alphanumeric_claim_number(
+                    recon_claim.claim_control_number,
+                    recon_claim.patient_control_number,
+                    authoritative_internal_number,
+                ),
                 "filename": source.original_filename,
                 "status": recon_claim.claim_status or source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
