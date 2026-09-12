@@ -500,15 +500,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-uploaded_at")[:3]
         )
         for source in files_835:
-            matched_clp_numbers = []
-            for segment in re.split(r"[~\r\n]+", source.input_file_content or ""):
-                fields = segment.strip().split("*")
-                if fields and fields[0].upper() == "CLP" and identifier in segment:
-                    # CLP01 is the submitter/patient control number for the
-                    # claim represented by this 835 payment segment.
-                    candidate = fields[1].strip() if len(fields) > 1 else ""
-                    if candidate and candidate not in matched_clp_numbers:
-                        matched_clp_numbers.append(candidate)
             append_source("835", source.id, {
                 "type": "835",
                 "internal_claim_number": authoritative_internal_number,
