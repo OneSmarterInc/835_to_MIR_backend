@@ -10,11 +10,15 @@ from edi835.models import EDI837Claim, EDI837File, MPLNotice
 from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
+    authoritative_rule_catalog,
+    conversion_findings_for_claim,
     extract_claim_identifiers,
+    extract_claim_issue_map,
     local_ai_enabled,
     parse_subject,
     process_notice,
     reported_issue_rules,
+    unknown_reported_codes,
     split_latest_message,
 )
 
@@ -75,6 +79,44 @@ class MPLClaimExtractionTests(TestCase):
     def test_does_not_extract_dates_mir_fields_or_ordinary_words(self):
         body = "Period 2026-08-21. Check MIR1019, CON89, HEADER, DIRECT and UE115."
         self.assertEqual(extract_claim_identifiers(body), [])
+
+
+    def test_associates_section_and_inline_issue_codes_per_claim(self):
+        body = """
+        UE084 - use PR31
+        33020262300027000
+        RR001 Error - return as sent on the 837
+        44320260280007300
+        The following Adjustment needs to be processed:
+        33020262242261500 - original claim or Recon not finalized
+        33020262253998500--UE036, requires CO41
+        MP001/MP002
+        33020262323004400
+        """
+        issues = extract_claim_issue_map(body)
+        self.assertEqual(issues["33020262300027000"][0]["codes"], ["UE084"])
+        self.assertEqual(issues["44320260280007300"][0]["codes"], ["RR001"])
+        self.assertEqual(issues["33020262242261500"][0]["category"], "ADJUSTMENT_PENDING")
+        self.assertEqual(issues["33020262253998500"][0]["codes"], ["UE036"])
+        self.assertEqual(issues["33020262323004400"][0]["codes"], ["MP001", "MP002"])
+
+    def test_unknown_codes_are_disclosed_not_defined(self):
+        self.assertEqual(unknown_reported_codes("UE999 and MP003"), ["UE999"])
+        self.assertIn("MP003", authoritative_rule_catalog(["MP003", "UE999"]))
+        self.assertNotIn("UE999", authoritative_rule_catalog(["MP003", "UE999"]))
+
+    def test_filters_stored_check_findings_to_the_claim(self):
+        from types import SimpleNamespace
+        source = SimpleNamespace(
+            original_filename="input.835",
+            conversion_findings=[
+                {"rule_code": "MP003", "claim_number": "33020262300027000", "severity": "REFUSE", "reason": "Cross-foot failed.", "evidence": {"line": 2}},
+                {"rule_code": "MP013", "claim_number": "33020262091936200", "severity": "REFUSE", "reason": "Group missing."},
+            ],
+        )
+        findings = conversion_findings_for_claim(source, ["33020262300027000"])
+        self.assertEqual([item["code"] for item in findings], ["MP003"])
+        self.assertEqual(findings[0]["details"], {"line": 2})
 
 
 class MPLAIEnablementTests(TestCase):
@@ -166,7 +208,8 @@ class MPLNoticeAPITests(TestCase):
             notice.extracted_claim_numbers,
             ["33020262300027000", "33020262091936200"],
         )
-        self.assertEqual(notice.source_matches, [])
+        self.assertEqual([item["claim_number"] for item in notice.source_matches], notice.extracted_claim_numbers)
+        self.assertTrue(all(not item["sources"] for item in notice.source_matches))
         self.assertNotIn("UE084", notice.extracted_claim_numbers)
 
     def test_no_claim_is_review_required_not_fabricated(self):
