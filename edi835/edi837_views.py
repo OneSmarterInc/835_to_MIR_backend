@@ -478,34 +478,62 @@ def edi837_search(request):
         )
 
     grouped = {}
+    unresolved = {}
+
+    def add_source(highmark, internal, source_type, item):
+        highmark = str(highmark or "").strip()
+        internal = str(internal or "").strip()
+        if not highmark:
+            return
+        if internal:
+            key = (highmark, internal.upper())
+            group = grouped.setdefault(key, {"highmark": highmark, "internal": internal})
+            group.setdefault(source_type, item)
+        else:
+            unresolved.setdefault(highmark, {}).setdefault(source_type, item)
+
     for item in source_835:
-        grouped.setdefault(str(item.highmark_claim_number).strip(), {})["835"] = item
+        add_source(
+            item.highmark_claim_number, item.internal_claim_number, "835", item
+        )
     for item in source_mir:
-        highmark, _ = source_numbers(item.claim_control_number)
-        if highmark:
-            grouped.setdefault(highmark, {}).setdefault("mir", item)
+        highmark, internal = source_numbers(item.claim_control_number)
+        add_source(highmark, internal, "mir", item)
     for item in source_recon:
-        highmark, _ = source_numbers(item.claim_control_number)
-        if highmark:
-            grouped.setdefault(highmark, {}).setdefault("recon", item)
+        highmark, internal = source_numbers(item.claim_control_number)
+        add_source(highmark, internal, "recon", item)
     for item in source_837:
-        highmark = str(item.highmark_claim_number or source_numbers(item.claim_control_number)[0]).strip()
-        if highmark:
-            grouped.setdefault(highmark, {}).setdefault("837", item)
+        parsed_highmark, parsed_internal = source_numbers(item.claim_control_number)
+        highmark = item.highmark_claim_number or parsed_highmark
+        internal = item.internal_claim_number or item.reference_9c or parsed_internal
+        add_source(highmark, internal, "837", item)
+
+    # A source with no internal number is attached when the Highmark number has
+    # exactly one known internal number. If several internal numbers exist, it
+    # remains separate because assigning it to one would invent a relationship.
+    for highmark, blank_sources in unresolved.items():
+        matching_keys = [key for key in grouped if key[0] == highmark]
+        if len(matching_keys) == 1:
+            target = grouped[matching_keys[0]]
+        else:
+            target = grouped.setdefault(
+                (highmark, ""), {"highmark": highmark, "internal": ""}
+            )
+        for source_type, item in blank_sources.items():
+            target.setdefault(source_type, item)
 
     rows = []
-    for highmark in sorted(grouped)[:limit]:
-        sources = grouped[highmark]
+    ordered_groups = sorted(
+        grouped.values(), key=lambda item: (item["highmark"], item["internal"].upper())
+    )
+    for sources in ordered_groups[:limit]:
+        highmark = sources["highmark"]
+        internal = sources["internal"]
         item_835, mir, recon, claim_837 = (
             sources.get("835"), sources.get("mir"), sources.get("recon"), sources.get("837")
         )
         mir_internal = source_numbers(mir.claim_control_number)[1] if mir else ""
         recon_internal = source_numbers(recon.claim_control_number)[1] if recon else ""
-        internal = (
-            (item_835.internal_claim_number if item_835 else "")
-            or mir_internal or recon_internal
-            or ((claim_837.internal_claim_number or claim_837.reference_9c) if claim_837 else "")
-        )
         lifecycle = {
             "835": {
                 "exists": bool(item_835),
@@ -533,17 +561,21 @@ def edi837_search(request):
                 ),
                 "status": claim_837.edi_file.status if claim_837 else "",
                 "internal_claim_number": (
-                    claim_837.internal_claim_number or claim_837.reference_9c if claim_837 else ""
+                    (claim_837.internal_claim_number or claim_837.reference_9c)
+                    if claim_837 else ""
                 ),
             },
         }
         if claim_837:
             row = _claim_row(claim_837)
-            row.update({"has_837": True, "lifecycle": lifecycle})
+            row.update({
+                "has_837": True, "highmark_claim_number": highmark,
+                "internal_claim_number": internal, "lifecycle": lifecycle,
+            })
         else:
             member_id = (mir.member_id if mir else "") or (recon.member_id if recon else "")
             row = {
-                "id": f"universal:{highmark}", "claim_number": highmark,
+                "id": f"universal:{highmark}:{internal}", "claim_number": highmark,
                 "highmark_claim_number": highmark, "internal_claim_number": internal,
                 "patient_name": "", "member_id": member_id,
                 "total_charge_amount": str(item_835.total_charge_amount if item_835 else 0),
