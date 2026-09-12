@@ -1,12 +1,14 @@
 import json
 from datetime import date
 from unittest.mock import patch
+from types import SimpleNamespace
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Client, User
 from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLNotice, RECONClaim, RECONFile)
+from edi835.mpl_views import _mpl_file_claim_rows
 from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
@@ -91,6 +93,56 @@ class MPLClaimExtractionTests(TestCase):
             internal_claim_number_from_835(content, "45520262120111800"),
             "",
         )
+
+    def test_file_viewer_returns_one_row_per_claim_for_all_sources(self):
+        class FakeRelated(list):
+            def order_by(self, *args):
+                return self
+
+            def prefetch_related(self, *args):
+                return self
+
+        rows_835 = _mpl_file_claim_rows(
+            "835",
+            SimpleNamespace(),
+            "ISA*X~ST*835~CLP*111*1*10*8*0*12*A01~NM1*QC~"
+            "CLP*222*1*20*15*0*12*B02~NM1*QC~SE*1~",
+        )
+        self.assertEqual(len(rows_835), 3)
+        self.assertTrue(rows_835[1].startswith("CLP*111"))
+        self.assertTrue(rows_835[2].startswith("CLP*222"))
+
+        rows_837 = _mpl_file_claim_rows(
+            "837",
+            SimpleNamespace(claims=FakeRelated([
+                SimpleNamespace(raw_claim="CLM*111A01*10~\nNM1*QC~"),
+                SimpleNamespace(raw_claim="CLM*222B02*20~\nNM1*QC~"),
+            ])),
+            "",
+        )
+        self.assertEqual(len(rows_837), 2)
+
+        rows_recon = _mpl_file_claim_rows(
+            "recon",
+            SimpleNamespace(claims=FakeRelated([
+                SimpleNamespace(raw_record="111A01 first"),
+                SimpleNamespace(raw_record="222B02 second"),
+            ])),
+            "",
+        )
+        self.assertEqual(rows_recon, ["111A01 first", "222B02 second"])
+
+        first_chunks = FakeRelated([SimpleNamespace(raw_row="HI111A01 header"), SimpleNamespace(raw_row="detail")])
+        second_chunks = FakeRelated([SimpleNamespace(raw_row="HI222B02 header")])
+        rows_mir = _mpl_file_claim_rows(
+            "mir",
+            SimpleNamespace(claims=FakeRelated([
+                SimpleNamespace(chunks=first_chunks, header_raw=""),
+                SimpleNamespace(chunks=second_chunks, header_raw=""),
+            ])),
+            "",
+        )
+        self.assertEqual(rows_mir, ["HI111A01 header detail", "HI222B02 header"])
 
     def test_accepts_explicitly_labeled_legacy_alphanumeric_claim(self):
         self.assertEqual(
