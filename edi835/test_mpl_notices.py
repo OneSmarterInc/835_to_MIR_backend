@@ -19,6 +19,7 @@ from edi835.mpl_notices import (
     process_notice,
     reported_issue_rules,
     unknown_reported_codes,
+    unmatched_notice_actions,
     split_latest_message,
 )
 
@@ -117,6 +118,23 @@ class MPLClaimExtractionTests(TestCase):
         findings = conversion_findings_for_claim(source, ["33020262300027000"])
         self.assertEqual([item["code"] for item in findings], ["MP003"])
         self.assertEqual(findings[0]["details"], {"line": 2})
+
+
+    def test_unmatched_actions_are_issue_and_source_specific(self):
+        actions = unmatched_notice_actions([
+            {
+                "claim_number": "33020262300027000",
+                "reported_issues": [{"codes": ["MP011", "UE999"], "category": "ADJUSTMENT_PENDING"}],
+                "sources": [{"type": "835"}, {"type": "RECON"}],
+            }
+        ])
+        joined = " ".join(actions)
+        self.assertIn("timely-filing", joined)
+        self.assertIn("original claim processed", joined)
+        self.assertIn("835 claim status", joined)
+        self.assertIn("reconciliation status", joined)
+        self.assertIn("UE999", joined)
+        self.assertNotIn("Confirm that the correct client", joined)
 
 
 class MPLAIEnablementTests(TestCase):
