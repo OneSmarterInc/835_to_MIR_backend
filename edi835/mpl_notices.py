@@ -173,6 +173,117 @@ def extract_claim_identifiers(text, supplied=None):
     return identifiers
 
 
+def extract_claim_issue_map(text):
+    """Associate recurring MPL issue sections and inline codes with claim IDs."""
+    issue_map = {}
+    active_codes = []
+    active_category = ""
+    active_description = ""
+    previous_claims = []
+
+    section_patterns = (
+        ("NO_PREFIX_RETURN", r"following claims were pulled|returned with no prefix"),
+        ("COB_REVIEW", r"following cob claim"),
+        ("ADJUSTMENT_PENDING", r"following adjustment"),
+        ("NOT_PROCESSED", r"following claim did not process"),
+    )
+
+    def add_issue(claim_number, codes, category, description):
+        issue = {
+            "codes": list(dict.fromkeys(code.upper() for code in codes)),
+            "category": category,
+            "description": re.sub(r"\s+", " ", description or "").strip()[:500],
+        }
+        if not issue["codes"] and not issue["category"]:
+            return
+        items = issue_map.setdefault(claim_number, [])
+        key = (
+            tuple(issue["codes"]),
+            issue["category"],
+            issue["description"].lower(),
+        )
+        existing = {
+            (
+                tuple(item.get("codes", [])),
+                item.get("category", ""),
+                item.get("description", "").lower(),
+            )
+            for item in items
+        }
+        if key not in existing:
+            items.append(issue)
+
+    lines = [
+        re.sub(r"\s+", " ", line).strip()
+        for line in clean_email_for_analysis(text).splitlines()
+        if line.strip()
+    ]
+    for line in lines:
+        lower = line.lower()
+        claims = extract_claim_identifiers(line)
+        codes = [
+            code.upper()
+            for code in re.findall(r"\b(?:MP|RR|UE)\d{3}\b", line, re.I)
+        ]
+
+        section_category = ""
+        for category, pattern in section_patterns:
+            if re.search(pattern, lower):
+                section_category = category
+                break
+
+        inline_category = ""
+        if "inclusively priced" in lower:
+            inline_category = "INCLUSIVE_PRICING"
+        elif re.search(r"\bf\s*&\s*a claim\b", lower):
+            inline_category = "F_AND_A"
+        elif "original claim" in lower and "recon record" in lower:
+            inline_category = "ADJUSTMENT_PENDING"
+
+        if section_category and not claims:
+            active_codes = []
+            active_category = section_category
+            active_description = line
+            previous_claims = []
+            continue
+
+        if codes and not claims:
+            # Outlook sometimes wraps "-- UE036" onto the line after its claim.
+            if previous_claims and line.lstrip().startswith(("-", "–", "—")):
+                for claim_number in previous_claims:
+                    add_issue(claim_number, codes, inline_category, line)
+            active_codes = list(dict.fromkeys(codes))
+            active_category = inline_category
+            active_description = line
+            continue
+
+        if not claims:
+            if active_codes and len(active_description) < 500:
+                active_description = f"{active_description} {line}".strip()
+            continue
+
+        claim_codes = codes or active_codes
+        claim_category = inline_category or active_category
+        description_without_claims = line
+        for claim_number in claims:
+            description_without_claims = description_without_claims.replace(
+                claim_number, ""
+            )
+        description_without_claims = description_without_claims.strip(" -–—:")
+        description = description_without_claims or active_description
+
+        for claim_number in claims:
+            add_issue(
+                claim_number,
+                claim_codes,
+                claim_category,
+                description,
+            )
+        previous_claims = claims
+
+    return issue_map
+
+
 def clean_email_for_analysis(body):
     text = (body or "").replace("\u00a0", " ").replace("\r\n", "\n")
     footer_positions = [
@@ -206,8 +317,9 @@ def claim_email_context(body, claim_number):
 
 
 
-def search_claim_sources(notice, identifiers):
+def search_claim_sources(notice, identifiers, issue_map=None):
     results = []
+    issue_map = issue_map or {}
     for identifier in identifiers[:50]:
         sources = []
         claim_837 = (
@@ -307,7 +419,11 @@ def search_claim_sources(notice, identifiers):
                 },
                 "download_url": f"/edi835/api/mpl-files/recon/{source.id}/download/",
             })
-        results.append({"claim_number": identifier, "sources": sources})
+        results.append({
+            "claim_number": identifier,
+            "reported_issues": issue_map.get(identifier, []),
+            "sources": sources,
+        })
     return results
 
 
@@ -720,10 +836,15 @@ def process_notice(notice_id):
             f"{notice.subject}\n{notice_email_body(notice)}",
             notice.requested_claim_numbers,
         )
-        all_source_matches = search_claim_sources(notice, identifiers)
-        notice.source_matches = [
-            item for item in all_source_matches if item.get("sources")
-        ]
+        issue_map = extract_claim_issue_map(notice_email_body(notice))
+        all_source_matches = search_claim_sources(
+            notice,
+            identifiers,
+            issue_map=issue_map,
+        )
+        # Retain every extracted claim so reported issues remain visible even
+        # when no archived source matches that claim.
+        notice.source_matches = all_source_matches
         # Keep every valid claim extracted from the email visible. Source
         # matching is separate: an absent database match must not erase a
         # legitimate claim number reported by the sender.
@@ -740,7 +861,7 @@ def process_notice(notice_id):
             notice.status = "REVIEW_REQUIRED"
             if not identifiers:
                 notice.last_error = "No valid claim numbers were found in the email."
-            elif notice.source_matches:
+            elif any(item.get("sources") for item in notice.source_matches):
                 notice.last_error = (
                     "No extracted claim number matched stored 837 data for this client; "
                     "matches from other claim sources are shown below."
@@ -772,6 +893,30 @@ def process_notice(notice_id):
         for link in links:
             timeline, files, findings = collect_evidence(link.claim)
             email_context = claim_email_context(notice_email_body(notice), link.claim.claim_control_number)
+            claim_identifiers = {
+                str(value).upper()
+                for value in (
+                    link.claim.claim_control_number,
+                    link.claim.highmark_claim_number,
+                    link.claim.internal_claim_number,
+                    link.claim.reference_9c,
+                    link.claim.patient_control_number,
+                )
+                if value
+            }
+            reported_issues = [
+                issue
+                for identifier in claim_identifiers
+                for issue in issue_map.get(identifier, [])
+            ]
+            for issue in reported_issues:
+                label = ", ".join(issue.get("codes", [])) or issue.get("category", "REPORTED_ISSUE")
+                findings.append(_finding(
+                    f"REPORTED_{label.replace(', ', '_')}",
+                    "warning",
+                    issue.get("description") or f"The MPL email reports {label}.",
+                    "MPL email (reported; verify against application evidence)",
+                ))
             if re.search(r"\bno\s+prefix\b|\bprefix\s+(?:is\s+)?missing\b", email_context, re.I):
                 findings.append(_finding("NO_PREFIX_NOTICE", "error", "The MPL email reports that the returned claim has no prefix.", "MPL email"))
             actions = approved_actions_for_claim(email_context, findings)
