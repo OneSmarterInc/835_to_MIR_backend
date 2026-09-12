@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
@@ -45,6 +44,14 @@ def duplicate_eligible_send_at(sent_at):
         tzinfo=EASTERN_TIME_ZONE,
     )
     return eligible_eastern.astimezone(dt_timezone.utc)
+
+
+def held_release_mir_filename(now=None) -> str:
+    """Return the requested YYYYMMDDhhss.MIR release name in Eastern time."""
+    now = now or timezone.now()
+    if timezone.is_naive(now):
+        now = timezone.make_aware(now, dt_timezone.utc)
+    return now.astimezone(EASTERN_TIME_ZONE).strftime("%Y%m%d%H%S.MIR")
 
 
 def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict]:
@@ -265,10 +272,12 @@ def _mark_release_attempt(source_id, claim_index, *, status, now, error="", mir_
         return source.client_id, str(targets[0].get("claim_number") or "").strip()
 
 
-def _candidate_rows(now, limit):
+def _candidate_rows(now, limit=None):
+    """Return every currently eligible claim unless an explicit test/admin limit is supplied."""
     from .models import EDI835File
 
     candidates = []
+    scan_target = max(limit * 4, limit) if limit else None
     sources = (
         EDI835File.objects.select_related("client")
         .filter(held_claims_count__gt=0)
@@ -308,9 +317,9 @@ def _candidate_rows(now, limit):
                 "claim_number": claim_number,
                 "eligible_send_at": eligible,
             })
-            if len(candidates) >= max(limit * 4, limit):
+            if scan_target and len(candidates) >= scan_target:
                 break
-        if len(candidates) >= max(limit * 4, limit):
+        if scan_target and len(candidates) >= scan_target:
             break
 
     candidates.sort(key=lambda item: item["eligible_send_at"])
@@ -322,24 +331,37 @@ def _candidate_rows(now, limit):
             continue
         seen.add(key)
         selected.append(item)
-        if len(selected) >= limit:
+        if limit and len(selected) >= limit:
             break
     return selected
 
 
-def release_due_held_claims(now=None, limit=25) -> dict:
-    """Release due duplicate claims into heldclaims_*.MIR files and send them outbound."""
+def _available_release_filename(now, MIRFile) -> str:
+    """Keep the exact timestamp-shaped contract while preventing an SFTP overwrite."""
+    candidate_time = now
+    for _ in range(24 * 60 * 60):
+        candidate = held_release_mir_filename(candidate_time)
+        if not MIRFile.objects.filter(mir_filename=candidate).exists():
+            return candidate
+        candidate_time += timedelta(seconds=1)
+    raise RuntimeError("Could not allocate a unique YYYYMMDDhhss MIR release filename.")
+
+
+def release_due_held_claims(now=None, limit=None) -> dict:
+    """Batch all eligible held claims per client and push each client batch to MIR outbound."""
     now = now or timezone.now()
     released = 0
     failed = 0
+    files_sent = 0
 
     from admin_panel.mir_mapper_logic.edi835_parser import parse_835
     from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
-    from .models import EDI835File
+    from .models import EDI835File, MIRFile
     from .mir_persistence import set_mir_push_status, store_mir_file
     from .services import upload_mir_to_sftp
     from .storage import relative_media_path, remove_delivered_outbound, write_mir_copies
 
+    prepared_by_client = {}
     for candidate in _candidate_rows(now, limit):
         source = EDI835File.objects.select_related("client").filter(id=candidate["source_id"]).first()
         if source is None or source.client is None:
@@ -353,78 +375,25 @@ def release_due_held_claims(now=None, limit=25) -> dict:
             if str(claim.claim_number or "").strip() != candidate["claim_number"]:
                 raise ValueError("Held claim index no longer matches the recorded claim number.")
 
-            mir_text, summary = generate_mir_text([claim], client=source.client, process_date=timezone.localdate())
-            if not mir_text or int(summary.get("delivered_claims") or 0) != 1:
+            # Validate the claim by itself before allowing it into the daily batch.
+            probe_text, probe_summary = generate_mir_text(
+                [claim],
+                client=source.client,
+                process_date=now.astimezone(EASTERN_TIME_ZONE).date(),
+            )
+            if not probe_text or int(probe_summary.get("delivered_claims") or 0) != 1:
                 reasons = [
                     str(item.get("reason") or item.get("rule_code") or "")
-                    for item in (summary.get("findings") or [])
+                    for item in (probe_summary.get("findings") or [])
                     if _blocking(item)
                 ]
                 raise ValueError("Held claim is still blocked: " + ("; ".join(reasons) or "unknown conversion hold"))
 
-            stamp = timezone.localtime(now).strftime("%Y%m%d_%H%M%S")
-            token = uuid.uuid4().hex[:8]
-            stem = f"heldclaims_{stamp}_{token}"
-            mir_filename = f"{stem}.MIR"
-            synthetic_835_name = f"{stem}.835"
-
-            release_record = EDI835File.objects.create(
-                client=source.client,
-                original_filename=synthetic_835_name,
-                stored_filename=synthetic_835_name,
-                input_file_content="",
-                status="PROCESSING",
-                claims_count=1,
-                services_count=int(summary.get("delivered_services") or len(claim.services or [])),
-                records_count=int(summary.get("mir_records") or 1),
-                delivered_claims_count=1,
-                held_claims_count=0,
-                conversion_findings=[],
-                processing_started_at=now,
-                ingestion_source="HELD_RELEASE",
+            group = prepared_by_client.setdefault(
+                str(source.client_id),
+                {"client": source.client, "items": []},
             )
-
-            archive_path, out_path = write_mir_copies(source.client, mir_filename, mir_text)
-            release_record.output_path = relative_media_path(archive_path)
-            release_record.save(update_fields=["output_path"])
-            mir_file = store_mir_file(
-                source_835=release_record,
-                mir_filename=mir_filename,
-                mir_text=mir_text,
-            )
-
-            pushed = upload_mir_to_sftp(out_path, mir_filename, client=source.client)
-            if not pushed:
-                set_mir_push_status(mir_file, False)
-                release_record.status = "ERROR"
-                release_record.processing_completed_at = timezone.now()
-                release_record.error_message = "Automatic held-claim MIR release could not be pushed to outbound SFTP."
-                release_record.save(update_fields=["status", "processing_completed_at", "error_message"])
-                raise RuntimeError(release_record.error_message)
-
-            sent_at = timezone.now()
-            _mark_release_attempt(
-                source.id,
-                candidate["claim_index"],
-                status="SENT",
-                now=sent_at,
-                mir_filename=mir_filename,
-            )
-            set_mir_push_status(mir_file, True)
-            remove_delivered_outbound(source.client, "mir", out_path)
-            release_record.status = "ARCHIVED"
-            release_record.present_in_sftp = True
-            release_record.processing_completed_at = sent_at
-            release_record.save(update_fields=["status", "present_in_sftp", "processing_completed_at"])
-
-            _reschedule_pending_duplicates(
-                source.client,
-                candidate["claim_number"],
-                sent_at,
-                mir_filename,
-                exclude=(str(source.id), str(candidate["claim_index"])),
-            )
-            released += 1
+            group["items"].append({"candidate": candidate, "source": source, "claim": claim})
         except Exception as exc:
             _mark_release_attempt(
                 candidate["source_id"],
@@ -435,4 +404,108 @@ def release_due_held_claims(now=None, limit=25) -> dict:
             )
             failed += 1
 
-    return {"released": released, "failed": failed}
+    for group in prepared_by_client.values():
+        client = group["client"]
+        items = group["items"]
+        claims = [item["claim"] for item in items]
+        release_record = None
+        mir_file = None
+        out_path = None
+        try:
+            mir_text, summary = generate_mir_text(
+                claims,
+                client=client,
+                process_date=now.astimezone(EASTERN_TIME_ZONE).date(),
+            )
+            delivered_claims = int(summary.get("delivered_claims") or 0)
+            if not mir_text or delivered_claims != len(claims):
+                reasons = [
+                    str(item.get("reason") or item.get("rule_code") or "")
+                    for item in (summary.get("findings") or [])
+                    if _blocking(item)
+                ]
+                raise ValueError(
+                    "Daily held-claim MIR batch did not contain every eligible claim: "
+                    + ("; ".join(reasons) or f"expected {len(claims)}, delivered {delivered_claims}")
+                )
+
+            mir_filename = _available_release_filename(now, MIRFile)
+            synthetic_835_name = f"held_release_{mir_filename[:-4]}.835"
+            services_count = int(summary.get("delivered_services") or 0)
+            if not services_count:
+                services_count = sum(len(getattr(claim, "services", None) or []) for claim in claims)
+
+            release_record = EDI835File.objects.create(
+                client=client,
+                original_filename=synthetic_835_name,
+                stored_filename=synthetic_835_name,
+                input_file_content="",
+                status="PROCESSING",
+                claims_count=len(claims),
+                services_count=services_count,
+                records_count=int(summary.get("mir_records") or len(claims)),
+                delivered_claims_count=len(claims),
+                held_claims_count=0,
+                conversion_findings=[],
+                processing_started_at=now,
+                ingestion_source="HELD_RELEASE",
+            )
+
+            archive_path, out_path = write_mir_copies(client, mir_filename, mir_text)
+            release_record.output_path = relative_media_path(archive_path)
+            release_record.save(update_fields=["output_path"])
+            mir_file = store_mir_file(
+                source_835=release_record,
+                mir_filename=mir_filename,
+                mir_text=mir_text,
+            )
+
+            pushed = upload_mir_to_sftp(out_path, mir_filename, client=client)
+            if not pushed:
+                set_mir_push_status(mir_file, False)
+                release_record.status = "ERROR"
+                release_record.processing_completed_at = timezone.now()
+                release_record.error_message = "Automatic daily held-claim MIR batch could not be pushed to outbound SFTP."
+                release_record.save(update_fields=["status", "processing_completed_at", "error_message"])
+                raise RuntimeError(release_record.error_message)
+
+            sent_at = timezone.now()
+            # Mark every source finding SENT before the PUSHED hook runs. The hook
+            # can then reschedule later duplicates without re-holding this batch.
+            for item in items:
+                _mark_release_attempt(
+                    item["source"].id,
+                    item["candidate"]["claim_index"],
+                    status="SENT",
+                    now=sent_at,
+                    mir_filename=mir_filename,
+                )
+
+            set_mir_push_status(mir_file, True)
+            remove_delivered_outbound(client, "mir", out_path)
+            release_record.status = "ARCHIVED"
+            release_record.present_in_sftp = True
+            release_record.processing_completed_at = sent_at
+            release_record.save(update_fields=["status", "present_in_sftp", "processing_completed_at"])
+
+            released += len(items)
+            files_sent += 1
+        except Exception as exc:
+            if mir_file is not None and mir_file.status != "PUSH_FAILED":
+                set_mir_push_status(mir_file, False)
+            if release_record is not None and release_record.status != "ERROR":
+                release_record.status = "ERROR"
+                release_record.processing_completed_at = timezone.now()
+                release_record.error_message = str(exc)[:2000]
+                release_record.save(update_fields=["status", "processing_completed_at", "error_message"])
+            for item in items:
+                _mark_release_attempt(
+                    item["candidate"]["source_id"],
+                    item["candidate"]["claim_index"],
+                    status="RETRY",
+                    now=timezone.now(),
+                    error=str(exc),
+                )
+            failed += len(items)
+
+    return {"released": released, "failed": failed, "files_sent": files_sent}
