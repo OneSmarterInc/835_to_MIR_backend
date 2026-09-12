@@ -19,7 +19,7 @@ from project835.field_crypto import SFTPCredentialError, get_sftp_runtime_creden
 from .claim_numbers import split_claim_number
 from .edi837_service import export_single_claim, ingest_837
 from .file_types import has_valid_file_extension
-from .models import EDI835File, EDI837Claim, EDI837File, MIRClaim, RECONClaim
+from .models import EDI835Claim, EDI835File, EDI837Claim, EDI837File, MIRClaim, RECONClaim
 from .services import resolve_sftp_config
 
 
@@ -98,7 +98,18 @@ def _claim_lifecycle(claim):
     # the separated 837 columns.
     if highmark:
         lookup |= Q(claim_control_number__istartswith=highmark)
-    mir = recon = None
+    mir = recon = claim_835 = None
+    if identifiers:
+        claim_835 = (
+            EDI835Claim.objects.select_related("edi_file")
+            .filter(edi_file__client=claim.client)
+            .filter(
+                Q(highmark_claim_number__in=identifiers)
+                | Q(internal_claim_number__in=identifiers)
+            )
+            .order_by("edi_file__uploaded_at", "claim_sequence")
+            .first()
+        )
     if lookup:
         mir = (MIRClaim.objects.select_related("mir_file", "mir_file__source_835")
                .filter(lookup, mir_file__client=claim.client)
@@ -106,7 +117,7 @@ def _claim_lifecycle(claim):
         recon = (RECONClaim.objects.select_related("recon_file")
                  .filter(lookup, client=claim.client, recon_file__file_kind="RECON")
                  .order_by("recon_file__uploaded_at").first())
-    source_835 = mir.mir_file.source_835 if mir else None
+    source_835 = claim_835.edi_file if claim_835 else (mir.mir_file.source_835 if mir else None)
     return {
         "837": {
             "exists": True,
@@ -114,6 +125,7 @@ def _claim_lifecycle(claim):
             "file_name": claim.edi_file.original_filename,
             "status": claim.edi_file.status,
             "source": claim.edi_file.get_import_mode_display(),
+            "internal_claim_number": claim.internal_claim_number or claim.reference_9c,
         },
         "835": {
             "exists": bool(source_835),
@@ -121,11 +133,14 @@ def _claim_lifecycle(claim):
             "file_name": source_835.original_filename if source_835 else "",
             "status": source_835.status if source_835 else "",
             "source": source_835.ingestion_source if source_835 else "",
+            "internal_claim_number": claim_835.internal_claim_number if claim_835 else "",
         },
         "mir": {"exists": bool(mir), "arrived_at": mir.mir_file.converted_at.isoformat() if mir else None,
-                "file_name": mir.mir_file.mir_filename if mir else ""},
+                "file_name": mir.mir_file.mir_filename if mir else "",
+                "internal_claim_number": split_claim_number(mir.claim_control_number)["internal_claim_number"] if mir else ""},
         "recon": {"exists": bool(recon), "arrived_at": recon.recon_file.uploaded_at.isoformat() if recon else None,
-                  "file_name": recon.recon_file.original_filename if recon else ""},
+                  "file_name": recon.recon_file.original_filename if recon else "",
+                  "internal_claim_number": split_claim_number(recon.claim_control_number)["internal_claim_number"] if recon else ""},
     }
 
 
@@ -397,20 +412,21 @@ def edi837_search(request):
                 parts.get("internal_claim_number"),
             )))
 
-        # 835 files predate normalized claim rows. Search their database copy
-        # strictly and collect CLP01 Highmark identifiers for the matching
-        # file/segment. This remains bounded until the 835 backfill completes.
-        files_835 = EDI835File.objects.filter(client=client).filter(
-            Q(original_filename__icontains=query)
-            | Q(stored_filename__icontains=query)
-            | Q(input_file_content__icontains=query)
-        )[:20]
-        for source in files_835:
-            filename_match = query.lower() in source.original_filename.lower() or query.lower() in source.stored_filename.lower()
-            for segment in str(source.input_file_content or "").replace("\r", "\n").replace("~", "\n").split("\n"):
-                fields = segment.strip().split("*")
-                if len(fields) > 1 and fields[0].upper() == "CLP" and (filename_match or query.lower() in segment.lower()):
-                    identifiers.add(fields[1].strip())
+        normalized_835 = (
+            E            EDI835Claim.objects.filter(edi_file__client=client)
+            .filter(
+                Q(highmark_claim_number__icontains=query)
+                | Q(internal_claim_number__icontains=query)
+                | Q(raw_claim__icontains=query)
+                | Q(edi_file__original_filename__icontains=query)
+                | Q(edi_file__stored_filename__icontains=query=query)
+            )[:200]
+        )
+        for item in normalized_835:
+            identifiers.update(filter(None, (
+                item.highmark_claim_number,
+                item.internal_claim_number,
+            )))
 
         filters = (
             Q(claim_control_number__icontains=query)
