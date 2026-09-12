@@ -385,26 +385,46 @@ def claim_email_context(body, claim_number):
 
 
 def search_claim_sources(notice, identifiers, issue_map=None):
+    """Find every archived source containing each extracted claim identifier.
+
+    Some MIR and reconciliation records retain suffixes after the base claim
+    number. Prefix matching is therefore allowed only inside the current
+    client, while 837 raw-claim matching covers identifiers stored in REF
+    segments instead of the normalized columns.
+    """
     results = []
     issue_map = issue_map or {}
     for identifier in identifiers[:50]:
         sources = []
-        claim_837 = (
+        seen_sources = set()
+
+        def append_source(source_type, source_id, payload):
+            key = (source_type, str(source_id))
+            if key not in seen_sources:
+                seen_sources.add(key)
+                sources.append(payload)
+
+        claims_837 = (
             EDI837Claim.objects.filter(client=notice.client)
             .filter(
                 Q(claim_control_number__iexact=identifier)
+                | Q(claim_control_number__istartswith=identifier)
                 | Q(highmark_claim_number__iexact=identifier)
+                | Q(highmark_claim_number__istartswith=identifier)
                 | Q(internal_claim_number__iexact=identifier)
+                | Q(internal_claim_number__istartswith=identifier)
                 | Q(reference_9c__iexact=identifier)
+                | Q(reference_9c__istartswith=identifier)
                 | Q(patient_control_number__iexact=identifier)
+                | Q(patient_control_number__istartswith=identifier)
+                | Q(raw_claim__contains=identifier)
             )
             .select_related("edi_file")
-            .order_by("-edi_file__uploaded_at", "-id")
-            .first()
+            .order_by("-edi_file__uploaded_at", "-id")[:3]
         )
-        if claim_837:
+        for claim_837 in claims_837:
             source = claim_837.edi_file
-            sources.append({
+            append_source("837", source.id, {
                 "type": "837",
                 "filename": source.original_filename,
                 "status": source.status,
@@ -417,18 +437,18 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "download_url": f"/edi835/api/mpl-files/837/{source.id}/download/",
             })
 
-        mir_claim = (
-            MIRClaim.objects.filter(
-                mir_file__client=notice.client,
-                claim_control_number__iexact=identifier,
+        mir_claims = (
+            MIRClaim.objects.filter(mir_file__client=notice.client)
+            .filter(
+                Q(claim_control_number__iexact=identifier)
+                | Q(claim_control_number__istartswith=identifier)
             )
             .select_related("mir_file")
-            .order_by("-mir_file__converted_at", "-id")
-            .first()
+            .order_by("-mir_file__converted_at", "-id")[:3]
         )
-        if mir_claim:
+        for mir_claim in mir_claims:
             source = mir_claim.mir_file
-            sources.append({
+            append_source("MIR", source.id, {
                 "type": "MIR",
                 "filename": source.mir_filename,
                 "status": mir_claim.claim_status or source.status,
@@ -448,7 +468,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-uploaded_at")[:3]
         )
         for source in files_835:
-            sources.append({
+            append_source("835", source.id, {
                 "type": "835",
                 "filename": source.original_filename,
                 "status": source.status,
@@ -460,19 +480,20 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "download_url": f"/edi835/api/mpl-files/835/{source.id}/download/",
             })
 
-        recon_claim = (
+        recon_claims = (
             RECONClaim.objects.filter(client=notice.client)
             .filter(
                 Q(claim_control_number__iexact=identifier)
+                | Q(claim_control_number__istartswith=identifier)
                 | Q(patient_control_number__iexact=identifier)
+                | Q(patient_control_number__istartswith=identifier)
             )
             .select_related("recon_file")
-            .order_by("-recon_file__uploaded_at", "-id")
-            .first()
+            .order_by("-recon_file__uploaded_at", "-id")[:3]
         )
-        if recon_claim:
+        for recon_claim in recon_claims:
             source = recon_claim.recon_file
-            sources.append({
+            append_source("RECON", source.id, {
                 "type": "RECON",
                 "filename": source.original_filename,
                 "status": recon_claim.claim_status or source.status,
@@ -486,6 +507,11 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 },
                 "download_url": f"/edi835/api/mpl-files/recon/{source.id}/download/",
             })
+
+        sources.sort(key=lambda item: (
+            {"837": 0, "MIR": 1, "835": 2, "RECON": 3}.get(item["type"], 9),
+            item["filename"],
+        ))
         results.append({
             "claim_number": identifier,
             "reported_issues": issue_map.get(identifier, []),
@@ -506,10 +532,16 @@ def match_claims(notice):
             EDI837Claim.objects.filter(client=notice.client)
             .filter(
                 Q(claim_control_number__iexact=identifier)
+                | Q(claim_control_number__istartswith=identifier)
                 | Q(highmark_claim_number__iexact=identifier)
+                | Q(highmark_claim_number__istartswith=identifier)
                 | Q(internal_claim_number__iexact=identifier)
+                | Q(internal_claim_number__istartswith=identifier)
                 | Q(reference_9c__iexact=identifier)
+                | Q(reference_9c__istartswith=identifier)
                 | Q(patient_control_number__iexact=identifier)
+                | Q(patient_control_number__istartswith=identifier)
+                | Q(raw_claim__contains=identifier)
             )
             .select_related("edi_file")
             .order_by("-edi_file__uploaded_at", "-id")
