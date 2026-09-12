@@ -373,8 +373,8 @@ def _mpl_file_claim_rows(file_type, record, content):
         rows, envelope, claim = [], [], []
 
         def flush(items):
-                       if items:
-                                              rows.append(delimiter.join(items) + delimiter)
+            if items:
+                rows.append(delimiter.join(items) + delimiter)
 
         for segment in segments:
             if segment.split("*", 1)[0].upper() == "CLP":
