@@ -8,11 +8,12 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
+from django.db.models.functions import Left
 from django.utils import timezone
 
 from admin_panel.email_service import get_client_users, send_client_email
 from .held_claims import mir_claim_number
-from .models import EDI835File
+from .models import EDI835File, MIRClaim
 
 
 EASTERN = ZoneInfo("America/New_York")
@@ -41,14 +42,6 @@ def _is_resolved(finding) -> bool:
     return str((finding or {}).get(RESOLUTION_STATUS_FIELD) or "").upper() == "RESOLVED"
 
 
-def _claim_key(finding):
-    claim_index = str((finding or {}).get("claim_index") or "").strip()
-    if claim_index:
-        return ("index", claim_index)
-    claim_number = _finding_claim_number(finding)
-    return ("claim", claim_number)
-
-
 def _finding_claim_number(finding) -> str:
     value = str(
         (finding or {}).get("claim_number")
@@ -56,6 +49,13 @@ def _finding_claim_number(finding) -> str:
         or ""
     ).strip()
     return mir_claim_number(value) if value else ""
+
+
+def _claim_key(finding):
+    claim_index = str((finding or {}).get("claim_index") or "").strip()
+    if claim_index:
+        return ("index", claim_index)
+    return ("claim", _finding_claim_number(finding))
 
 
 def _same_claim(finding, key) -> bool:
@@ -148,7 +148,7 @@ def _mark_source_claims_resolved(source, claim_numbers: set[str], *, resolved_at
 
 
 def mark_nonduplicate_holds_resolved_by_push(mir_file) -> int:
-    """Stop escalation when the same claim is later included in another PUSHED MIR."""
+    """Resolve older non-duplicate holds when the same claim is in a PUSHED MIR."""
     client = getattr(mir_file, "client", None)
     source_835 = getattr(mir_file, "source_835", None)
     if client is None:
@@ -165,8 +165,7 @@ def mark_nonduplicate_holds_resolved_by_push(mir_file) -> int:
     resolved_at = getattr(mir_file, "updated_at", None) or timezone.now()
     resolved = 0
     sources = (
-        EDI835File.objects.select_related("client")
-        .filter(client=client)
+        EDI835File.objects.filter(client=client, held_claims_count__gt=0)
         .exclude(conversion_findings=[])
         .order_by("uploaded_at")
     )
@@ -188,6 +187,51 @@ def mark_nonduplicate_holds_resolved_by_push(mir_file) -> int:
     return resolved
 
 
+def _resolve_from_pushed_history(source, by_claim, held_since, now) -> set[str]:
+    """Backfill resolution if another MIR already pushed the held claim."""
+    claim_numbers = {
+        _finding_claim_number(findings[0])
+        for findings in by_claim.values()
+        if findings and _finding_claim_number(findings[0])
+    }
+    if not claim_numbers:
+        return set()
+
+    rows = (
+        MIRClaim.objects.select_related("mir_file", "mir_file__source_835")
+        .annotate(claim_number_key=Left("claim_control_number", 17))
+        .filter(
+            mir_file__client=source.client,
+            mir_file__status="PUSHED",
+            mir_file__updated_at__gt=held_since,
+            mir_file__updated_at__lte=now,
+            claim_number_key__in=claim_numbers,
+        )
+        .exclude(mir_file__source_835=source)
+        .order_by("mir_file__updated_at")
+    )
+
+    resolved_by_claim = {}
+    for row in rows.iterator(chunk_size=1000):
+        claim_number = mir_claim_number(row.claim_control_number)
+        if claim_number not in resolved_by_claim:
+            resolved_by_claim[claim_number] = row.mir_file
+
+    if not resolved_by_claim:
+        return set()
+
+    with transaction.atomic():
+        locked = EDI835File.objects.select_for_update().get(id=source.id)
+        for claim_number, mir_file in resolved_by_claim.items():
+            _mark_source_claims_resolved(
+                locked,
+                {claim_number},
+                resolved_at=mir_file.updated_at,
+                mir_file=mir_file,
+            )
+    return set(resolved_by_claim)
+
+
 def _collect_overdue(now):
     """Return unresolved non-duplicate holds due for today's escalation email."""
     grouped = defaultdict(list)
@@ -196,7 +240,7 @@ def _collect_overdue(now):
 
     sources = (
         EDI835File.objects.select_related("client")
-        .filter(uploaded_at__lt=oldest_allowed)
+        .filter(held_claims_count__gt=0, uploaded_at__lt=oldest_allowed)
         .exclude(conversion_findings=[])
         .order_by("uploaded_at")
     )
@@ -216,15 +260,23 @@ def _collect_overdue(now):
                 if key[1]:
                     by_claim[key].append(finding)
 
+        if not by_claim:
+            continue
+
+        resolved_claim_numbers = _resolve_from_pushed_history(source, by_claim, held_since, now)
+
         for key, claim_findings in by_claim.items():
+            first = claim_findings[0]
+            claim_number = _finding_claim_number(first) or key[1]
+            if claim_number in resolved_claim_numbers:
+                continue
+
             alert_count, last_alert = _claim_alert_state(claim_findings)
             if alert_count >= MAX_ALERT_DAYS:
                 continue
             if last_alert and last_alert.astimezone(EASTERN).date() >= today_eastern:
                 continue
 
-            first = claim_findings[0]
-            claim_number = _finding_claim_number(first) or key[1]
             reasons = []
             for finding in claim_findings:
                 code = str(finding.get("rule_code") or finding.get("rule_name") or "HOLD").strip()
@@ -268,7 +320,7 @@ def _send_client_alert(client, items, now) -> bool:
     html = (
         f'<p>Dear {escape(client.name)} Team,</p>'
         '<p>The following claim(s) remain on a non-duplicate conversion hold for more than seven days and require review.</p>'
-        '<p>This alert is sent once per day for up to seven alert days. Alerts stop immediately if the same claim is later included in another MIR that is successfully pushed.</p>'
+        '<p>This alert is sent once per day for up to seven alert days. Alerts stop if the same claim is later included in another MIR that is successfully pushed.</p>'
         f'<p><strong>Alert generated:</strong> {escape(_format_eastern(now))}</p>'
         '<div style="overflow-x:auto"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">'
         '<thead><tr>'
