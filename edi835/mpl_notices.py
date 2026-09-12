@@ -415,6 +415,39 @@ def internal_claim_number_from_835(content, highmark_claim_number):
     return ""
 
 
+def internal_claim_number_from_source(highmark_claim_number, *database_values):
+    """Return the complete internal claim identifier stored for one source row."""
+    wanted = str(highmark_claim_number or "").strip().upper()
+    if not wanted:
+        return ""
+
+    # MIR and RECON rows commonly store the internal identifier as the
+    # Highmark number plus an alphanumeric suffix, sometimes after an HI
+    # record prefix. Read that complete token directly from the stored row.
+    token_pattern = re.compile(
+        rf"(?<![A-Z0-9])(?:HI)?({re.escape(wanted)}[A-Z0-9]+)(?![A-Z0-9])",
+        re.I,
+    )
+    normalized = [str(value or "").strip() for value in database_values]
+    for value in normalized:
+        match = token_pattern.search(value)
+        if match:
+            return match.group(1)
+
+    # An explicitly normalized database column can use a different
+    # alphanumeric identifier rather than the Highmark-number prefix.
+    for value in normalized:
+        if (
+            value
+            and value.upper() != wanted
+            and re.search(r"[A-Za-z]", value)
+            and re.search(r"\d", value)
+            and re.fullmatch(r"[A-Za-z0-9_-]+", value)
+        ):
+            return value
+    return ""
+
+
 def search_claim_sources(notice, identifiers, issue_map=None):
     """Find every archived source containing each extracted claim identifier.
 
@@ -458,14 +491,6 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             dict.fromkeys(str(value).strip() for value in internal_number_rows if value)
         )
 
-        def alphanumeric_claim_number(*values):
-            """Prefer the complete, source-specific alphanumeric claim key."""
-            normalized = [str(value or "").strip() for value in values]
-            for value in normalized:
-                if value and re.search(r"[A-Za-z]", value):
-                    return value
-            return next((value for value in normalized if value), "")
-
         def append_source(source_type, source_id, payload):
             key = (source_type, str(source_id))
             if key not in seen_sources:
@@ -494,10 +519,12 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = claim_837.edi_file
             append_source("837", source.id, {
                 "type": "837",
-                "internal_claim_number": alphanumeric_claim_number(
-                    claim_837.claim_control_number,
+                "internal_claim_number": internal_claim_number_from_source(
+                    identifier,
                     claim_837.internal_claim_number,
                     claim_837.reference_9c,
+                    claim_837.claim_control_number,
+                    claim_837.raw_claim,
                     authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
@@ -525,7 +552,9 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = mir_claim.mir_file
             append_source("MIR", source.id, {
                 "type": "MIR",
-                "internal_claim_number": alphanumeric_claim_number(
+                "internal_claim_number": internal_claim_number_from_source(
+                    identifier,
+                    mir_claim.header_raw,
                     mir_claim.claim_control_number,
                     authoritative_internal_number,
                 ),
@@ -565,9 +594,12 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             )
             append_source("835", source.id, {
                 "type": "835",
-                "internal_claim_number": alphanumeric_claim_number(
-                    getattr(linked_mir_claim, "claim_control_number", ""),
+                "internal_claim_number": internal_claim_number_from_source(
+                    identifier,
                     stored_835_internal,
+                    getattr(linked_mir_claim, "header_raw", ""),
+                    getattr(linked_mir_claim, "claim_control_number", ""),
+                    source.input_file_content,
                     authoritative_internal_number,
                 ),
                 "filename": source.original_filename,
@@ -596,7 +628,9 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             source = recon_claim.recon_file
             append_source("RECON", source.id, {
                 "type": "RECON",
-                "internal_claim_number": alphanumeric_claim_number(
+                "internal_claim_number": internal_claim_number_from_source(
+                    identifier,
+                    recon_claim.raw_record,
                     recon_claim.claim_control_number,
                     recon_claim.patient_control_number,
                     authoritative_internal_number,
