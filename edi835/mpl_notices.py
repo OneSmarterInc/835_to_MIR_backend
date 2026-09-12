@@ -396,8 +396,22 @@ def internal_claim_number_from_835(content, highmark_claim_number):
             and fields[0].upper() == "CLP"
             and fields[1].strip().upper() == wanted
         ):
-            base, suffix = fields[1].strip(), fields[7].strip()
-            return base if suffix.upper() in {"", base.upper()} else f"{base}{suffix}"
+            base = fields[1].strip()
+            trailing = [value.strip() for value in fields[6:] if value.strip()]
+            # Partner 835 variants do not place the suffix consistently.
+            # Select the mixed alphanumeric claim component (for example
+            # QZL067 or ABC123), instead of unrelated alpha-only codes such
+            # as AA.
+            suffix = next(
+                (
+                    value for value in trailing
+                    if re.search(r"[A-Za-z]", value)
+                    and re.search(r"\d", value)
+                    and value.upper() != base.upper()
+                ),
+                "",
+            )
+            return f"{base}{suffix}" if suffix else ""
     return ""
 
 
