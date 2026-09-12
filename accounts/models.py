@@ -255,3 +255,30 @@ class ClientStepComment(models.Model):
         db_table = "client_step_comment"
         ordering = ["-created_at"]
         indexes = [models.Index(fields=["client", "step_number", "-created_at"])]
+
+
+class WebAuthnCredential(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name="webauthn_credentials")
+    credential_id = models.CharField(max_length=1024, unique=True)
+    public_key = models.TextField()
+    sign_counter = models.BigIntegerField(default=0)
+    name = models.CharField(max_length=255, default="Security Key")
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "webauthn_credential"
+
+    def __str__(self):
+        return f"{self.name} ({self.user.email})"
+
+
+class WebAuthnChallenge(models.Model):
+    user = models.ForeignKey(User, on_delete=models.CASCADE)
+    challenge = models.CharField(max_length=255)
+    created_at = models.DateTimeField(auto_now_add=True)
+    type = models.CharField(max_length=50) # 'registration' or 'authentication'
+
+    class Meta:
+        db_table = "webauthn_challenge"

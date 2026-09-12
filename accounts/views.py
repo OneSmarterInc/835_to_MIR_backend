@@ -1346,3 +1346,229 @@ def api_admin_reset_password(request, user_id):
         "success": True,
         "message": f"Password reset successfully for {user_obj.email}. Email status: {'Sent' if success else 'Failed to send'}"
     })
+
+
+import json
+import base64
+from webauthn import (
+    generate_registration_options,
+    verify_registration_response,
+    generate_authentication_options,
+    verify_authentication_response,
+)
+from webauthn.helpers.structs import (
+    PublicKeyCredentialDescriptor,
+    AuthenticatorSelectionCriteria,
+    AuthenticatorAttachment,
+    UserVerificationRequirement,
+)
+from webauthn.helpers.options_to_json import options_to_json
+from urllib.parse import urlparse
+from .models import WebAuthnCredential, WebAuthnChallenge, User
+from django.views.decorators.csrf import csrf_exempt
+
+def get_origin_and_rpid(request):
+    origin = request.headers.get('Origin', 'http://localhost:5173')
+    rp_id = urlparse(origin).hostname
+    return origin, rp_id
+
+@csrf_exempt
+def api_webauthn_register_options(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+    
+    user = request.user
+    
+    # Enforce maximum of 5 keys per user
+    if WebAuthnCredential.objects.filter(user=user).count() >= 5:
+        return JsonResponse({"error": "You have reached the maximum limit of 5 security keys."}, status=400)
+        
+    # Exclude all credentials in the system to prevent cross-account reuse of the same physical key
+    credentials = WebAuthnCredential.objects.all()
+    exclude_credentials = []
+    for cred in credentials:
+        try:
+            cred_id_bytes = bytes.fromhex(cred.credential_id)
+            exclude_credentials.append(PublicKeyCredentialDescriptor(id=cred_id_bytes))
+        except ValueError:
+            pass
+            
+    origin, rp_id = get_origin_and_rpid(request)
+    
+    options = generate_registration_options(
+        rp_id=rp_id,
+        rp_name="MIR-Project",
+        user_id=str(user.id).encode('utf-8'),
+        user_name=user.email,
+        user_display_name=user.name,
+        exclude_credentials=exclude_credentials,
+        authenticator_selection=AuthenticatorSelectionCriteria(
+            authenticator_attachment=AuthenticatorAttachment.CROSS_PLATFORM,
+            user_verification=UserVerificationRequirement.PREFERRED
+        )
+    )
+    
+    WebAuthnChallenge.objects.filter(user=user, type='registration').delete()
+    WebAuthnChallenge.objects.create(user=user, challenge=options.challenge.hex(), type='registration')
+    
+    return JsonResponse(json.loads(options_to_json(options)))
+
+@csrf_exempt
+def api_webauthn_register_verify(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+        
+    user = request.user
+    data = json.loads(request.body)
+    try:
+        challenge_obj = WebAuthnChallenge.objects.get(user=user, type='registration')
+        expected_challenge = bytes.fromhex(challenge_obj.challenge)
+    except WebAuthnChallenge.DoesNotExist:
+        return JsonResponse({"error": "Challenge not found"}, status=400)
+        
+    origin, rp_id = get_origin_and_rpid(request)
+    
+    try:
+        verification = verify_registration_response(
+            credential=data,
+            expected_challenge=expected_challenge,
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            require_user_verification=False
+        )
+        
+        WebAuthnCredential.objects.create(
+            user=user,
+            credential_id=verification.credential_id.hex(),
+            public_key=verification.credential_public_key.hex(),
+            sign_counter=verification.sign_count,
+            name=data.get("name", "Security Key")
+        )
+        challenge_obj.delete()
+        return JsonResponse({"success": True, "message": "Credential registered"})
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+@csrf_exempt
+def api_webauthn_login_options(request):
+    data = json.loads(request.body)
+    email = data.get("email")
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return JsonResponse({"error": "User not found"}, status=404)
+        
+    if _is_client_access_revoked(user):
+        return _offboarded_response(user)
+        
+    credentials = WebAuthnCredential.objects.filter(user=user)
+    if not credentials.exists():
+        return JsonResponse({"error": "You don't have a security key set up for this account. Please log in with your password to set one up first."}, status=400)
+        
+    allow_credentials = []
+    for cred in credentials:
+        try:
+            cred_id_bytes = bytes.fromhex(cred.credential_id)
+            allow_credentials.append(PublicKeyCredentialDescriptor(id=cred_id_bytes))
+        except ValueError:
+            pass
+            
+    origin, rp_id = get_origin_and_rpid(request)
+        
+    options = generate_authentication_options(
+        rp_id=rp_id,
+        allow_credentials=allow_credentials,
+        user_verification=UserVerificationRequirement.PREFERRED
+    )
+    
+    WebAuthnChallenge.objects.filter(user=user, type='authentication').delete()
+    WebAuthnChallenge.objects.create(user=user, challenge=options.challenge.hex(), type='authentication')
+    
+    return JsonResponse(json.loads(options_to_json(options)))
+
+@csrf_exempt
+def api_webauthn_login_verify(request):
+    data = json.loads(request.body)
+    email = data.get("email")
+    try:
+        user = User.objects.get(email=email)
+    except User.DoesNotExist:
+        return JsonResponse({"error": "User not found"}, status=404)
+        
+    if _is_client_access_revoked(user):
+        return _offboarded_response(user)
+        
+    try:
+        challenge_obj = WebAuthnChallenge.objects.get(user=user, type='authentication')
+        expected_challenge = bytes.fromhex(challenge_obj.challenge)
+    except WebAuthnChallenge.DoesNotExist:
+        return JsonResponse({"error": "Challenge not found"}, status=400)
+        
+    credential_id_base64 = data.get("id")
+    if not credential_id_base64:
+        return JsonResponse({"error": "No credential ID"}, status=400)
+    
+    try:
+        padding = '=' * (4 - (len(credential_id_base64) % 4))
+        credential_id_bytes = base64.urlsafe_b64decode(credential_id_base64 + padding)
+        credential_id_hex = credential_id_bytes.hex()
+        stored_cred = WebAuthnCredential.objects.get(user=user, credential_id=credential_id_hex)
+    except Exception as e:
+        return JsonResponse({"error": f"Credential not registered: {str(e)}"}, status=400)
+        
+    origin, rp_id = get_origin_and_rpid(request)
+        
+    try:
+        verification = verify_authentication_response(
+            credential=data,
+            expected_challenge=expected_challenge,
+            expected_origin=origin,
+            expected_rp_id=rp_id,
+            credential_public_key=bytes.fromhex(stored_cred.public_key),
+            credential_current_sign_count=stored_cred.sign_counter,
+            require_user_verification=False
+        )
+        
+        stored_cred.sign_counter = verification.new_sign_count
+        stored_cred.save()
+        challenge_obj.delete()
+        
+        # Log the user in and bypass TOTP prompt
+        login(request, user)
+        request.session["totp_verified"] = True
+        request.session["totp_verified_at"] = int(time.time())
+        request.session["totp_setup_required"] = False
+        
+        return JsonResponse({"success": True})
+    except Exception as e:
+        return JsonResponse({"error": str(e)}, status=400)
+
+@csrf_exempt
+def api_webauthn_credentials(request):
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+    
+    if request.method == "GET":
+        creds = WebAuthnCredential.objects.filter(user=request.user)
+        data = [
+            {
+                "id": str(c.id),
+                "name": c.name,
+                "created_at": c.created_at.isoformat(),
+                "last_used": c.last_used.isoformat() if c.last_used else c.created_at.isoformat()
+            } for c in creds
+        ]
+        return JsonResponse(data, safe=False)
+        
+@csrf_exempt
+def api_webauthn_credential_delete(request, pk):
+    if not request.user.is_authenticated:
+        return JsonResponse({"error": "Unauthorized"}, status=401)
+        
+    if request.method == "DELETE":
+        try:
+            cred = WebAuthnCredential.objects.get(user=request.user, id=pk)
+            cred.delete()
+            return JsonResponse({"success": True})
+        except WebAuthnCredential.DoesNotExist:
+            return JsonResponse({"error": "Not found"}, status=404)

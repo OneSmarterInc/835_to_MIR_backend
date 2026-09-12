@@ -23,6 +23,13 @@ from .views import (
     api_admin_reset_password,
     api_client_contacts,
     api_change_password,
+    #WebAuthn
+    api_webauthn_register_options,
+    api_webauthn_register_verify,
+    api_webauthn_login_options,
+    api_webauthn_login_verify,
+    api_webauthn_credentials,
+    api_webauthn_credential_delete,
 )
 from project835.drf_compat import admin_api, authenticated_api, public_api
 
@@ -73,4 +80,12 @@ urlpatterns = [
     path("api/admin/users/<int:user_id>/update/", api_admin_update_user, name="api_admin_update_user"),
     path("api/admin/users/<int:user_id>/delete/", api_admin_delete_user, name="api_admin_delete_user"),
     path("api/admin/users/<int:user_id>/reset-password/", api_admin_reset_password, name="api_admin_reset_password"),
+    
+    # WebAuthn Endpoints
+    path("api/webauthn/register/options/", api_webauthn_register_options, name="api_webauthn_register_options"),
+    path("api/webauthn/register/verify/", api_webauthn_register_verify, name="api_webauthn_register_verify"),
+    path("api/webauthn/login/options/", api_webauthn_login_options, name="api_webauthn_login_options"),
+    path("api/webauthn/login/verify/", api_webauthn_login_verify, name="api_webauthn_login_verify"),
+    path("api/webauthn/credentials/", api_webauthn_credentials, name="api_webauthn_credentials"),
+    path("api/webauthn/credentials/<uuid:pk>/", api_webauthn_credential_delete, name="api_webauthn_credential_delete"),
 ]

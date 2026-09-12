@@ -7,6 +7,8 @@ import sys
 def main():
     """Run administrative tasks."""
     os.environ['DJANGO_SETTINGS_MODULE'] = 'project835.settings'
+    from dotenv import load_dotenv
+    load_dotenv()
     try:
         from project835.database_guard import require_postgresql
         require_postgresql()
