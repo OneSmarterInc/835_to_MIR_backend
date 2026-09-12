@@ -8,10 +8,14 @@ from .models import EDI835File
 
 
 def _scoped_files(request):
-    return scope_client_queryset(
+    qs = scope_client_queryset(
         EDI835File.objects.select_related("client", "mir_file"),
         request.user,
     )
+    requested_client_id = str(request.GET.get("client_id") or "").strip()
+    if requested_client_id:
+        qs = qs.filter(client_id=requested_client_id)
+    return qs
 
 
 def _is_blocking(finding):
