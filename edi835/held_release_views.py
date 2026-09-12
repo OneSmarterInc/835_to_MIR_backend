@@ -27,7 +27,7 @@ def _release_queryset(request):
     else:
         qs = qs.filter(client=getattr(request.user, "client", None))
 
-    return qs.order_by("-created_at")[:200]
+    return qs.order_by("-uploaded_at")[:200]
 
 
 def _provenance_maps(client_ids):
@@ -125,7 +125,7 @@ def api_held_release_history(request):
             "present_in_sftp": bool(source.present_in_sftp),
             "claim_count": len(claims) if claims else int(source.delivered_claims_count or 0),
             "service_count": int(source.services_count or 0),
-            "created_at": source.created_at.isoformat() if source.created_at else None,
+            "created_at": source.uploaded_at.isoformat() if source.uploaded_at else None,
             "completed_at": source.processing_completed_at.isoformat() if source.processing_completed_at else None,
             "error_message": source.error_message or "",
             "claims": claims,
