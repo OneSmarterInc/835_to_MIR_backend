@@ -43,6 +43,7 @@ class Command(BaseCommand):
     def handle(self, *args, **options):
         roots = [Path(value).expanduser().resolve() for value in options["root"]]
         client = None
+        scan_pairs = []
         if roots:
             if not options["client_id"]:
                 raise CommandError("--client-id is required when --root is used.")
@@ -53,6 +54,31 @@ class Command(BaseCommand):
             missing = [str(root) for root in roots if not root.is_dir()]
             if missing:
                 raise CommandError("835 root does not exist: " + ", ".join(missing))
+            scan_pairs = [(root, client) for root in roots]
+        else:
+            # Infer historical storage roots only when every record in that
+            # directory belongs to the same client. Shared/ambiguous roots are
+            # never imported automatically.
+            root_clients = {}
+            for client_id, input_path, archive_path in EDI835File.objects.values_list(
+                "client_id", "input_path", "archive_path"
+            ):
+                if not client_id:
+                    continue
+                for value in (input_path, archive_path):
+                    if value:
+                        parent = Path(value).expanduser().resolve().parent
+                        if parent.is_dir():
+                            root_clients.setdefault(parent, set()).add(client_id)
+            clients = Client.objects.in_bulk({
+                next(iter(client_ids))
+                for client_ids in root_clients.values() if len(client_ids) == 1
+            })
+            scan_pairs = [
+                (root, clients[next(iter(client_ids))])
+                for root, client_ids in root_clients.items()
+                if len(client_ids) == 1 and next(iter(client_ids)) in clients
+            ]
 
         stats = {
             "records": 0, "hydrated": 0, "imported": 0, "normalized": 0,
@@ -102,7 +128,7 @@ class Command(BaseCommand):
             value for pair in EDI835File.objects.values_list("input_path", "archive_path")
             for value in pair if value
         )
-        for root in roots:
+        for root, root_client in scan_pairs:
             for path in sorted(item for item in root.rglob("*") if item.is_file() and item.suffix.lower() in SUPPORTED_SUFFIXES):
                 resolved = str(path.resolve())
                 if resolved in seen_paths:
@@ -120,7 +146,7 @@ class Command(BaseCommand):
                         continue
                     with transaction.atomic():
                         edi_file = EDI835File.objects.create(
-                            client=client,
+                            client=root_client,
                             original_filename=path.name,
                             stored_filename=path.name,
                             input_file_content=content,
