@@ -367,67 +367,56 @@ def edi837_sftp_batch_rename(request):
 @authenticated_api_required
 @json_api_errors
 def edi837_search(request):
-    """Universal claim search anchored to normalized 837 claim records."""
+    """Search and aggregate claims independently across 835, MIR, RECON, and 837."""
     if request.method != "GET":
         return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
     client = _client_for_request(request, request.GET.get("client_id"))
     if client is None:
         return JsonResponse({"success": False, "error": "Select an authorized client."}, status=400)
     query = str(request.GET.get("q") or "").strip()
-    claims = EDI837Claim.objects.filter(client=client).select_related("edi_file")
-    if query:
-        identifiers = {query}
+    try:
+        limit = min(200, max(1, int(request.GET.get("limit", "50"))))
+    except ValueError:
+        limit = 50
+    if not query:
+        return JsonResponse({"success": True, "query": query, "count": 0, "results": []})
 
-        # Resolve searches entered using MIR or RECON source identifiers back
-        # to their normalized Highmark number.
-        mir_matches = (
-            MIRClaim.objects.filter(mir_file__client=client)
-            .filter(
-                Q(claim_control_number__icontains=query)
-                | Q(member_id__icontains=query)
-                | Q(header_raw__icontains=query)
-                | Q(mir_file__mir_filename__icontains=query)
-            )[:200]
-        )
-        recon_matches = (
-            RECONClaim.objects.filter(client=client)
-            .filter(
-                Q(claim_control_number__icontains=query)
-                | Q(patient_control_number__icontains=query)
-                | Q(member_id__icontains=query)
-                | Q(raw_record__icontains=query)
-                | Q(recon_file__original_filename__icontains=query)
-            )[:200]
-        )
-        for value in [
-            *(item.claim_control_number for item in mir_matches),
-            *(item.claim_control_number for item in recon_matches),
-            *(item.patient_control_number for item in recon_matches),
-        ]:
-            parts = split_claim_number(value)
-            identifiers.update(filter(None, (
-                value,
-                parts.get("highmark_claim_number"),
-                parts.get("internal_claim_number"),
-            )))
-
-        normalized_835 = (
-            EDI835Claim.objects.filter(edi_file__client=client)
-            .filter(
-                Q(highmark_claim_number__icontains=query)
-                | Q(internal_claim_number__icontains=query)
-                | Q(raw_claim__icontains=query)
-                | Q(edi_file__original_filename__icontains=query)
-                | Q(edi_file__stored_filename__icontains=query)
-            )[:200]
-        )
-        for item in normalized_835:
-            identifiers.update(filter(None, (
-                item.highmark_claim_number,
-                item.internal_claim_number,
-            )))
-
-        filters = (
+    source_835 = list(
+        EDI835Claim.objects.select_related("edi_file")
+        .filter(edi_file__client=client)
+        .filter(
+            Q(highmark_claim_number__icontains=query)
+            | Q(internal_claim_number__icontains=query)
+            | Q(raw_claim__icontains=query)
+            | Q(edi_file__original_filename__icontains=query)
+            | Q(edi_file__stored_filename__icontains=query)
+        )[:200]
+    )
+    source_mir = list(
+        MIRClaim.objects.select_related("mir_file")
+        .filter(mir_file__client=client)
+        .filter(
+            Q(claim_control_number__icontains=query)
+            | Q(member_id__icontains=query)
+            | Q(header_raw__icontains=query)
+            | Q(mir_file__mir_filename__icontains=query)
+        )[:200]
+    )
+    source_recon = list(
+        RECONClaim.objects.select_related("recon_file")
+        .filter(client=client, recon_file__file_kind="RECON")
+        .filter(
+            Q(claim_control_number__icontains=query)
+            | Q(patient_control_number__icontains=query)
+            | Q(member_id__icontains=query)
+            | Q(raw_record__icontains=query)
+            | Q(recon_file__original_filename__icontains=query)
+        )[:200]
+    )
+    source_837 = list(
+        EDI837Claim.objects.select_related("edi_file")
+        .filter(client=client)
+        .filter(
             Q(claim_control_number__icontains=query)
             | Q(highmark_claim_number__icontains=query)
             | Q(internal_claim_number__icontains=query)
@@ -437,20 +426,132 @@ def edi837_search(request):
             | Q(patient_first_name__icontains=query)
             | Q(patient_last_name__icontains=query)
             | Q(edi_file__original_filename__icontains=query)
+        )[:200]
+    )
+
+    def source_numbers(value):
+        parts = split_claim_number(value)
+        return (
+            str(parts.get("highmark_claim_number") or "").strip(),
+            str(parts.get("internal_claim_number") or "").strip(),
         )
-        for identifier in identifiers:
-            filters |= Q(highmark_claim_number__iexact=identifier)
-            filters |= Q(claim_control_number__iexact=identifier)
-            filters |= Q(claim_control_number__istartswith=identifier)
-        claims = claims.filter(filters).distinct()
-    else:
-        claims = claims.none()
-    try:
-        limit = min(200, max(1, int(request.GET.get("limit", "50"))))
-    except ValueError:
-        limit = 50
-    selected = list(claims.order_by("claim_control_number", "-edi_file__processed_at")[:limit])
-    rows = [{**_claim_row(claim), "lifecycle": _claim_lifecycle(claim)} for claim in selected]
+
+    highmarks = {str(item.highmark_claim_number or "").strip() for item in source_835}
+    highmarks.update(source_numbers(item.claim_control_number)[0] for item in source_mir)
+    highmarks.update(source_numbers(item.claim_control_number)[0] for item in source_recon)
+    highmarks.update(
+        str(item.highmark_claim_number or source_numbers(item.claim_control_number)[0]).strip()
+        for item in source_837
+    )
+    highmarks.discard("")
+
+    # Once either number resolves a claim, load its other source records too.
+    cross_filter = Q()
+    for highmark in highmarks:
+        cross_filter |= Q(claim_control_number__istartswith=highmark)
+    if highmarks:
+        source_835 = list(
+            EDI835Claim.objects.select_related("edi_file")
+            .filter(edi_file__client=client, highmark_claim_number__in=highmarks)
+            .order_by("edi_file__uploaded_at", "claim_sequence")
+        )
+        if cross_filter:
+            source_mir = list(
+                MIRClaim.objects.select_related("mir_file")
+                .filter(cross_filter, mir_file__client=client)
+                .order_by("mir_file__converted_at")
+            )
+            source_recon = list(
+                RECONClaim.objects.select_related("recon_file")
+                .filter(cross_filter, client=client, recon_file__file_kind="RECON")
+                .order_by("recon_file__uploaded_at")
+            )
+        source_837 = list(
+            EDI837Claim.objects.select_related("edi_file")
+            .filter(client=client)
+            .filter(
+                Q(highmark_claim_number__in=highmarks)
+                | Q(claim_control_number__in=highmarks)
+                | cross_filter
+            )
+            .order_by("-edi_file__processed_at")
+        )
+
+    grouped = {}
+    for item in source_835:
+        grouped.setdefault(str(item.highmark_claim_number).strip(), {})["835"] = item
+    for item in source_mir:
+        highmark, _ = source_numbers(item.claim_control_number)
+        if highmark:
+            grouped.setdefault(highmark, {}).setdefault("mir", item)
+    for item in source_recon:
+        highmark, _ = source_numbers(item.claim_control_number)
+        if highmark:
+            grouped.setdefault(highmark, {}).setdefault("recon", item)
+    for item in source_837:
+        highmark = str(item.highmark_claim_number or source_numbers(item.claim_control_number)[0]).strip()
+        if highmark:
+            grouped.setdefault(highmark, {}).setdefault("837", item)
+
+    rows = []
+    for highmark in sorted(grouped)[:limit]:
+        sources = grouped[highmark]
+        item_835, mir, recon, claim_837 = (
+            sources.get("835"), sources.get("mir"), sources.get("recon"), sources.get("837")
+        )
+        mir_internal = source_numbers(mir.claim_control_number)[1] if mir else ""
+        recon_internal = source_numbers(recon.claim_control_number)[1] if recon else ""
+        internal = (
+            (item_835.internal_claim_number if item_835 else "")
+            or mir_internal or recon_internal
+            or ((claim_837.internal_claim_number or claim_837.reference_9c) if claim_837 else "")
+        )
+        lifecycle = {
+            "835": {
+                "exists": bool(item_835),
+                "file_name": item_835.edi_file.original_filename if item_835 else "",
+                "arrived_at": item_835.edi_file.uploaded_at.isoformat() if item_835 else None,
+                "status": item_835.edi_file.status if item_835 else "",
+                "internal_claim_number": item_835.internal_claim_number if item_835 else "",
+            },
+            "mir": {
+                "exists": bool(mir), "file_name": mir.mir_file.mir_filename if mir else "",
+                "arrived_at": mir.mir_file.converted_at.isoformat() if mir else None,
+                "internal_claim_number": mir_internal,
+            },
+            "recon": {
+                "exists": bool(recon), "file_name": recon.recon_file.original_filename if recon else "",
+                "arrived_at": recon.recon_file.uploaded_at.isoformat() if recon else None,
+                "internal_claim_number": recon_internal,
+            },
+            "837": {
+                "exists": bool(claim_837),
+                "file_name": claim_837.edi_file.original_filename if claim_837 else "",
+                "arrived_at": (
+                    (claim_837.edi_file.processed_at or claim_837.edi_file.uploaded_at).isoformat()
+                    if claim_837 else None
+                ),
+                "status": claim_837.edi_file.status if claim_837 else "",
+                "internal_claim_number": (
+                    claim_837.internal_claim_number or claim_837.reference_9c if claim_837 else ""
+                ),
+            },
+        }
+        if claim_837:
+            row = _claim_row(claim_837)
+            row.update({"has_837": True, "lifecycle": lifecycle})
+        else:
+            member_id = (mir.member_id if mir else "") or (recon.member_id if recon else "")
+            row = {
+                "id": f"universal:{highmark}", "claim_number": highmark,
+                "highmark_claim_number": highmark, "internal_claim_number": internal,
+                "patient_name": "", "member_id": member_id,
+                "total_charge_amount": str(item_835.total_charge_amount if item_835 else 0),
+                "service_count": item_835.service_count if item_835 else 0,
+                "file_name": "", "processed_at": None, "has_837": False,
+                "lifecycle": lifecycle,
+            }
+        rows.append(row)
     return JsonResponse({"success": True, "query": query, "count": len(rows), "results": rows})
 
 
