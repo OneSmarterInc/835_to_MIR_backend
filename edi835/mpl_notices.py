@@ -1252,7 +1252,18 @@ def claim_summary(link):
 
 
 def serialize_notice(notice, detail=False):
-    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": notice.source_matches, "ai_response": notice.ai_response, "ai_response_source": notice.ai_response_source, "ai_suggestions": notice.ai_suggestions}
+    # Refresh source matches for the detail popup so its matrix always uses
+    # current normalized database rows, including complete alphanumeric
+    # internal claim numbers. Older notices do not require re-analysis.
+    source_matches = notice.source_matches
+    if detail and notice.extracted_claim_numbers:
+        source_matches = search_claim_sources(
+            notice,
+            notice.extracted_claim_numbers,
+            issue_map=extract_claim_issue_map(notice_email_body(notice)),
+        )
+
+    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_file else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": source_matches, "ai_response": notice.ai_response, "ai_response_source": notice.ai_response_source, "ai_suggestions": notice.ai_suggestions}
     if detail:
         data.update({"email_body": notice_email_body(notice), "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
     return data
