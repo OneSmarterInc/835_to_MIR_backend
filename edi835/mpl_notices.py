@@ -71,6 +71,41 @@ APPROVED_EMAIL_ISSUE_RULES = {
         "inspect": ["835 payment history", "reconciliation history", "duplicate submissions"],
         "actions": ["Confirm prior processing in 835 and reconciliation history before taking further action."],
     },
+    "MP001": {
+        "meaning": "Reported fund or member-liability amount differs from direction.",
+        "inspect": ["fund amount", "member liability", "supplemental fees", "COB calculation"],
+        "actions": ["Compare fund and member-liability amounts with the approved calculation and direction."],
+    },
+    "MP002": {
+        "meaning": "Reported fund or member-liability amount differs from direction.",
+        "inspect": ["fund amount", "member liability", "supplemental fees", "COB calculation"],
+        "actions": ["Compare fund and member-liability amounts with the approved calculation and direction."],
+    },
+    "MP014": {
+        "meaning": "Reported surprise-bill claim requiring manual operations review.",
+        "inspect": ["claim type", "surprise-bill indicator", "processing history"],
+        "actions": ["Verify the surprise-bill classification and route to the approved operations workflow."],
+    },
+    "UE017": {
+        "meaning": "Reported UE017 error; the email requests operations handling.",
+        "inspect": ["current rejection data", "837", "MIR", "835 and reconciliation history"],
+        "actions": ["Verify UE017 against current evidence before routing through the approved operations workflow."],
+    },
+    "UE106": {
+        "meaning": "Reported UE106 error requiring operations review.",
+        "inspect": ["current rejection data", "837", "MIR", "835 and reconciliation history"],
+        "actions": ["Verify UE106 against current evidence before operations handling."],
+    },
+    "UE112": {
+        "meaning": "Reported UE112 error requiring operations review.",
+        "inspect": ["current rejection data", "837", "MIR", "835 and reconciliation history"],
+        "actions": ["Verify UE112 against current evidence before operations handling."],
+    },
+    "UE115": {
+        "meaning": "Reported UE115 error requiring operations review.",
+        "inspect": ["current rejection data", "837", "MIR", "835 and reconciliation history"],
+        "actions": ["Verify UE115 against current evidence before operations handling."],
+    },
 }
 
 
