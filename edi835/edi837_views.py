@@ -381,42 +381,64 @@ def edi837_search(request):
     if not query:
         return JsonResponse({"success": True, "query": query, "count": 0, "results": []})
 
-    source_835 = list(
-        EDI835Claim.objects.select_related("edi_file")
-        .filter(edi_file__client=client)
-        .filter(
+    field = str(request.GET.get("field") or "all").strip().lower()
+    allowed_fields = {"all", "highmark", "internal", "patient", "835", "mir", "recon", "837"}
+    if field not in allowed_fields:
+        return JsonResponse({"success": False, "error": "Invalid search column."}, status=400)
+
+    empty_835 = EDI835Claim.objects.none()
+    empty_mir = MIRClaim.objects.none()
+    empty_recon = RECONClaim.objects.none()
+    empty_837 = EDI837Claim.objects.none()
+
+    filter_835 = {
+        "all": (
             Q(highmark_claim_number__icontains=query)
             | Q(internal_claim_number__icontains=query)
             | Q(raw_claim__icontains=query)
             | Q(edi_file__original_filename__icontains=query)
             | Q(edi_file__stored_filename__icontains=query)
-        )[:200]
-    )
-    source_mir = list(
-        MIRClaim.objects.select_related("mir_file")
-        .filter(mir_file__client=client)
-        .filter(
+        ),
+        "highmark": Q(highmark_claim_number__icontains=query),
+        "internal": Q(internal_claim_number__icontains=query),
+        "patient": Q(raw_claim__icontains=query),
+        "835": (
+            Q(edi_file__original_filename__icontains=query)
+            | Q(edi_file__stored_filename__icontains=query)
+        ),
+    }
+    filter_mir = {
+        "all": (
             Q(claim_control_number__icontains=query)
             | Q(member_id__icontains=query)
+            | Q(patient_first_name__icontains=query)
+            | Q(patient_last_name__icontains=query)
             | Q(header_raw__icontains=query)
             | Q(mir_file__mir_filename__icontains=query)
-        )[:200]
-    )
-    source_recon = list(
-        RECONClaim.objects.select_related("recon_file")
-        .filter(client=client, recon_file__file_kind="RECON")
-        .filter(
+        ),
+        "highmark": Q(claim_control_number__icontains=query),
+        "internal": Q(claim_control_number__icontains=query),
+        "patient": (
+            Q(patient_first_name__icontains=query)
+            | Q(patient_last_name__icontains=query)
+        ),
+        "mir": Q(mir_file__mir_filename__icontains=query),
+    }
+    filter_recon = {
+        "all": (
             Q(claim_control_number__icontains=query)
             | Q(patient_control_number__icontains=query)
             | Q(member_id__icontains=query)
             | Q(raw_record__icontains=query)
             | Q(recon_file__original_filename__icontains=query)
-        )[:200]
-    )
-    source_837 = list(
-        EDI837Claim.objects.select_related("edi_file")
-        .filter(client=client)
-        .filter(
+        ),
+        "highmark": Q(claim_control_number__icontains=query),
+        "internal": Q(claim_control_number__icontains=query),
+        "patient": Q(raw_record__icontains=query),
+        "recon": Q(recon_file__original_filename__icontains=query),
+    }
+    filter_837 = {
+        "all": (
             Q(claim_control_number__icontains=query)
             | Q(highmark_claim_number__icontains=query)
             | Q(internal_claim_number__icontains=query)
@@ -426,8 +448,39 @@ def edi837_search(request):
             | Q(patient_first_name__icontains=query)
             | Q(patient_last_name__icontains=query)
             | Q(edi_file__original_filename__icontains=query)
-        )[:200]
-    )
+        ),
+        "highmark": (
+            Q(highmark_claim_number__icontains=query)
+            | Q(claim_control_number__icontains=query)
+        ),
+        "internal": (
+            Q(internal_claim_number__icontains=query)
+            | Q(reference_9c__icontains=query)
+        ),
+        "patient": (
+            Q(patient_first_name__icontains=query)
+            | Q(patient_last_name__icontains=query)
+        ),
+        "837": Q(edi_file__original_filename__icontains=query),
+    }
+
+    source_835 = list(
+        EDI835Claim.objects.select_related("edi_file")
+        .filter(edi_file__client=client).filter(filter_835[field])[:200]
+    ) if field in filter_835 else list(empty_835)
+    source_mir = list(
+        MIRClaim.objects.select_related("mir_file")
+        .filter(mir_file__client=client).filter(filter_mir[field])[:200]
+    ) if field in filter_mir else list(empty_mir)
+    source_recon = list(
+        RECONClaim.objects.select_related("recon_file")
+        .filter(client=client, recon_file__file_kind="RECON")
+        .filter(filter_recon[field])[:200]
+    ) if field in filter_recon else list(empty_recon)
+    source_837 = list(
+        EDI837Claim.objects.select_related("edi_file")
+        .filter(client=client).filter(filter_837[field])[:200]
+    ) if field in filter_837 else list(empty_837)
 
     def source_numbers(value):
         parts = split_claim_number(value)
