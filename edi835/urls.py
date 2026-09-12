@@ -11,7 +11,7 @@ from .views import (
     api_push_to_sftp,
 )
 from .tracked_files_eastern import tracked_files_list_eastern
-from .tracked_file_details import tracked_file_details
+from .tracked_file_details import tracked_file_details, conversion_hold_files
 from .sftp_browse_admin_routes import api_browse_sftp_admin_routes
 from .batch_test_837_v3 import api_start_batch_conversion_with_837
 from .checks_catalog import api_checks_catalog
@@ -42,6 +42,7 @@ from .mpl_views import (
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list_eastern)
 tracked_file_details = authenticated_api(tracked_file_details)
+conversion_hold_files = authenticated_api(conversion_hold_files)
 api_get_metrics = authenticated_api(api_get_metrics)
 api_archive_files_list = authenticated_api(api_archive_files_list)
 api_get_sftp_config = authenticated_api(api_get_sftp_config)
@@ -87,6 +88,7 @@ urlpatterns = [
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
     path("api/tracked-files/<uuid:file_id>/details/", tracked_file_details, name="edi835_tracked_file_details"),
+    path("api/checks/conversion-holds/", conversion_hold_files, name="edi835_conversion_hold_files"),
     path("api/metrics/", api_get_metrics, name="edi835_api_metrics"),
     path("api/checks/catalog/", api_checks_catalog, name="edi835_checks_catalog"),
     path("api/checks/held-releases/", api_held_release_history, name="edi835_held_release_history"),
