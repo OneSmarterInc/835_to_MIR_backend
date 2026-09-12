@@ -533,22 +533,64 @@ def edi837_search(request):
     grouped = {}
     unresolved = {}
 
+    def occurrence(highmark, internal, source_type, item):
+        if source_type == "835":
+            source_file = item.edi_file
+            filename = source_file.original_filename
+            arrived_at = source_file.uploaded_at
+            status = source_file.status
+            candidates = source_file.conversion_findings or []
+        elif source_type == "mir":
+            source_file = item.mir_file
+            filename = source_file.mir_filename
+            arrived_at = source_file.converted_at
+            status = source_file.status
+            candidates = []
+        elif source_type == "recon":
+            source_file = item.recon_file
+            filename = source_file.original_filename
+            arrived_at = source_file.uploaded_at
+            status = source_file.status
+            candidates = source_file.parsing_findings or []
+        else:
+            source_file = item.edi_file
+            filename = source_file.original_filename
+            arrived_at = source_file.processed_at or source_file.uploaded_at
+            status = source_file.status
+            candidates = []
+        needles = [value.upper() for value in (highmark, internal) if value(value := str(value or "").strip())]
+        matched_findings = []
+        for finding in candidates:
+            searchable = json.dumps(finding, default=str).upper()
+            if any(needle in searchable for needle in needles):
+                matched_findings.append(finding)
+        return {
+            "source": source_type, "file_name": filename,
+            "arrived_at": arrived_at.isoformat() if arrived_at else None,
+            "status": status, "internal_claim_number": internal,
+            "findings": matched_findings,
+        }
+
     def add_source(highmark, internal, source_type, item):
         highmark = str(highmark or "").strip()
         internal = str(internal or "").strip()
         if not highmark:
             return
+        event = occurrence(highmark, internal, source_type, item)
         if internal:
             key = (highmark, internal.upper())
-            group = grouped.setdefault(key, {"highmark": highmark, "internal": internal})
-            group.setdefault(source_type, item)
+            group = grouped.setdefault(
+                key, {"highmark": highmark, "internal": internal, "history": []}
+            )
         else:
-            unresolved.setdefault(highmark, {}).setdefault(source_type, item)
+            group = unresolved.setdefault(
+                highmark, {"highmark": highmark, "internal": "", "history": []}
+            )
+        group.setdefault(source_type, item)
+        group["history"].append(event)
 
     for item in source_835:
-        add_source(
-            item.highmark_claim_number, item.internal_claim_number, "835", item
-        )
+        add_source(item.highmark_claim_number, item.internal_claim_number, "835", item)
     for item in source_mir:
         highmark, internal = source_numbers(item.claim_control_number)
         add_source(highmark, internal, "mir", item)
@@ -561,19 +603,19 @@ def edi837_search(request):
         internal = item.internal_claim_number or item.reference_9c or parsed_internal
         add_source(highmark, internal, "837", item)
 
-    # A source with no internal number is attached when the Highmark number has
-    # exactly one known internal number. If several internal numbers exist, it
-    # remains separate because assigning it to one would invent a relationship.
-    for highmark, blank_sources in unresolved.items():
+    for highmark, blank_group in unresolved.items():
         matching_keys = [key for key in grouped if key[0] == highmark]
         if len(matching_keys) == 1:
             target = grouped[matching_keys[0]]
         else:
             target = grouped.setdefault(
-                (highmark, ""), {"highmark": highmark, "internal": ""}
+                (highmark, ""),
+                {"highmark": highmark, "internal": "", "history": []},
             )
-        for source_type, item in blank_sources.items():
-            target.setdefault(source_type, item)
+        for source_type in ("835", "mir", "recon", "837"):
+            if source_type in blank_group:
+                target.setdefault(source_type, blank_group[source_type])
+        target["history"].extend(blank_group["history"])
 
     def patient_from_sources(item_835, mir, recon):
         if mir:
