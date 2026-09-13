@@ -290,11 +290,15 @@ class MPLClaimExtractionTests(TestCase):
 
 
 class MPLAIEnablementTests(TestCase):
-    def test_local_ai_is_disabled_by_default(self):
+    def test_local_ai_is_enabled_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(local_ai_enabled())
+
+    def test_local_ai_can_be_explicitly_disabled(self):
+        with patch.dict("os.environ", {"MPL_AI_ENABLED": "false"}, clear=True):
             self.assertFalse(local_ai_enabled())
 
-    def test_local_ai_requires_explicit_opt_in(self):
+    def test_local_ai_accepts_explicit_enablement(self):
         with patch.dict("os.environ", {"MPL_AI_ENABLED": "true"}, clear=True):
             self.assertTrue(local_ai_enabled())
 
