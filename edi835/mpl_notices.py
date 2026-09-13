@@ -1598,7 +1598,40 @@ def serialize_notice(notice, detail=False):
     # notice. Detail polling must stay read-only and inexpensive.
     source_matches = notice.source_matches
 
-    data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "workflow_status": notice_workflow_status(notice), "claim_workflow_statuses": notice.claim_workflow_statuses or {}, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_filename else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": source_matches, "ai_response": notice.ai_response, "ai_response_source": notice.ai_response_source, "ai_suggestions": notice.ai_suggestions}
+    data = {
+        "id": str(notice.id),
+        "client_id": str(notice.client_id),
+        "client_name": notice.client.name,
+        "subject": notice.subject,
+        "sender": notice.sender_text,
+        "received_at": notice.received_at.isoformat() if notice.received_at else None,
+        "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None,
+        "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None,
+        "program": notice.program,
+        "notice_type": notice.notice_type,
+        "status": notice.status,
+        "workflow_status": notice_workflow_status(notice),
+        "claim_workflow_statuses": notice.claim_workflow_statuses or {},
+        "last_error": notice.last_error,
+        "created_at": notice.created_at.isoformat(),
+        "source_filename": notice.source_filename,
+        "source_file_url": (
+            f"/edi835/api/mpl-notices/{notice.id}/source-file/"
+            if notice.source_filename else None
+        ),
+        "extracted_claim_numbers": notice.extracted_claim_numbers,
+    }
     if detail:
-        data.update({"email_body": notice_email_body(notice), "latest_message": notice.latest_message_body, "claims": [claim_summary(link) for link in notice.notice_claims.select_related("claim", "analysis").all()]})
+        data.update({
+            "source_matches": source_matches,
+            "ai_response": notice.ai_response,
+            "ai_response_source": notice.ai_response_source,
+            "ai_suggestions": notice.ai_suggestions,
+            "email_body": notice_email_body(notice),
+            "latest_message": notice.latest_message_body,
+            "claims": [
+                claim_summary(link)
+                for link in notice.notice_claims.select_related("claim", "analysis").all()
+            ],
+        })
     return data
