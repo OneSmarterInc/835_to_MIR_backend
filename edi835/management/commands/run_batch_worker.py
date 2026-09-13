@@ -31,6 +31,7 @@ class Command(BaseCommand):
         stopping = False
         last_held_release_scan = None
         last_long_hold_alert_scan = None
+        last_missing_reference_alert_date = None
 
         def stop(*_args):
             nonlocal stopping
@@ -59,6 +60,31 @@ class Command(BaseCommand):
                     self.stderr.write(f"Could not release due held claims: {exc}")
                 finally:
                     last_held_release_scan = now
+
+            # Missing 837/RECON alerts are a once-per-client daily digest. Start
+            # the day's scan at 5:30 PM Eastern (or immediately after that time
+            # if the worker was down). A failed email leaves the day unmarked so
+            # the next worker poll can retry; successful/no-op days scan once.
+            try:
+                from edi835.missing_reference_alerts import EASTERN, SEND_AT, send_missing_reference_alerts
+                eastern_now = now.astimezone(EASTERN)
+                if (
+                    eastern_now.time().replace(tzinfo=None) >= SEND_AT
+                    and last_missing_reference_alert_date != eastern_now.date()
+                ):
+                    missing_result = send_missing_reference_alerts(now=now)
+                    if missing_result.get("emailed_claims"):
+                        self.stdout.write(
+                            f"Emailed {missing_result['emailed_claims']} claim(s) missing 837/RECON after 7 days."
+                        )
+                    if missing_result.get("email_failures"):
+                        self.stderr.write(
+                            f"{missing_result['email_failures']} missing 837/RECON alert email(s) failed and will retry."
+                        )
+                    else:
+                        last_missing_reference_alert_date = eastern_now.date()
+            except Exception as exc:
+                self.stderr.write(f"Could not send missing 837/RECON alerts: {exc}")
 
             # Seven-day non-duplicate hold alerts change slowly, so scan once an
             # hour instead of adding a full held-file scan to every worker poll.
