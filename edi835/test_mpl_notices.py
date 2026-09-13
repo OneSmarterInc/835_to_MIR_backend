@@ -103,6 +103,20 @@ class MPL837InternalClaimNumberTests(TestCase):
         )
 
 
+    def test_uses_fixed_width_hi_suffix_when_ref_9c_is_absent(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262123595400",
+            highmark_claim_number="86520262123595400",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="HL*1*20*22~HI86520262123595400QYV596    OTHER DATA",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262123595400"),
+            "QYV596",
+        )
+
+
 class MPLClaimExtractionTests(TestCase):
     def test_extracts_real_mpl_claim_numbers_and_excludes_issue_codes(self):
         body = """
@@ -427,6 +441,44 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual(internal_by_type["835"], "PAY835")
         self.assertEqual(internal_by_type["MIR"], "MIR123")
         self.assertEqual(internal_by_type["RECON"], "REC456")
+
+    def test_source_table_keeps_distinct_837_internal_numbers_from_one_file(self):
+        claim_number = "45520262120111800"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="multiple.837",
+            stored_filename="multiple.837",
+            file_content="x",
+            file_hash="9" * 64,
+            status="PROCESSED",
+        )
+        for sequence, internal in enumerate(("Q00841", "QYW218"), start=1):
+            EDI837Claim.objects.create(
+                edi_file=edi837,
+                client=self.client_record,
+                claim_sequence=sequence,
+                claim_control_number=claim_number,
+                highmark_claim_number=claim_number,
+                internal_claim_number="",
+                reference_9c="",
+                raw_claim=f"HI{claim_number}{internal}    CLAIM DATA",
+            )
+
+        result = search_claim_sources(notice, [claim_number])
+        internals = {
+            source["internal_claim_number"]
+            for source in result[0]["sources"]
+            if source["type"] == "837"
+        }
+        self.assertEqual(internals, {"Q00841", "QYW218"})
 
     def test_client_cannot_change_claim_workflow_status(self):
         claim_number = "33020262300027000"
