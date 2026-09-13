@@ -480,6 +480,13 @@ def internal_claim_number_from_837_claim(claim, highmark_claim_number):
         if internal:
             return internal
 
+    # Some partner 837 files store HI<Highmark><internal> in a fixed-width
+    # claim record instead of REF*9C. The raw text belongs to this exact
+    # normalized claim row, so extract its adjacent suffix before CLM fallback.
+    raw_internal = internal_claim_number_from_source(wanted, raw_claim)
+    if raw_internal:
+        return raw_internal
+
     # REF*9C is optional. In that case only the suffix of this claim's own
     # CLM01 is valid; never borrow an identifier from another claim or file.
     clm_values = re.findall(
@@ -511,7 +518,14 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         seen_sources = set()
 
         def append_source(source_type, source_id, payload):
-            key = (source_type, str(source_id))
+            # One archived file may contain the same Highmark claim more than
+            # once with different internal claim numbers. Preserve each
+            # distinct claim occurrence while deduplicating identical rows.
+            key = (
+                source_type,
+                str(source_id),
+                str(payload.get("internal_claim_number") or "").strip().upper(),
+            )
             if key not in seen_sources:
                 seen_sources.add(key)
                 sources.append(payload)
@@ -532,7 +546,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 | Q(raw_claim__contains=identifier)
             )
             .select_related("edi_file")
-            .order_by("-edi_file__uploaded_at", "-id")[:3]
+            .order_by("-edi_file__uploaded_at", "-id")[:200]
         )
         for claim_837 in claims_837:
             internal_837 = internal_claim_number_from_837_claim(claim_837, identifier)
