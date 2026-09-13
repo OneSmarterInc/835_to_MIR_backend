@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .claim_numbers import split_claim_number
-from .models import EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
+from .models import EDI835Claim, EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
 from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -740,10 +740,58 @@ def _file_item(kind, file_id, filename, event_at, status, download_url):
 def collect_evidence(claim):
     timeline, files, findings = [], [], []
     source = claim.edi_file
-    source_at = source.processed_at or source.uploaded_at
-    timeline.append({"event": "837 processed", "date": source_at.isoformat(), "status": source.status, "file": source.original_filename})
-    files.append(_file_item("837", source.id, source.original_filename, source.uploaded_at, source.status, f"/edi835/api/mpl-files/837/{source.id}/download/"))
     match_values = [value for value in (claim.claim_control_number, claim.internal_claim_number, claim.highmark_claim_number, claim.reference_9c) if value]
+    exact_history_q = Q()
+    for value in match_values:
+        exact_history_q |= Q(claim_control_number__iexact=value)
+        exact_history_q |= Q(highmark_claim_number__iexact=value)
+        exact_history_q |= Q(internal_claim_number__iexact=value)
+        exact_history_q |= Q(reference_9c__iexact=value)
+    historical_837_claims = (
+        EDI837Claim.objects.filter(client=claim.client)
+        .filter(exact_history_q)
+        .select_related("edi_file")
+        .order_by("edi_file__uploaded_at", "claim_sequence")
+    ) if match_values else [claim]
+    for historical_claim in historical_837_claims:
+        historical_file = historical_claim.edi_file
+        event_at = historical_file.processed_at or historical_file.uploaded_at
+        timeline.append({
+            "event": "837 processed",
+            "date": event_at.isoformat(),
+            "status": historical_file.status,
+            "file": historical_file.original_filename,
+        })
+        files.append(_file_item(
+            "837", historical_file.id, historical_file.original_filename,
+            historical_file.uploaded_at, historical_file.status,
+            f"/edi835/api/mpl-files/837/{historical_file.id}/download/",
+        ))
+
+    normalized_835_claims = (
+        EDI835Claim.objects.filter(edi_file__client=claim.client)
+        .filter(
+            Q(highmark_claim_number__iexact=claim.highmark_claim_number or claim.claim_control_number)
+            | Q(internal_claim_number__in=match_values)
+        )
+        .select_related("edi_file")
+        .order_by("edi_file__uploaded_at", "claim_sequence")
+    )
+    for claim_835 in normalized_835_claims:
+        file_835 = claim_835.edi_file
+        timeline.append({
+            "event": "835 received",
+            "date": file_835.uploaded_at.isoformat(),
+            "status": claim_835.claim_status or file_835.status,
+            "file": file_835.original_filename,
+        })
+        files.append(_file_item(
+            "835", file_835.id, file_835.original_filename,
+            file_835.uploaded_at, file_835.status,
+            f"/edi835/api/mpl-files/835/{file_835.id}/download/",
+        ))
+        findings.extend(conversion_findings_for_claim(file_835, match_values))
+
     mir_q, recon_q = Q(), Q()
     for value in match_values:
         mir_q |= Q(claim_control_number__iexact=value)
@@ -779,6 +827,10 @@ def collect_evidence(claim):
         files.append(_file_item("RECON", rf.id, rf.original_filename, rf.uploaded_at, rf.status, f"/edi835/api/mpl-files/recon/{rf.id}/download/"))
         if Decimal(recon.charge_amount) != Decimal(claim.total_charge_amount):
             findings.append(_finding("CHARGE_MISMATCH", "error", f"837 charge is {claim.total_charge_amount} while reconciliation charge is {recon.charge_amount}.", rf.original_filename))
+    timeline = list({
+        (item.get("event"), item.get("date"), item.get("file"), item.get("status")): item
+        for item in timeline
+    }.values())
     timeline.sort(key=lambda item: item.get("date") or "")
     files = list({(item["type"], item["id"]): item for item in files}.values())
     findings = list({(item["code"], item["evidence"]): item for item in findings}.values())
