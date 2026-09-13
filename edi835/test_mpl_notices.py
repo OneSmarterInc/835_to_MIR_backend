@@ -17,6 +17,7 @@ from edi835.mpl_notices import (
     extract_claim_identifiers,
     extract_claim_issue_map,
     internal_claim_number_from_835,
+    internal_claim_number_from_837_claim,
     internal_claim_number_from_source,
     local_ai_enabled,
     parse_subject,
@@ -54,6 +55,51 @@ class MPLSubjectTests(TestCase):
         latest, history = split_latest_message("Please review this claim.\n\nFrom: Scott\nSent: Tuesday\nOlder email")
         self.assertEqual(latest, "Please review this claim.")
         self.assertIn("From: Scott", history)
+
+
+class MPL837InternalClaimNumberTests(TestCase):
+    def test_uses_ref_9c_from_the_exact_837_claim(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="QYD579",
+            reference_9c="QYD579",
+            raw_claim="CLM*86520262000982500*340~REF*9C*QYD579~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "QYD579",
+        )
+
+    def test_uses_clm01_suffix_when_ref_9c_is_absent(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500QYD579",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="QYD579",
+            reference_9c="",
+            raw_claim="CLM*86520262000982500QYD579*340~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "QYD579",
+        )
+
+    def test_rejects_internal_number_from_a_different_837_claim(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="BORROWED1",
+            reference_9c="BORROWED1",
+            raw_claim="CLM*86520262000982500*340~REF*9C*ACTUAL579~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "ACTUAL579",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "89020262161295900"),
+            "",
+        )
 
 
 class MPLClaimExtractionTests(TestCase):
