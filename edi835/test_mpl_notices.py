@@ -117,6 +117,20 @@ class MPL837InternalClaimNumberTests(TestCase):
         )
 
 
+    def test_uses_separated_fixed_width_internal_number(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262123595400",
+            highmark_claim_number="86520262123595400",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="HI86520262123595400  QYV596    OTHER DATA",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262123595400"),
+            "QYV596",
+        )
+
+
 class MPLClaimExtractionTests(TestCase):
     def test_extracts_real_mpl_claim_numbers_and_excludes_issue_codes(self):
         body = """
