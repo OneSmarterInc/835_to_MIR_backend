@@ -16,6 +16,7 @@ from .sftp_browse_admin_routes import api_browse_sftp_admin_routes
 from .batch_test_837_v3 import api_start_batch_conversion_with_837
 from .checks_catalog import api_checks_catalog
 from .held_release_views import api_held_release_history
+from .alert_history import api_claim_alert_email_history
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
@@ -55,6 +56,7 @@ api_browse_sftp = authenticated_api(api_browse_sftp_admin_routes)
 api_start_batch_conversion = authenticated_api(api_start_batch_conversion_with_837)
 api_checks_catalog = authenticated_api(api_checks_catalog)
 api_held_release_history = authenticated_api(api_held_release_history)
+api_claim_alert_email_history = authenticated_api(api_claim_alert_email_history)
 api_download_archive_zip = authenticated_api(api_download_archive_zip)
 # RECON views already apply authenticated_api_required and tenant scoping.
 # Leave them as native Django views so standard client sessions remain intact.
@@ -92,6 +94,7 @@ urlpatterns = [
     path("api/metrics/", api_get_metrics, name="edi835_api_metrics"),
     path("api/checks/catalog/", api_checks_catalog, name="edi835_checks_catalog"),
     path("api/checks/held-releases/", api_held_release_history, name="edi835_held_release_history"),
+    path("api/checks/alert-emails/", api_claim_alert_email_history, name="edi835_claim_alert_email_history"),
     path("api/archive-files/", api_archive_files_list, name="edi835_archive_files"),
     path("api/download-zip/", api_download_archive_zip, name="edi835_api_download_zip"),
     path("api/sftp/get/", api_get_sftp_config, name="api_get_sftp_config"),
