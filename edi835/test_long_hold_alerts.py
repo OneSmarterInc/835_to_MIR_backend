@@ -77,9 +77,9 @@ class LongHoldAlertTests(TestCase):
         )
         return mir_file
 
-    @patch("edi835.long_hold_alerts.get_client_users", return_value=[])
+    @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
-    def test_overdue_claim_emails_once_per_day_and_again_next_day(self, send_email, _users):
+    def test_overdue_claim_emails_once_per_day_and_again_next_day(self, send_email, _recipients):
         source = self._source()
 
         first = send_overdue_nonduplicate_hold_alerts(now=self.now)
@@ -105,9 +105,9 @@ class LongHoldAlertTests(TestCase):
         source.refresh_from_db()
         self.assertEqual(source.conversion_findings[0].get(ALERT_COUNT_FIELD), 2)
 
-    @patch("edi835.long_hold_alerts.get_client_users", return_value=[])
+    @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
-    def test_alerts_stop_after_seven_daily_emails(self, send_email, _users):
+    def test_alerts_stop_after_seven_daily_emails(self, send_email, _recipients):
         source = self._source()
 
         for day in range(7):
@@ -121,9 +121,9 @@ class LongHoldAlertTests(TestCase):
         source.refresh_from_db()
         self.assertEqual(source.conversion_findings[0].get(ALERT_COUNT_FIELD), 7)
 
-    @patch("edi835.long_hold_alerts.get_client_users", return_value=[])
+    @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
-    def test_duplicate_holds_are_excluded_and_exactly_seven_days_is_not_overdue(self, send_email, _users):
+    def test_duplicate_holds_are_excluded_and_exactly_seven_days_is_not_overdue(self, send_email, _recipients):
         self._source(age_days=8, findings=[{
             "rule_code": "DUPLICATE_RECENT_MIR",
             "severity": "HOLD",
@@ -143,9 +143,9 @@ class LongHoldAlertTests(TestCase):
         self.assertEqual(result["emailed_claims"], 0)
         send_email.assert_not_called()
 
-    @patch("edi835.long_hold_alerts.get_client_users", return_value=[])
+    @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=False)
-    def test_failed_email_is_not_counted_so_worker_can_retry(self, _send_email, _users):
+    def test_failed_email_is_not_counted_so_worker_can_retry(self, _send_email, _recipients):
         source = self._source()
         result = send_overdue_nonduplicate_hold_alerts(now=self.now)
         self.assertEqual(result["email_failures"], 1)
@@ -155,9 +155,9 @@ class LongHoldAlertTests(TestCase):
         self.assertFalse(finding.get(ALERT_FIELD))
         self.assertFalse(finding.get(ALERT_COUNT_FIELD))
 
-    @patch("edi835.long_hold_alerts.get_client_users", return_value=[])
+    @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
-    def test_later_pushed_mir_marks_claim_resolved_and_stops_email(self, send_email, _users):
+    def test_later_pushed_mir_marks_claim_resolved_and_stops_email(self, send_email, _recipients):
         source = self._source()
         self._pushed_claim("CLAIM100", sent_at=self.now - timedelta(hours=1))
 
