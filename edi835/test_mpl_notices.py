@@ -384,7 +384,9 @@ class MPLNoticeAPITests(TestCase):
         )
         EDI837Claim.objects.create(
             edi_file=edi837, client=self.client_record, claim_sequence=1,
-            claim_control_number="different", raw_claim=f"REF*F8*{claim_number}~",
+            claim_control_number=claim_number, highmark_claim_number=claim_number,
+            internal_claim_number="837INT9", reference_9c="837INT9",
+            raw_claim=f"CLM*{claim_number}*100~REF*9C*837INT9~",
         )
         edi835 = EDI835File.objects.create(
             client=self.client_record, original_filename="claim.835",
@@ -420,9 +422,51 @@ class MPLNoticeAPITests(TestCase):
             source["type"]: source["internal_claim_number"]
             for source in result[0]["sources"]
         }
+        self.assertEqual(internal_by_type["837"], "837INT9")
         self.assertEqual(internal_by_type["835"], "PAY835")
         self.assertEqual(internal_by_type["MIR"], "MIR123")
         self.assertEqual(internal_by_type["RECON"], "REC456")
+
+    def test_client_cannot_change_claim_workflow_status(self):
+        claim_number = "33020262300027000"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            extracted_claim_numbers=[claim_number],
+            created_by=self.user,
+        )
+        response = self.client.patch(
+            f"/edi835/api/mpl-notices/{notice.id}/claims/workflow-status/",
+            data=json.dumps({"claim_number": claim_number, "workflow_status": "HOLD"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        notice.refresh_from_db()
+        self.assertEqual(notice.claim_workflow_statuses, {})
+
+    def test_admin_can_change_claim_workflow_status(self):
+        claim_number = "33020262300027000"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            extracted_claim_numbers=[claim_number],
+            created_by=self.user,
+        )
+        self.user.client = None
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save(update_fields=["client", "is_staff", "is_superuser"])
+        response = self.client.patch(
+            f"/edi835/api/mpl-notices/{notice.id}/claims/workflow-status/",
+            data=json.dumps({"claim_number": claim_number, "workflow_status": "HOLD"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotIn("notice", response.json())
+        notice.refresh_from_db()
+        self.assertEqual(notice.claim_workflow_statuses[claim_number], "HOLD")
 
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
