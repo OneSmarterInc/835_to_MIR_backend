@@ -952,12 +952,20 @@ def call_local_model(notice, claim, timeline, findings, actions):
     issue_rules = reported_issue_rules(email_context)
     duplicate_findings = [
         item for item in findings
-        if "DUPLICATE" in str(item.get("code") or "").upper()
+        if "DUPLICATE" in f"{item.get('code', '')} {item.get('description', '')}".upper()
+    ]
+    duplicate_history = [
+        item for item in timeline
+        if "DUPLICATE" in f"{item.get('event', '')} {item.get('status', '')}".upper()
     ]
     hold_findings = [
         item for item in findings
         if "HOLD" in f"{item.get('code', '')} {item.get('description', '')}".upper()
         or str(item.get("severity") or "").upper() in {"HOLD", "REFUSE"}
+    ]
+    hold_history = [
+        item for item in timeline
+        if "HOLD" in f"{item.get('event', '')} {item.get('status', '')}".upper()
     ]
     evidence = {
         "claim_number": claim.claim_control_number,
@@ -977,10 +985,16 @@ def call_local_model(notice, claim, timeline, findings, actions):
             "authoritative_check_rules": authoritative_rule_catalog(issue_rules),
             "unknown_codes": unknown_reported_codes(email_context),
         },
-        "complete_source_timeline": timeline[:30],
-        "verified_findings": findings[:30],
-        "duplicate_evidence": duplicate_findings,
-        "hold_evidence": hold_findings,
+        "complete_source_timeline": timeline,
+        "verified_findings": findings,
+        "duplicate_evidence": {
+            "findings": duplicate_findings,
+            "history": duplicate_history,
+        },
+        "hold_evidence": {
+            "findings": hold_findings,
+            "history": hold_history,
+        },
         "approved_actions": [
             {"id": f"A{index + 1}", "text": action}
             for index, action in enumerate(actions[:10])
@@ -1007,7 +1021,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": int(os.getenv("MPL_AI_MAX_TOKENS", "1000")),
+        "max_tokens": int(os.getenv("MPL_AI_MAX_TOKENS", "1800")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
