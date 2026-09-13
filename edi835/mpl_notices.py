@@ -740,7 +740,10 @@ def _file_item(kind, file_id, filename, event_at, status, download_url):
 def collect_evidence(claim):
     timeline, files, findings = [], [], []
     source = claim.edi_file
-    match_values = [value for value in (claim.claim_control_number, claim.internal_claim_number, claim.highmark_claim_number, claim.reference_9c) if value]
+    split_identifiers = split_claim_number(claim.claim_control_number)
+    canonical_highmark = claim.highmark_claim_number or split_identifiers["highmark_claim_number"] or claim.claim_control_number
+    canonical_internal = claim.internal_claim_number or claim.reference_9c or split_identifiers["internal_claim_number"]
+    match_values = [value for value in (claim.claim_control_number, canonical_internal, canonical_highmark, claim.reference_9c) if value]
     exact_history_q = Q()
     for value in match_values:
         exact_history_q |= Q(claim_control_number__iexact=value)
@@ -771,7 +774,7 @@ def collect_evidence(claim):
     normalized_835_claims = (
         EDI835Claim.objects.filter(edi_file__client=claim.client)
         .filter(
-            Q(highmark_claim_number__iexact=claim.highmark_claim_number or claim.claim_control_number)
+            Q(highmark_claim_number__iexact=canonical_highmark)
             | Q(internal_claim_number__in=match_values)
         )
         .select_related("edi_file")
@@ -796,6 +799,9 @@ def collect_evidence(claim):
     for value in match_values:
         mir_q |= Q(claim_control_number__iexact=value)
         recon_q |= Q(claim_control_number__iexact=value)
+    if canonical_highmark:
+        mir_q |= Q(claim_control_number__istartswith=canonical_highmark)
+        recon_q |= Q(claim_control_number__istartswith=canonical_highmark)
     mir_claims = list(MIRClaim.objects.filter(mir_file__client=claim.client).filter(mir_q).select_related("mir_file", "mir_file__source_835").prefetch_related("service_lines")[:20]) if match_values else []
     recon_claims = list(RECONClaim.objects.filter(client=claim.client).filter(recon_q).select_related("recon_file")[:20]) if match_values else []
     if not mir_claims:
@@ -903,8 +909,8 @@ def call_local_model(notice, claim, timeline, findings, actions):
     ]
     evidence = {
         "claim_number": claim.claim_control_number,
-        "highmark_claim_number": claim.highmark_claim_number,
-        "internal_claim_number": claim.internal_claim_number or claim.reference_9c,
+        "highmark_claim_number": claim.highmark_claim_number or split_claim_number(claim.claim_control_number)["highmark_claim_number"],
+        "internal_claim_number": claim.internal_claim_number or claim.reference_9c or split_claim_number(claim.claim_control_number)["internal_claim_number"],
         "member_id": claim.member_id,
         "service_dates": {
             "from": str(claim.service_from_date or ""),
