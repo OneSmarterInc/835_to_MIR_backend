@@ -1186,10 +1186,32 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         else ""
     )
     approved_suggestions = unmatched_notice_actions(source_matches)
+    fallback_sections = []
+    for match in source_matches:
+        claim_number = str(match.get("claim_number") or "").strip()
+        issues = [
+            str(issue.get("description") or ", ".join(issue.get("codes", []))).strip()
+            for issue in match.get("reported_issues", [])
+            if issue.get("description") or issue.get("codes")
+        ]
+        history = [
+            (
+                f"{source.get('type') or 'SOURCE'} {source.get('filename') or 'unnamed file'} "
+                f"received {source.get('date') or 'date unavailable'} "
+                f"({source.get('status') or 'status unavailable'})"
+            )
+            for source in match.get("sources", [])
+        ]
+        fallback_sections.append(
+            f"Claim {claim_number}\n"
+            f"Issues: {'; '.join(issues) if issues else 'No issue was confidently associated from the email.'}\n"
+            f"History: {'; '.join(history) if history else 'No archived file history was found.'}\n"
+            "Duplicate: no stored duplicate indicator found.\n"
+            "Hold: no stored hold indicator found."
+        )
     fallback = {
-        "summary": (
-            f"Extracted {len(identifiers)} claim number(s) from the email. None matched stored "
-            "837 data for this client, so the reported issues cannot yet be verified against an 837 claim."
+        "summary": "\n\n".join(fallback_sections) or (
+            f"Extracted {len(identifiers)} claim number(s), but no claim-specific evidence was available."
         ),
         "suggestions": approved_suggestions,
         "source": "deterministic-fallback",
