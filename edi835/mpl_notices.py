@@ -972,6 +972,36 @@ def local_ai_enabled():
     }
 
 
+def _qwen_chat_completion(base_url, payload, headers):
+    """Call an OpenAI-compatible Qwen server, retrying legacy servers without response_format."""
+    timeout = int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120"))
+    payload_data = json.loads(payload.decode("utf-8"))
+    attempts = [payload_data]
+    if "response_format" in payload_data:
+        compatible_payload = dict(payload_data)
+        compatible_payload.pop("response_format", None)
+        attempts.append(compatible_payload)
+
+    for index, attempt in enumerate(attempts):
+        request = Request(
+            f"{base_url}/chat/completions",
+            data=json.dumps(attempt).encode("utf-8"),
+            headers=headers,
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                return json.loads(response.read().decode("utf-8"))
+        except HTTPError as exc:
+            error_body = exc.read().decode("utf-8", errors="replace")[:1000]
+            if exc.code == 400 and index + 1 < len(attempts):
+                logger.info("Qwen rejected response_format; retrying compatible request: %s", error_body)
+                continue
+            raise ValueError(f"Qwen HTTP {exc.code}: {error_body or exc.reason}") from exc
+
+    raise ValueError("Qwen request failed without a response.")
+
+
 def call_local_model(notice, claim, timeline, findings, actions):
     if not local_ai_enabled():
         return None
@@ -1068,17 +1098,7 @@ def call_local_model(notice, claim, timeline, findings, actions):
         headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
 
     try:
-        request = Request(
-            f"{base_url}/chat/completions",
-            data=payload,
-            headers=headers,
-            method="POST",
-        )
-        with urlopen(
-            request,
-            timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120")),
-        ) as response:
-            outer = json.loads(response.read().decode())
+        outer = _qwen_chat_completion(base_url, payload, headers)
         result = parse_model_json(outer["choices"][0]["message"]["content"])
     except (HTTPError, URLError, TimeoutError, KeyError, ValueError, json.JSONDecodeError) as exc:
         logger.warning("MPL claim AI request failed; using deterministic analysis: %s", exc)
@@ -1310,12 +1330,7 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
     if os.getenv("MPL_AI_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
     try:
-        request = Request(f"{base_url}/chat/completions", data=payload, headers=headers, method="POST")
-        with urlopen(
-            request,
-            timeout=int(os.getenv("MPL_AI_TIMEOUT_SECONDS", "120")),
-        ) as response:
-            outer = json.loads(response.read().decode())
+        outer = _qwen_chat_completion(base_url, payload, headers)
         result = parse_model_json(outer["choices"][0]["message"]["content"])
         summary = str(result.get("summary") or "").strip()
         if not summary or (
