@@ -8,10 +8,11 @@ from html import escape
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
-from django.db.models.functions import Left
+from django.db.models.functions import Left, Trim
 from django.utils import timezone
 
-from admin_panel.email_service import get_client_users, send_client_email
+from admin_panel.email_service import send_client_email
+from .alert_history import alert_recipients, record_sent_alert
 from .held_claims import mir_claim_number
 from .models import EDI835File, MIRClaim
 
@@ -199,7 +200,7 @@ def _resolve_from_pushed_history(source, by_claim, held_since, now) -> set[str]:
 
     rows = (
         MIRClaim.objects.select_related("mir_file", "mir_file__source_835")
-        .annotate(claim_number_key=Left("claim_control_number", 17))
+        .annotate(claim_number_key=Trim(Left("claim_control_number", 17)))
         .filter(
             mir_file__client=source.client,
             mir_file__status="PUSHED",
@@ -336,10 +337,34 @@ def _send_client_alert(client, items, now) -> bool:
         '<p style="margin-top:20px"><strong>Action recommended:</strong> Review and resolve the listed non-duplicate hold reasons.</p>'
     )
 
-    recipients = set(get_client_users(client))
-    if getattr(client, "email", ""):
-        recipients.add(client.email)
-    return send_client_email(client, subject, html, to_emails=sorted(recipients))
+    recipients = alert_recipients(client)
+    sent = send_client_email(client, subject, html, to_emails=recipients)
+    if sent:
+        record_sent_alert(
+            client=client,
+            category="CONVERSION_HOLD",
+            alert_date=now.astimezone(EASTERN).date(),
+            subject=subject,
+            recipients=recipients,
+            claims=[
+                {
+                    "claim_number": item["claim_number"],
+                    "source_835_filename": item["source_835_filename"],
+                    "held_since": item["held_since"].isoformat(),
+                    "days_held": item["days_held"],
+                    "alert_number": item["alert_number"],
+                    "alert_limit": item["alert_limit"],
+                    "reasons": list(item["reasons"]),
+                }
+                for item in items
+            ],
+            body_text="\n".join(
+                f'{item["claim_number"]} | Held since: {_format_eastern(item["held_since"])} | ' + "; ".join(item["reasons"])
+                for item in items
+            ),
+            sent_at=now,
+        )
+    return sent
 
 
 def _mark_alerted(items, sent_at) -> None:
