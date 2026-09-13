@@ -742,12 +742,20 @@ class MPLNotice(models.Model):
 class MPLNoticeClaim(models.Model):
     """One 837 claim matched to a notice; ambiguous matches require confirmation."""
 
+    WORKFLOW_STATUS_CHOICES = [
+        ("YET_TO_START", "Yet to start"),
+        ("HOLD", "Hold"),
+        ("IN_PROGRESS", "In progress"),
+        ("RESOLVED", "Resolved"),
+    ]
+
     notice = models.ForeignKey(MPLNotice, on_delete=models.CASCADE, related_name="notice_claims")
     claim = models.ForeignKey(EDI837Claim, on_delete=models.CASCADE, related_name="mpl_notice_claims")
     matching_method = models.CharField(max_length=50)
     matching_confidence = models.DecimalField(max_digits=5, decimal_places=4, default=0)
     confirmed_by_user = models.BooleanField(default=False)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    workflow_status = models.CharField(max_length=20, choices=WORKFLOW_STATUS_CHOICES, default="YET_TO_START", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
