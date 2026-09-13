@@ -1,6 +1,6 @@
 import json
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from django.test import TestCase, override_settings
@@ -14,6 +14,7 @@ from edi835.mpl_notices import (
     approved_actions_for_claim,
     authoritative_rule_catalog,
     conversion_findings_for_claim,
+    call_local_model,
     extract_claim_identifiers,
     extract_claim_issue_map,
     internal_claim_number_from_835,
@@ -474,3 +475,68 @@ class MPLNoticeAPITests(TestCase):
         notice.refresh_from_db()
         self.assertEqual(notice.status, "REVIEW_REQUIRED")
         self.assertFalse(notice.notice_claims.exists())
+
+
+class MPLClaimAIResponseTests(TestCase):
+    @patch.dict("os.environ", {
+        "MPL_AI_ENABLED": "true",
+        "MPL_AI_BASE_URL": "http://local-model",
+        "MPL_AI_MODEL": "test-model",
+    }, clear=False)
+    @patch("edi835.mpl_notices.urlopen")
+    def test_accepts_ai_response_with_separate_highmark_identifier(self, mocked_urlopen):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        combined = highmark + internal
+        model_result = {
+            "summary": (
+                "Claim identity: Highmark 86520262000982500; internal QYD579. "
+                "Issues and error codes: MIR_CLAIM_MISSING. History: claim.837 processed. "
+                "Duplicate and hold status: no evidence found. Root-cause analysis: MIR is absent. "
+                "Resolution steps: A1."
+            ),
+            "reported_issue": "MIR_CLAIM_MISSING",
+            "verified_evidence": ["claim.837"],
+            "missing_evidence": ["MIR"],
+            "unknown_codes": [],
+            "unclear_items": [],
+            "primary_issue_code": "MIR_CLAIM_MISSING",
+            "needs_response": True,
+            "recommended_actions": [{"action_id": "A1", "reason": "Locate MIR"}],
+            "confidence": 0.8,
+            "requires_human_review": True,
+        }
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "choices": [{"message": {"content": json.dumps(model_result)}}],
+        }).encode()
+        mocked_urlopen.return_value = response
+
+        notice = SimpleNamespace(raw_email_body=combined, normalized_email={})
+        claim = SimpleNamespace(
+            claim_control_number=combined,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+            reference_9c=internal,
+            member_id="MEMBER1",
+            service_from_date=None,
+            service_to_date=None,
+            total_charge_amount=100,
+            service_count=1,
+        )
+        result = call_local_model(
+            notice,
+            claim,
+            [{"event": "837 processed", "date": "2026-09-09", "file": "claim.837", "status": "PROCESSED"}],
+            [{
+                "code": "MIR_CLAIM_MISSING",
+                "severity": "error",
+                "description": "No matching MIR claim.",
+                "evidence": "837/MIR comparison",
+            }],
+            ["Locate the approved MIR source for this claim."],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["model_id"], "test-model")
+        self.assertIn(highmark, result["summary"])
