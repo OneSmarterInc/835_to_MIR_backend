@@ -473,8 +473,10 @@ class MPLNoticeAPITests(TestCase):
                 edi_file=edi837,
                 client=self.client_record,
                 claim_sequence=sequence,
-                claim_control_number=claim_number,
-                highmark_claim_number=claim_number,
+                claim_control_number=(
+                    claim_number if sequence == 1 else f"HI{claim_number}{internal}"
+                ),
+                highmark_claim_number=(claim_number if sequence == 1 else ""),
                 internal_claim_number="",
                 reference_9c="",
                 raw_claim=f"HI{claim_number}{internal}    CLAIM DATA",
