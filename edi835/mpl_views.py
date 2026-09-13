@@ -114,7 +114,7 @@ def _parse_msg_upload(upload):
         with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as temp:
             temp.write(raw)
             temp_path = temp.name
-        message = extract_msg.Message(temp_path)
+        message = extract_msg.Message(temp_path, delayAttachments=True)
         subject = _clean_outlook_text(message.subject)
         body = _extract_msg_body(message)
         sender = _clean_outlook_text(message.sender)
