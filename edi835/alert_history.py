@@ -35,7 +35,10 @@ def reserve_daily_alert(*, client, category, alert_date, subject, recipients, cl
         if row is not None:
             if row.status == "SENT":
                 return None
-            if row.status == "PENDING" and row.updated_at and row.updated_at > now - PENDING_RETRY_AFTER:
+            if row.updated_at and row.updated_at > now - PENDING_RETRY_AFTER:
+                # Avoid a tight retry loop for either an in-flight send or a
+                # failed SMTP attempt. The batch worker may poll every few
+                # seconds, but operational email retries are spaced 15 minutes.
                 return None
             row.status = "PENDING"
             row.subject = subject
