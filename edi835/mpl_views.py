@@ -320,24 +320,35 @@ def mpl_notice_process_now(request, notice_id):
 
 
 @require_http_methods(["PATCH", "POST"])
-def mpl_claim_workflow_status(request, notice_id, claim_id):
+def mpl_claim_workflow_status(request, notice_id, claim_id=None):
     notice = MPLNotice.objects.filter(pk=notice_id).first()
     if not notice:
         return JsonResponse({"success": False, "error": "Notice not found."}, status=404)
     if not can_access_client(request.user, notice.client_id):
         return JsonResponse({"success": False, "error": "Access denied."}, status=403)
     try:
-        status = str(_body(request).get("workflow_status") or "").upper()
+        payload = _body(request)
+        status = str(payload.get("workflow_status") or "").upper()
+        claim_number = str(payload.get("claim_number") or "").strip()
     except NoticeValidationError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=400)
     allowed = {value for value, _label in MPLNoticeClaim.WORKFLOW_STATUS_CHOICES}
     if status not in allowed:
         return JsonResponse({"success": False, "error": "Invalid workflow status."}, status=400)
-    link = MPLNoticeClaim.objects.filter(notice=notice, claim_id=claim_id).first()
-    if not link:
+    link = None
+    if claim_id is not None:
+        link = MPLNoticeClaim.objects.filter(notice=notice, claim_id=claim_id).select_related("claim").first()
+        if link and not claim_number:
+            claim_number = link.claim.highmark_claim_number or link.claim.claim_control_number
+    if not claim_number or claim_number not in {str(value) for value in (notice.extracted_claim_numbers or [])}:
         return JsonResponse({"success": False, "error": "Claim not found in this notice."}, status=404)
-    link.workflow_status = status
-    link.save(update_fields=["workflow_status"])
+    statuses = dict(notice.claim_workflow_statuses or {})
+    statuses[claim_number] = status
+    notice.claim_workflow_statuses = statuses
+    notice.save(update_fields=["claim_workflow_statuses", "updated_at"])
+    if link:
+        link.workflow_status = status
+        link.save(update_fields=["workflow_status"])
     return JsonResponse({"success": True, "workflow_status": status, "notice": serialize_notice(notice, detail=True)})
 
 
