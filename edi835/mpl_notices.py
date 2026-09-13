@@ -469,9 +469,9 @@ def _837_claim_matches_highmark(claim, highmark_claim_number):
         return False
 
     values = (
-        claim.highmark_claim_number,
-        claim.claim_control_number,
-        claim.patient_control_number,
+        getattr(claim, "highmark_claim_number", ""),
+        getattr(claim, "claim_control_number", ""),
+        getattr(claim, "patient_control_number", ""),
     )
     for candidate in values:
         raw = str(candidate or "").strip()
