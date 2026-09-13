@@ -5,9 +5,10 @@ filesystem checks, so a newly created/converted/sent record can appear as soon
 as it is committed to the database. A caller that genuinely needs to reconcile
 folder presence can explicitly request ``?full_sync=1``.
 
-Conversion findings remain available through ``include_conversion_findings=1``
-but are loaded in one separate query only for files that actually have held
-claims. This keeps ordinary history responses small as the archive grows.
+The normal history response intentionally omits claim-level conversion findings.
+Those findings can still be requested with ``include_conversion_findings=1`` or
+through the per-file detail endpoint. This keeps dashboard/history payloads small
+as the archive grows.
 """
 
 import json
@@ -73,7 +74,7 @@ def _lightweight_payload(request, include_findings=False):
     client = getattr(request.user, "client", None)
 
     # Large text/JSON columns are never needed to render the history table.
-    # Findings are hydrated separately below only for rows with active holds.
+    # Findings are hydrated separately below only when explicitly requested.
     deferred_fields = [
         "input_file_content",
         "conversion_findings",
@@ -104,13 +105,14 @@ def _lightweight_payload(request, include_findings=False):
     for record in records:
         mir_record = getattr(record, "mir_file", None)
         held_count = record.held_claims_count or 0
+        mir_filename = mir_record.mir_filename if mir_record and mir_record.mir_filename else ""
         item = {
             "id": str(record.id),
             "client_id": str(record.client_id) if record.client_id else None,
             "client_name": record.client.name if record.client else "Global System Default",
             "original_filename": record.original_filename,
             "stored_filename": record.stored_filename,
-            "mir_filename": mir_record.mir_filename if mir_record and mir_record.mir_filename else "",
+            "mir_filename": mir_filename,
             "status": record.status,
             "claims_count": record.claims_count,
             "services_count": record.services_count,
@@ -121,7 +123,13 @@ def _lightweight_payload(request, include_findings=False):
             "processing_started_at": record.processing_started_at.isoformat() if record.processing_started_at else None,
             "processing_completed_at": record.processing_completed_at.isoformat() if record.processing_completed_at else None,
             "input_path": record.input_path,
-            "output_path": record.output_path,
+            # The Conversions table historically uses output_path to decide
+            # whether to render its MIR download action. Some successful rows
+            # have a canonical MIRFile but no filesystem output_path (for
+            # example after SFTP/archive movement). Keep the summary small but
+            # expose the canonical MIR filename as a safe fallback so those
+            # already-generated MIRs remain downloadable by file_id.
+            "output_path": record.output_path or mir_filename,
             "archive_path": record.archive_path,
             "error_message": record.error_message,
             "validated": record.status != "ERROR",
@@ -151,12 +159,12 @@ def _lightweight_payload(request, include_findings=False):
 
 
 def tracked_files_list_eastern(request):
-    include_findings = _is_truthy(request.GET.get("include_conversion_findings", "1"))
+    include_findings = _is_truthy(request.GET.get("include_conversion_findings", "0"))
     authenticated = bool(getattr(request.user, "is_authenticated", False))
 
     # Normal portal requests must never wait for filesystem reconciliation.
     # Full sync remains available as an explicit maintenance/reconciliation
-    # operation instead of being injected into every fifteenth-second poll.
+    # operation instead of being injected into dashboard refreshes.
     if authenticated and not _is_truthy(request.GET.get("full_sync")):
         payload = _lightweight_payload(request, include_findings=include_findings)
         status_code = 200
