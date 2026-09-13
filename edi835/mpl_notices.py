@@ -840,35 +840,61 @@ def call_local_model(notice, claim, timeline, findings, actions):
         claim.claim_control_number,
     )
     issue_rules = reported_issue_rules(email_context)
+    duplicate_findings = [
+        item for item in findings
+        if "DUPLICATE" in str(item.get("code") or "").upper()
+    ]
+    hold_findings = [
+        item for item in findings
+        if "HOLD" in f"{item.get('code', '')} {item.get('description', '')}".upper()
+        or str(item.get("severity") or "").upper() in {"HOLD", "REFUSE"}
+    ]
     evidence = {
         "claim_number": claim.claim_control_number,
+        "highmark_claim_number": claim.highmark_claim_number,
+        "internal_claim_number": claim.internal_claim_number or claim.reference_9c,
+        "member_id": claim.member_id,
+        "service_dates": {
+            "from": str(claim.service_from_date or ""),
+            "to": str(claim.service_to_date or ""),
+        },
+        "total_charge": str(claim.total_charge_amount),
+        "service_line_count": claim.service_count,
         "email_report": {
-            "text": re.sub(r"\\s+", " ", email_context).strip()[:700],
+            "text": re.sub(r"\\s+", " ", email_context).strip()[:2000],
             "issue_codes": list(issue_rules),
             "approved_issue_rules": issue_rules,
             "authoritative_check_rules": authoritative_rule_catalog(issue_rules),
             "unknown_codes": unknown_reported_codes(email_context),
         },
-        "source_timeline": timeline[-4:],
-        "verified_findings": findings[:5],
+        "complete_source_timeline": timeline[:30],
+        "verified_findings": findings[:30],
+        "duplicate_evidence": duplicate_findings,
+        "hold_evidence": hold_findings,
         "approved_actions": [
             {"id": f"A{index + 1}", "text": action}
-            for index, action in enumerate(actions[:6])
+            for index, action in enumerate(actions[:10])
         ],
     }
     system_prompt = (
-        "/no_think\nAnalyze one healthcare claim from supplied evidence. Priority: verified findings, "
-        "authoritative check rules, approved email rules, then email wording. Email statements are unverified. "
-        "Never invent facts, code meanings, or actions; disclose unknown codes, unclear items, conflicts, and missing evidence. "
-        "Use approved action IDs only. Never guarantee approval. Return JSON keys: summary, reported_issue, "
-        "verified_evidence, missing_evidence, unknown_codes, unclear_items, primary_issue_code, needs_response, "
-        "recommended_actions, confidence, requires_human_review. Arrays must be arrays; recommended_actions items use "
-        "action_id and reason; confidence is 0..1; requires_human_review is true."
+        "/no_think\nYou are reviewing exactly one healthcare claim. Produce a detailed, claim-specific AI response "
+        "using only the supplied database and archived-file evidence. The summary must be a clear operational report "
+        "that includes: (1) the Highmark and internal claim numbers; (2) every reported or verified issue with its exact "
+        "issue ID/code; (3) what each issue means, but only when an approved rule supplies that meaning; (4) the complete "
+        "chronological 837, 835, MIR, and RECON history supplied, including filenames, dates, and statuses; (5) duplicate "
+        "and hold findings with their evidence, or explicitly state that no evidence was found; (6) a claim-wise root-cause "
+        "analysis separating verified facts from unverified email statements; and (7) numbered corrective steps drawn only "
+        "from approved_actions, citing their action IDs. Do not give generic advice. Do not omit an issue or timeline event. "
+        "Never invent facts, code meanings, history, or corrective actions. Clearly disclose unknown codes, conflicts, and "
+        "missing evidence. Never guarantee payer approval. Return JSON keys: summary, reported_issue, verified_evidence, "
+        "missing_evidence, unknown_codes, unclear_items, primary_issue_code, needs_response, recommended_actions, confidence, "
+        "requires_human_review. summary must contain the complete readable response. Arrays must be arrays; "
+        "recommended_actions items use action_id and reason; confidence is 0..1; requires_human_review is true."
     )
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": 280,
+        "max_tokens": int(os.getenv("MPL_AI_MAX_TOKENS", "1000")),
         "response_format": {"type": "json_object"},
         "messages": [
             {"role": "system", "content": system_prompt},
