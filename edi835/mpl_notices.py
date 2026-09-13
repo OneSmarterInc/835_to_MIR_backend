@@ -450,13 +450,43 @@ def internal_claim_number_from_source(highmark_claim_number, *database_values):
 
 
 
+def _837_claim_matches_highmark(claim, highmark_claim_number):
+    """Strictly prove that this normalized 837 row contains the Highmark claim."""
+    wanted = str(highmark_claim_number or "").strip().upper()
+    if not wanted:
+        return False
+
+    values = (
+        claim.highmark_claim_number,
+        claim.claim_control_number,
+        claim.patient_control_number,
+    )
+    for candidate in values:
+        raw = str(candidate or "").strip()
+        if not raw:
+            continue
+        parsed = split_claim_number(raw)
+        normalized = {
+            raw.upper(),
+            str(parsed.get("highmark_claim_number") or "").strip().upper(),
+        }
+        if wanted in normalized:
+            return True
+
+    # Legacy fixed-width 837 rows may retain HI<Highmark><internal> only in
+    # raw_claim. Digit boundaries prevent matching a substring of another ICN.
+    return bool(re.search(
+        rf"(?<!\\d){re.escape(wanted)}(?!\\d)",
+        str(claim.raw_claim or ""),
+        re.I,
+    ))
+
+
 def internal_claim_number_from_837_claim(claim, highmark_claim_number):
     """Return an internal number only when the same normalized 837 claim proves it."""
     wanted = str(highmark_claim_number or "").strip()
     raw_claim = str(claim.raw_claim or "")
-    split = split_claim_number(claim.claim_control_number)
-    stored_highmark = str(claim.highmark_claim_number or split["highmark_claim_number"] or "").strip()
-    if stored_highmark.upper() != wanted.upper():
+    if not _837_claim_matches_highmark(claim, wanted):
         return ""
 
     ref_9c_values = re.findall(
@@ -550,9 +580,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         )
         for claim_837 in claims_837:
             internal_837 = internal_claim_number_from_837_claim(claim_837, identifier)
-            split_837 = split_claim_number(claim_837.claim_control_number)
-            stored_highmark_837 = claim_837.highmark_claim_number or split_837["highmark_claim_number"]
-            if str(stored_highmark_837 or "").upper() != str(identifier).upper():
+            if not _837_claim_matches_highmark(claim_837, identifier):
                 continue
             source = claim_837.edi_file
             append_source("837", source.id, {
