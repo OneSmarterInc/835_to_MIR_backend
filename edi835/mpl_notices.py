@@ -1199,11 +1199,11 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
 
     contexts = [
         claim_email_context(notice_email_body(notice), identifier)
-        for identifier in identifiers[:4]
+        for identifier in identifiers[:50]
     ]
-    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:900]
+    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:6000]
     if not reported_email:
-        reported_email = clean_email_for_analysis(notice_email_body(notice))[:900]
+        reported_email = clean_email_for_analysis(notice_email_body(notice))[:6000]
 
     compact_matches = [
         {
@@ -1214,7 +1214,7 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                     "category": issue.get("category", ""),
                     "description": str(issue.get("description") or "")[:180],
                 }
-                for issue in item.get("reported_issues", [])[:2]
+                for issue in item.get("reported_issues", [])
             ],
             "sources": [
                 {
@@ -1223,37 +1223,41 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                     "status": source.get("status"),
                     "details": source.get("details"),
                 }
-                for source in item.get("sources", [])[:2]
+                for source in item.get("sources", [])
             ],
         }
-        for item in source_matches[:8]
+        for item in source_matches[:50]
     ]
     model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q8_0")
     evidence = {
         "reported_email": reported_email,
-        "extracted_claim_numbers": identifiers[:12],
+        "extracted_claim_numbers": identifiers[:50],
         "source_matches": compact_matches,
         "unknown_codes": unknown_reported_codes(reported_email),
         "approved_issue_rules": reported_issue_rules(reported_email),
         "authoritative_check_rules": authoritative_rule_catalog(reported_issue_rules(reported_email)),
         "database_result": (
-            "Claim numbers were extracted from the email, but none matched stored 837 claim data. "
-            "MIR, 835, or reconciliation matches may still be listed in source_matches."
+            "Every extracted email claim is included in source_matches. For each claim, sources contains "
+            "the exact stored 837, 835, MIR, and reconciliation matches that were found; an empty sources "
+            "array means no archived match was found."
         ),
     }
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": 220,
+        "max_tokens": int(os.getenv("MPL_AI_MAX_TOKENS", "1800")),
         "response_format": {"type": "json_object"},
         "messages": [
             {
                 "role": "system",
                 "content": (
-                    "/no_think\nUse only supplied evidence. Claims were extracted but did not match stored 837 data. "
-                    "Summarize reported issues, MIR/835/reconciliation matches, unknown codes, unclear statements, "
-                    "and missing evidence. Check rules outrank email wording. Do not invent facts or promise approval. "
-                    "Return JSON only with summary:string and suggestions:string[]. Suggestions are ignored; corrective actions are supplied by the application."
+                    "/no_think\nProduce one complete claim-wise operational response for this MPL email using only "
+                    "the supplied evidence. Include every extracted claim number, even when it has no archived source. "
+                    "For each claim provide: reported issue and exact issue ID/code; verified 837/835/MIR/RECON history "
+                    "with filename, date and status; duplicate and hold evidence; root-cause analysis; missing or conflicting "
+                    "evidence; and approved corrective action. Never infer an unknown code meaning, invent facts, omit a claim, "
+                    "or promise payer approval. Use a clear heading for each claim. Return JSON only with summary:string and "
+                    "suggestions:string[]. Suggestions are ignored; corrective actions are supplied by the application."
                 ),
             },
             {"role": "user", "content": json.dumps(evidence)},
@@ -1402,8 +1406,10 @@ def process_notice(notice_id):
             actions = approved_actions_for_claim(email_context, findings)
             notice.status = "ANALYZING"
             notice.save()
-            ai = call_local_model(notice, link.claim, timeline, findings, actions)
-            confidence = Decimal(str(min(max(float((ai or {}).get("confidence", 0.70 if findings else 0.40)), 0), 1)))
+            # The notice-level AI call below analyzes every email claim in
+            # one request. Avoid one slow model invocation per matched claim.
+            ai = None
+            confidence = Decimal(str(0.70 if findings else 0.40))
             analysis_summary = (ai or {}).get("summary") or fallback_summary(link.claim, findings)
             analysis_model = (ai or {}).get("model_id", "deterministic-fallback")
             MPLClaimAnalysis.objects.update_or_create(notice_claim=link, defaults={
@@ -1430,18 +1436,16 @@ def process_notice(notice_id):
             claim_response_sections.append(f"{identity}\n{analysis_summary}")
             claim_response_sources.append(analysis_model)
 
-        # Restore the original single email-level AI response, while keeping
-        # an explicit claim-wise section for every matched claim.
-        notice.ai_response = "\n\n".join(claim_response_sections)
-        unique_sources = {
-            source for source in claim_response_sources
-            if source and source != "deterministic-fallback"
-        }
-        notice.ai_response_source = (
-            next(iter(unique_sources))
-            if len(unique_sources) == 1 and len(unique_sources) == len(set(claim_response_sources))
-            else ("mixed-ai" if unique_sources else "deterministic-fallback")
+        # Analyze the complete email once so unmatched and matched claims are
+        # all represented, without serial per-claim inference delays.
+        notice_ai = call_unmatched_notice_model(
+            notice,
+            notice.extracted_claim_numbers,
+            notice.source_matches,
         )
+        notice.ai_response = notice_ai["summary"]
+        notice.ai_response_source = notice_ai["source"]
+        notice.ai_suggestions = notice_ai["suggestions"]
         notice.status, notice.processing_completed_at = "COMPLETED", timezone.now()
         notice.save()
     except Exception as exc:
@@ -1477,16 +1481,9 @@ def notice_workflow_status(notice):
 
 
 def serialize_notice(notice, detail=False):
-    # Refresh source matches for the detail popup so its matrix always uses
-    # current normalized database rows, including complete alphanumeric
-    # internal claim numbers. Older notices do not require re-analysis.
+    # Source matching is performed once by the worker and stored on the
+    # notice. Detail polling must stay read-only and inexpensive.
     source_matches = notice.source_matches
-    if detail and notice.extracted_claim_numbers:
-        source_matches = search_claim_sources(
-            notice,
-            notice.extracted_claim_numbers,
-            issue_map=extract_claim_issue_map(notice_email_body(notice)),
-        )
 
     data = {"id": str(notice.id), "client_id": str(notice.client_id), "client_name": notice.client.name, "subject": notice.subject, "sender": notice.sender_text, "received_at": notice.received_at.isoformat() if notice.received_at else None, "period_start": str(notice.reporting_period_start) if notice.reporting_period_start else None, "period_end": str(notice.reporting_period_end) if notice.reporting_period_end else None, "program": notice.program, "notice_type": notice.notice_type, "status": notice.status, "workflow_status": notice_workflow_status(notice), "claim_workflow_statuses": notice.claim_workflow_statuses or {}, "last_error": notice.last_error, "created_at": notice.created_at.isoformat(), "source_filename": notice.source_filename, "source_file_url": f"/edi835/api/mpl-notices/{notice.id}/source-file/" if notice.source_filename else None, "extracted_claim_numbers": notice.extracted_claim_numbers, "source_matches": source_matches, "ai_response": notice.ai_response, "ai_response_source": notice.ai_response_source, "ai_suggestions": notice.ai_suggestions}
     if detail:
