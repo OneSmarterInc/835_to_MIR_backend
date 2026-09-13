@@ -1264,9 +1264,12 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         claim_email_context(notice_email_body(notice), identifier)
         for identifier in identifiers[:50]
     ]
-    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:6000]
+    # The per-claim issue map below already contains the relevant email text.
+    # Keep only a compact excerpt so repeated quoted threads do not consume the
+    # model context before the complete source history is supplied.
+    reported_email = "\n\n".join(dict.fromkeys(item for item in contexts if item))[:2500]
     if not reported_email:
-        reported_email = clean_email_for_analysis(notice_email_body(notice))[:6000]
+        reported_email = clean_email_for_analysis(notice_email_body(notice))[:2500]
 
     compact_matches = [
         {
@@ -1275,15 +1278,17 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
                 {
                     "codes": issue.get("codes", []),
                     "category": issue.get("category", ""),
-                    "description": str(issue.get("description") or "")[:180],
+                    "description": str(issue.get("description") or "")[:120],
                 }
                 for issue in item.get("reported_issues", [])
             ],
             "sources": [
                 {
                     "type": source.get("type"),
-                    "filename": source.get("filename"),
+                    "filename": str(source.get("filename") or "")[:120],
+                    "date": source.get("date"),
                     "status": source.get("status"),
+                    "internal_claim_number": source.get("internal_claim_number"),
                     "details": source.get("details"),
                 }
                 for source in item.get("sources", [])
@@ -1298,12 +1303,8 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         "source_matches": compact_matches,
         "unknown_codes": unknown_reported_codes(reported_email),
         "approved_issue_rules": reported_issue_rules(reported_email),
-        "authoritative_check_rules": authoritative_rule_catalog(reported_issue_rules(reported_email)),
-        "database_result": (
-            "Every extracted email claim is included in source_matches. For each claim, sources contains "
-            "the exact stored 837, 835, MIR, and reconciliation matches that were found; an empty sources "
-            "array means no archived match was found."
-        ),
+        "approved_actions": approved_suggestions,
+        "evidence_note": "Each claim is present; an empty sources array means no archived match.",
     }
     payload = json.dumps({
         "model": model_id,
@@ -1314,16 +1315,14 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
             {
                 "role": "system",
                 "content": (
-                    "/no_think\nProduce one complete claim-wise operational response for this MPL email using only "
-                    "the supplied evidence. Include every extracted claim number, even when it has no archived source. "
-                    "For each claim provide: reported issue and exact issue ID/code; verified 837/835/MIR/RECON history "
-                    "with filename, date and status; duplicate and hold evidence; root-cause analysis; missing or conflicting "
-                    "evidence; and approved corrective action. Never infer an unknown code meaning, invent facts, omit a claim, "
-                    "or promise payer approval. Use a clear heading for each claim. Return JSON only with summary:string and "
-                    "suggestions:string[]. Suggestions are ignored; corrective actions are supplied by the application."
+                    "/no_think\nUsing only this evidence, return JSON {summary:string,suggestions:string[]}. "
+                    "In summary include every claim under its own heading. For each give: issue IDs and meaning when supplied; "
+                    "all 837/835/MIR/RECON history with filename, date and status; duplicate/hold evidence; root cause; missing "
+                    "or conflicting evidence; and numbered steps limited to approved_actions. Do not invent, omit claims or "
+                    "history, define unknown codes, or guarantee approval."
                 ),
             },
-            {"role": "user", "content": json.dumps(evidence)},
+            {"role": "user", "content": json.dumps(evidence, separators=(",", ":"))},
         ],
     }).encode()
     headers = {"Content-Type": "application/json"}
