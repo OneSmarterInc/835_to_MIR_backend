@@ -91,6 +91,7 @@ urlpatterns = [
     path("api/mpl-files/<str:file_type>/<uuid:file_id>/download/", mpl_related_file, name="mpl_related_file"),
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/review/", mpl_analysis_review, name="mpl_analysis_review"),
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/workflow-status/", mpl_claim_workflow_status, name="mpl_claim_workflow_status"),
+    path("api/mpl-notices/<uuid:notice_id>/claims/workflow-status/", mpl_claim_workflow_status, name="mpl_notice_claim_workflow_status"),
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
     path("api/tracked-files/<uuid:file_id>/details/", tracked_file_details, name="edi835_tracked_file_details"),
