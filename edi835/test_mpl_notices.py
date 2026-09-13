@@ -361,6 +361,9 @@ class MPLNoticeAPITests(TestCase):
         self.assertIn("MIR_CLAIM_MISSING", codes)
         self.assertIn("NO_PREFIX_NOTICE", codes)
         self.assertEqual(link.analysis.model_id, "deterministic-fallback")
+        self.assertIn("Claim CLM12345", notice.ai_response)
+        self.assertIn(link.analysis.summary, notice.ai_response)
+        self.assertEqual(notice.ai_response_source, "deterministic-fallback")
 
     def test_unmatched_email_claims_remain_visible(self):
         notice = MPLNotice.objects.create(
