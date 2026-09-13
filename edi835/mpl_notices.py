@@ -12,6 +12,7 @@ from urllib.request import Request, urlopen
 from django.db.models import Q
 from django.utils import timezone
 
+from .claim_numbers import split_claim_number
 from .models import EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
 from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
 
@@ -448,6 +449,53 @@ def internal_claim_number_from_source(highmark_claim_number, *database_values):
     return ""
 
 
+
+def internal_claim_number_from_837_claim(claim, highmark_claim_number):
+    """Return an internal number only when the same normalized 837 claim proves it."""
+    wanted = str(highmark_claim_number or "").strip()
+    raw_claim = str(claim.raw_claim or "")
+    split = split_claim_number(claim.claim_control_number)
+    stored_highmark = str(claim.highmark_claim_number or split["highmark_claim_number"] or "").strip()
+    if stored_highmark.upper() != wanted.upper():
+        return ""
+
+    ref_9c_values = re.findall(
+        r"(?:^|[~\r\n])REF\*9C\*([^*~\r\n]+)",
+        raw_claim,
+        flags=re.I,
+    )
+    candidates = [
+        claim.reference_9c,
+        claim.internal_claim_number,
+        *ref_9c_values,
+    ]
+    for candidate in candidates:
+        value = str(candidate or "").strip()
+        if not value:
+            continue
+        # Database values must also be present in this exact archived claim.
+        if raw_claim and value.upper() not in raw_claim.upper():
+            continue
+        internal = internal_claim_number_from_source(wanted, value)
+        if internal:
+            return internal
+
+    # REF*9C is optional. In that case only the suffix of this claim's own
+    # CLM01 is valid; never borrow an identifier from another claim or file.
+    clm_values = re.findall(
+        r"(?:^|[~\r\n])CLM\*([^*~\r\n]+)",
+        raw_claim,
+        flags=re.I,
+    )
+    for clm01 in clm_values or [claim.claim_control_number]:
+        clm_split = split_claim_number(clm01)
+        if (
+            str(clm_split["highmark_claim_number"] or "").upper() == wanted.upper()
+            and clm_split["internal_claim_number"]
+        ):
+            return clm_split["internal_claim_number"]
+    return ""
+
 def search_claim_sources(notice, identifiers, issue_map=None):
     """Find every archived source containing each extracted claim identifier.
 
@@ -487,16 +535,15 @@ def search_claim_sources(notice, identifiers, issue_map=None):
             .order_by("-edi_file__uploaded_at", "-id")[:3]
         )
         for claim_837 in claims_837:
+            internal_837 = internal_claim_number_from_837_claim(claim_837, identifier)
+            split_837 = split_claim_number(claim_837.claim_control_number)
+            stored_highmark_837 = claim_837.highmark_claim_number or split_837["highmark_claim_number"]
+            if str(stored_highmark_837 or "").upper() != str(identifier).upper():
+                continue
             source = claim_837.edi_file
             append_source("837", source.id, {
                 "type": "837",
-                "internal_claim_number": internal_claim_number_from_source(
-                    identifier,
-                    claim_837.internal_claim_number,
-                    claim_837.raw_claim,
-                    claim_837.reference_9c,
-                    claim_837.claim_control_number,
-                ),
+                "internal_claim_number": internal_837,
                 "filename": source.original_filename,
                 "status": source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
