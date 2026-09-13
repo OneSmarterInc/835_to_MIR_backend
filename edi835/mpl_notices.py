@@ -719,30 +719,52 @@ def match_claims(notice):
     identifiers = extract_claim_identifiers(
         f"{notice.subject}\n{notice_email_body(notice)}",
         notice.requested_claim_numbers,
+    )[:50]
+    if not identifiers:
+        return []
+
+    # Fetch candidates once. The previous implementation issued one ordered
+    # query per claim after source matching had already queried the same table.
+    query = (
+        Q(claim_control_number__in=identifiers)
+        | Q(highmark_claim_number__in=identifiers)
+        | Q(internal_claim_number__in=identifiers)
+        | Q(reference_9c__in=identifiers)
+        | Q(patient_control_number__in=identifiers)
     )
+    for identifier in identifiers:
+        query |= Q(claim_control_number__startswith=identifier)
+        query |= Q(highmark_claim_number__startswith=identifier)
+
+    candidates = list(
+        EDI837Claim.objects.filter(client=notice.client)
+        .filter(query)
+        .select_related("edi_file")
+        .order_by("-edi_file__uploaded_at", "-id")[:1000]
+    )
+
     matches = []
     seen = set()
-    for identifier in identifiers[:50]:
-        claim = (
-            EDI837Claim.objects.filter(client=notice.client)
-            .filter(
-                Q(claim_control_number=identifier)
-                | Q(claim_control_number__startswith=identifier)
-                | Q(highmark_claim_number=identifier)
-                | Q(highmark_claim_number__startswith=identifier)
-                | Q(internal_claim_number=identifier)
-                | Q(reference_9c=identifier)
-                | Q(patient_control_number=identifier)
-            )
-            .select_related("edi_file")
-            .order_by("-edi_file__uploaded_at", "-id")
-            .first()
-        )
-        if claim and claim.id not in seen:
-            seen.add(claim.id)
-            matches.append(claim)
+    for identifier in identifiers:
+        wanted = str(identifier).upper()
+        for claim in candidates:
+            exact_values = {
+                str(getattr(claim, field, "") or "").strip().upper()
+                for field in (
+                    "highmark_claim_number",
+                    "internal_claim_number",
+                    "reference_9c",
+                    "patient_control_number",
+                )
+            }
+            claim_control = str(claim.claim_control_number or "").strip().upper()
+            if wanted not in exact_values and not claim_control.startswith(wanted):
+                continue
+            if claim.id not in seen:
+                seen.add(claim.id)
+                matches.append(claim)
+            break
     return matches
-
 
 def _finding(code, severity, description, evidence, details=None):
     finding = {"code": code, "severity": severity, "description": description, "evidence": evidence}
