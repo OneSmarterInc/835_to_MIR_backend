@@ -51,7 +51,9 @@ class DuplicateHoldWindowTests(TestCase):
         MIRClaim.objects.create(
             mir_file=mir_file,
             claim_sequence=1,
-            claim_control_number=f"{claim_number}REF001",
+            # Production MIR storage keeps CLP01/MIR100 as a fixed-width
+            # 17-character portion before the six-character cross-reference.
+            claim_control_number=f"{claim_number:<17}REF001",
             header_raw=" " * 334,
         )
         return mir_file
@@ -77,6 +79,38 @@ class DuplicateHoldWindowTests(TestCase):
             recent_sent_claim_history(self.client, {"CLAIM100"}, now=at_deadline),
             {},
         )
+
+    def test_resolved_claim_reappearing_before_deadline_still_counts_as_duplicate(self):
+        resolved_source = EDI835File.objects.create(
+            client=self.client,
+            original_filename="BADCO001-original.835",
+            stored_filename="BADCO001-original.835",
+            status="ARCHIVED",
+            held_claims_count=0,
+            conversion_findings=[{
+                "rule_code": "CO_EXCEEDS_CHARGE",
+                "severity": "INFO",
+                "claim_index": "1",
+                "claim_number": "BADCO001",
+                "hold_resolution_status": "RESOLVED",
+                "hold_resolved_mir_filename": "BADCO001-corrected.MIR",
+            }],
+        )
+        self.assertIsNotNone(resolved_source.id)
+
+        sent_at = datetime(2026, 9, 13, 11, 0, tzinfo=dt_timezone.utc)
+        self._sent_claim("BADCO001", sent_at)
+
+        before_deadline = datetime(2026, 9, 14, 12, 0, tzinfo=dt_timezone.utc)
+        history = recent_sent_claim_history(
+            self.client,
+            {"BADCO001"},
+            now=before_deadline,
+        )
+
+        self.assertIn("BADCO001", history)
+        self.assertEqual(history["BADCO001"]["previous_sent_at"], sent_at)
+        self.assertGreater(history["BADCO001"]["eligible_send_at"], before_deadline)
 
     def test_530_pm_eastern_is_dst_aware(self):
         winter_sent_at = datetime(2026, 1, 1, 15, 0, tzinfo=dt_timezone.utc)
