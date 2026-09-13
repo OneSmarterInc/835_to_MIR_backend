@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone as dt_timezone
 from zoneinfo import ZoneInfo
 
 from django.db import transaction
-from django.db.models.functions import Left
+from django.db.models.functions import Left, Trim
 from django.utils import timezone
 
 
@@ -66,12 +66,13 @@ def recent_sent_claim_history(client, claim_numbers, now=None) -> dict[str, dict
 
     now = now or timezone.now()
     cutoff = now - DUPLICATE_HISTORY_LOOKBACK
-    # MIRClaim stores claim_control_number as CLP01+CLP07. Filter the first 17
-    # characters in PostgreSQL instead of streaming every recently pushed claim
-    # through Python. This keeps 1,000+ claim conversions fast as history grows.
+    # MIRClaim stores a fixed-width 17-character CLP01/MIR100 portion followed
+    # by the CLP07 cross-reference. Trim that fixed-width portion in SQL before
+    # matching incoming CLP01 values so short/resolved claim numbers still
+    # participate in the four-day duplicate hold.
     rows = (
         MIRClaim.objects.select_related("mir_file")
-        .annotate(claim_number_key=Left("claim_control_number", 17))
+        .annotate(claim_number_key=Trim(Left("claim_control_number", 17)))
         .filter(
             mir_file__client=client,
             mir_file__status="PUSHED",
