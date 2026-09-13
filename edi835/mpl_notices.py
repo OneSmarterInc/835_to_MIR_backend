@@ -587,17 +587,13 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         claims_837 = (
             EDI837Claim.objects.filter(client=notice.client)
             .filter(
-                Q(claim_control_number__iexact=identifier)
-                | Q(claim_control_number__istartswith=identifier)
-                | Q(highmark_claim_number__iexact=identifier)
-                | Q(highmark_claim_number__istartswith=identifier)
-                | Q(internal_claim_number__iexact=identifier)
-                | Q(internal_claim_number__istartswith=identifier)
-                | Q(reference_9c__iexact=identifier)
-                | Q(reference_9c__istartswith=identifier)
-                | Q(patient_control_number__iexact=identifier)
-                | Q(patient_control_number__istartswith=identifier)
-                | Q(raw_claim__contains=identifier)
+                Q(claim_control_number=identifier)
+                | Q(claim_control_number__startswith=identifier)
+                | Q(highmark_claim_number=identifier)
+                | Q(highmark_claim_number__startswith=identifier)
+                | Q(internal_claim_number=identifier)
+                | Q(reference_9c=identifier)
+                | Q(patient_control_number=identifier)
             )
             .select_related("edi_file")
             .order_by("-edi_file__uploaded_at", "-id")[:200]
@@ -624,9 +620,8 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         mir_claims = (
             MIRClaim.objects.filter(mir_file__client=notice.client)
             .filter(
-                Q(claim_control_number__iexact=identifier)
-                | Q(claim_control_number__istartswith=identifier)
-                | Q(header_raw__contains=identifier)
+                Q(claim_control_number=identifier)
+                | Q(claim_control_number__startswith=identifier)
             )
             .select_related("mir_file")
             .order_by("-mir_file__converted_at", "-id")[:3]
@@ -677,11 +672,10 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         recon_claims = (
             RECONClaim.objects.filter(client=notice.client)
             .filter(
-                Q(claim_control_number__iexact=identifier)
-                | Q(claim_control_number__istartswith=identifier)
-                | Q(patient_control_number__iexact=identifier)
-                | Q(patient_control_number__istartswith=identifier)
-                | Q(raw_record__contains=identifier)
+                Q(claim_control_number=identifier)
+                | Q(claim_control_number__startswith=identifier)
+                | Q(patient_control_number=identifier)
+                | Q(patient_control_number__startswith=identifier)
             )
             .select_related("recon_file")
             .order_by("-recon_file__uploaded_at", "-id")[:3]
@@ -732,17 +726,13 @@ def match_claims(notice):
         claim = (
             EDI837Claim.objects.filter(client=notice.client)
             .filter(
-                Q(claim_control_number__iexact=identifier)
-                | Q(claim_control_number__istartswith=identifier)
-                | Q(highmark_claim_number__iexact=identifier)
-                | Q(highmark_claim_number__istartswith=identifier)
-                | Q(internal_claim_number__iexact=identifier)
-                | Q(internal_claim_number__istartswith=identifier)
-                | Q(reference_9c__iexact=identifier)
-                | Q(reference_9c__istartswith=identifier)
-                | Q(patient_control_number__iexact=identifier)
-                | Q(patient_control_number__istartswith=identifier)
-                | Q(raw_claim__contains=identifier)
+                Q(claim_control_number=identifier)
+                | Q(claim_control_number__startswith=identifier)
+                | Q(highmark_claim_number=identifier)
+                | Q(highmark_claim_number__startswith=identifier)
+                | Q(internal_claim_number=identifier)
+                | Q(reference_9c=identifier)
+                | Q(patient_control_number=identifier)
             )
             .select_related("edi_file")
             .order_by("-edi_file__uploaded_at", "-id")
