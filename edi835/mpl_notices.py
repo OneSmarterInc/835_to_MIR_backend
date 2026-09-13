@@ -1199,7 +1199,7 @@ def claim_summary(link):
         "member_id": ("*" * max(len(claim.member_id) - 4, 0) + claim.member_id[-4:]) if claim.member_id else "",
         "service_from_date": claim.service_from_date, "service_to_date": claim.service_to_date,
         "total_charge": str(claim.total_charge_amount), "matching_method": link.matching_method,
-        "matching_confidence": float(link.matching_confidence), "confirmed": link.confirmed_by_user, "analysis": None,
+        "matching_confidence": float(link.matching_confidence), "confirmed": link.confirmed_by_user, "workflow_status": link.workflow_status, "analysis": None,
     }
     if analysis:
         data["analysis"] = {"summary": analysis.summary, "primary_issue_code": analysis.primary_issue_code, "needs_response": analysis.needs_response, "confidence": float(analysis.confidence), "timeline": analysis.timeline, "findings": analysis.findings, "recommended_actions": analysis.recommended_actions, "related_files": analysis.related_files, "review_status": analysis.review_status, "model_id": analysis.model_id, "unknown_codes": (analysis.raw_model_output or {}).get("unknown_codes", []), "unclear_items": (analysis.raw_model_output or {}).get("unclear_items", []), "missing_evidence": (analysis.raw_model_output or {}).get("missing_evidence", [])}
