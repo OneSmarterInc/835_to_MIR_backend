@@ -13,6 +13,7 @@ from django.utils import timezone
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .edi837_transfer import _normalize_folder, _open_sftp
 from .file_types import has_valid_file_extension
+from .mir_persistence import set_mir_push_status
 from .models import EDI835File, EDI837File, MIRFile
 from .services import process_multiple_edi835_files, validate_835_content
 from .storage import archive_inbound, client_storage_dirs, relative_media_path, remove_delivered_outbound, stage_inbound
@@ -147,7 +148,11 @@ def push_local_outbound(client, kind):
                 if kind == "837":
                     EDI837File.objects.filter(client=client, outbound_path__endswith=local_path.name).update(outbound_path=target)
                 else:
-                    MIRFile.objects.filter(client=client, mir_filename=local_path.name).update(status="PUSHED", updated_at=timezone.now())
+                    mir_file = MIRFile.objects.filter(client=client, mir_filename=local_path.name).first()
+                    if mir_file is not None:
+                        # Use the authoritative PUSHED transition so corrected
+                        # claims immediately resolve older non-duplicate holds.
+                        set_mir_push_status(mir_file, True)
             except Exception as exc:
                 try: sftp.remove(temporary)
                 except Exception: pass

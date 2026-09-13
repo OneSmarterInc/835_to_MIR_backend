@@ -194,11 +194,14 @@ def set_mir_push_status(mir_file: MIRFile, pushed: bool) -> None:
     mir_file.status = "PUSHED" if pushed else "PUSH_FAILED"
     mir_file.save(update_fields=["status", "updated_at"])
     if pushed:
-        # Successful SFTP delivery is the clock start for the four-day
-        # duplicate window. Keep this hook next to the authoritative PUSHED
-        # transition so manual, batch, and automatic sends all behave alike.
+        # Successful SFTP delivery is the authoritative point for both the
+        # duplicate window and resolution of older corrected non-duplicate holds.
+        # Keeping both hooks here makes manual, batch and automated sends agree.
         from .held_claims import note_mir_sent
+        from .long_hold_alerts import mark_nonduplicate_holds_resolved_by_push
+
         note_mir_sent(mir_file)
+        mark_nonduplicate_holds_resolved_by_push(mir_file)
 
         # Held-release emails are operational notifications only. Once SFTP has
         # succeeded, an SMTP problem must never turn the delivered MIR back into
