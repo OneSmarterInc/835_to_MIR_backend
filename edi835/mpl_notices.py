@@ -994,8 +994,12 @@ def _qwen_chat_completion(base_url, payload, headers):
                 return json.loads(response.read().decode("utf-8"))
         except HTTPError as exc:
             error_body = exc.read().decode("utf-8", errors="replace")[:1000]
-            if exc.code == 400 and index + 1 < len(attempts):
-                logger.info("Qwen rejected response_format; retrying compatible request: %s", error_body)
+            context_overflow = any(
+                marker in error_body.lower()
+                for marker in ("exceed_context_size", "context size", "context length")
+            )
+            if exc.code == 400 and index + 1 < len(attempts) and not context_overflow:
+                logger.info("Qwen rejected the primary request; retrying without response_format: %s", error_body)
                 continue
             raise ValueError(f"Qwen HTTP {exc.code}: {error_body or exc.reason}") from exc
 
