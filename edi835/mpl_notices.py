@@ -229,9 +229,21 @@ def extract_claim_identifiers(text, supplied=None):
     for value in supplied or []:
         add(value, allow_alphanumeric=True)
 
-    body = str(text or "").replace("\u00a0", " ")
+    body = (
+        str(text or "")
+        .replace("\u00a0", " ")
+        .replace("\u200b", "")
+        .replace("\u200c", "")
+        .replace("\u200d", "")
+        .replace("\ufeff", "")
+    )
     for value in re.findall(r"(?<!\d)(\d{15,25})(?!\d)", body):
         add(value)
+    # Outlook/IRM table extraction can insert non-breaking spaces between
+    # groups of digits. Join only NBSP-separated numeric groups whose final
+    # length is claim-sized; ordinary prose whitespace remains untouched.
+    for grouped in re.findall(r"(?<!\d)(?:\d+[\u202f\u2007])+\d+(?!\d)", str(text or "")):
+        add(re.sub(r"[\u202f\u2007]", "", grouped))
     for value in re.findall(
         r"\bclaim(?:\s+(?:number|id))?\s*(?:#|:|-)?\s*([A-Z0-9][A-Z0-9_-]{4,99})",
         body,
@@ -1319,11 +1331,12 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
             {
                 "role": "system",
                 "content": (
-                    "/no_think\nUsing only this evidence, return JSON {summary:string,suggestions:string[]}. "
-                    "In summary include every claim under its own heading. For each give: issue IDs and meaning when supplied; "
-                    "all 837/835/MIR/RECON history with filename, date and status; duplicate/hold evidence; root cause; missing "
-                    "or conflicting evidence; and numbered steps limited to approved_actions. Do not invent, omit claims or "
-                    "history, define unknown codes, or guarantee approval."
+                    "/no_think\nReturn JSON {summary:string,suggestions:string[]} using only the evidence. "
+                    "Do not write an email-level overview. Repeat this exact block for EVERY extracted claim: "
+                    "CLAIM <number>; ISSUES <IDs, evidence, meaning if supplied>; HISTORY <every source filename/date/status>; "
+                    "DUPLICATE AND HOLD <evidence or none>; ROOT CAUSE <verified facts versus reported statements>; "
+                    "MISSING OR CONFLICTING EVIDENCE; RESOLUTION <numbered steps from approved_actions only>. "
+                    "Never omit a claim/history item, invent facts, define unknown codes, or guarantee approval."
                 ),
             },
             {"role": "user", "content": json.dumps(evidence, separators=(",", ":"))},
@@ -1336,10 +1349,29 @@ def call_unmatched_notice_model(notice, identifiers, source_matches):
         outer = _qwen_chat_completion(base_url, payload, headers)
         result = parse_model_json(outer["choices"][0]["message"]["content"])
         summary = str(result.get("summary") or "").strip()
-        if not summary or (
-            identifiers
-            and re.search(r"\b(?:email contains|contains) no claim data\b", summary, re.I)
+        required_sections = ("issues", "history", "duplicate", "hold", "root cause", "resolution")
+        missing_claims = [
+            identifier for identifier in identifiers
+            if str(identifier).lower() not in summary.lower()
+        ]
+        missing_sections = [
+            section for section in required_sections
+            if section not in summary.lower()
+        ]
+        if (
+            not summary
+            or missing_claims
+            or missing_sections
+            or (
+                identifiers
+                and re.search(r"\b(?:email contains|contains) no claim data\b", summary, re.I)
+            )
         ):
+            logger.warning(
+                "Qwen response rejected: missing claims=%s, missing sections=%s",
+                missing_claims,
+                missing_sections,
+            )
             return fallback
 
         return {
