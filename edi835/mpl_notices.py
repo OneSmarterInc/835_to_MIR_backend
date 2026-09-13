@@ -488,7 +488,7 @@ def _837_claim_matches_highmark(claim, highmark_claim_number):
     # Legacy fixed-width 837 rows may retain HI<Highmark><internal> only in
     # raw_claim. Digit boundaries prevent matching a substring of another ICN.
     return bool(re.search(
-        rf"(?<!\\d){re.escape(wanted)}(?!\\d)",
+        rf"(?<!\d){re.escape(wanted)}(?!\d)",
         str(claim.raw_claim or ""),
         re.I,
     ))
@@ -528,6 +528,18 @@ def internal_claim_number_from_837_claim(claim, highmark_claim_number):
     raw_internal = internal_claim_number_from_source(wanted, raw_claim)
     if raw_internal:
         return raw_internal
+
+    # Some fixed-width exports separate the Highmark and internal values with
+    # spaces or a field delimiter rather than storing them adjacently.
+    separated = re.search(
+        rf"(?:HI)?{re.escape(wanted)}[ |:*^-]+([A-Z0-9_-]{{5,20}})",
+        raw_claim,
+        re.I,
+    )
+    if separated:
+        candidate = separated.group(1).strip()
+        if re.search(r"[A-Z]", candidate, re.I) and re.search(r"\d", candidate):
+            return candidate
 
     # REF*9C is optional. In that case only the suffix of this claim's own
     # CLM01 is valid; never borrow an identifier from another claim or file.
