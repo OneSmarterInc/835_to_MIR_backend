@@ -946,7 +946,7 @@ def parse_model_json(content):
 
 def local_ai_enabled():
     """AI is opt-in so CPU inference cannot slow the production web server."""
-    return os.getenv("MPL_AI_ENABLED", "false").strip().lower() in {
+    return os.getenv("MPL_AI_ENABLED", "true").strip().lower() in {
         "1", "true", "yes", "on",
     }
 
@@ -1360,6 +1360,8 @@ def process_notice(notice_id):
             ]
         notice.status = "COLLECTING_EVIDENCE"
         notice.save()
+        claim_response_sections = []
+        claim_response_sources = []
         for link in links:
             timeline, files, findings = collect_evidence(link.claim)
             email_context = claim_email_context(notice_email_body(notice), link.claim.claim_control_number)
@@ -1402,14 +1404,44 @@ def process_notice(notice_id):
             notice.save()
             ai = call_local_model(notice, link.claim, timeline, findings, actions)
             confidence = Decimal(str(min(max(float((ai or {}).get("confidence", 0.70 if findings else 0.40)), 0), 1)))
+            analysis_summary = (ai or {}).get("summary") or fallback_summary(link.claim, findings)
+            analysis_model = (ai or {}).get("model_id", "deterministic-fallback")
             MPLClaimAnalysis.objects.update_or_create(notice_claim=link, defaults={
-                "model_id": (ai or {}).get("model_id", "deterministic-fallback"), "timeline": timeline,
+                "model_id": analysis_model, "timeline": timeline,
                 "findings": findings, "recommended_actions": (ai or {}).get("recommended_actions") or actions, "related_files": files,
-                "summary": (ai or {}).get("summary") or fallback_summary(link.claim, findings),
+                "summary": analysis_summary,
                 "primary_issue_code": (ai or {}).get("primary_issue_code") or (findings[0]["code"] if findings else ""),
                 "needs_response": bool((ai or {}).get("needs_response", notice.notice_type != "ACKNOWLEDGEMENT")),
                 "confidence": confidence, "raw_model_output": ai or {},
             })
+            highmark = (
+                link.claim.highmark_claim_number
+                or split_claim_number(link.claim.claim_control_number)["highmark_claim_number"]
+                or link.claim.claim_control_number
+            )
+            internal = (
+                link.claim.internal_claim_number
+                or link.claim.reference_9c
+                or split_claim_number(link.claim.claim_control_number)["internal_claim_number"]
+            )
+            identity = f"Claim {highmark}"
+            if internal:
+                identity += f" · Internal {internal}"
+            claim_response_sections.append(f"{identity}\n{analysis_summary}")
+            claim_response_sources.append(analysis_model)
+
+        # Restore the original single email-level AI response, while keeping
+        # an explicit claim-wise section for every matched claim.
+        notice.ai_response = "\n\n".join(claim_response_sections)
+        unique_sources = {
+            source for source in claim_response_sources
+            if source and source != "deterministic-fallback"
+        }
+        notice.ai_response_source = (
+            next(iter(unique_sources))
+            if len(unique_sources) == 1 and len(unique_sources) == len(set(claim_response_sources))
+            else ("mixed-ai" if unique_sources else "deterministic-fallback")
+        )
         notice.status, notice.processing_completed_at = "COMPLETED", timezone.now()
         notice.save()
     except Exception as exc:
