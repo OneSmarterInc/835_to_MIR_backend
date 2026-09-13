@@ -711,6 +711,7 @@ class MPLNotice(models.Model):
     requested_claim_numbers = models.JSONField(default=list, blank=True)
     extracted_claim_numbers = models.JSONField(default=list, blank=True)
     source_matches = models.JSONField(default=list, blank=True)
+    claim_workflow_statuses = models.JSONField(default=dict, blank=True)
     ai_response = models.TextField(blank=True, default="")
     ai_response_source = models.CharField(max_length=80, blank=True, default="")
     ai_suggestions = models.JSONField(default=list, blank=True)
