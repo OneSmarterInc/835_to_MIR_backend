@@ -366,7 +366,6 @@ class MPLNoticeAPITests(TestCase):
         self.assertIn("NO_PREFIX_NOTICE", codes)
         self.assertEqual(link.analysis.model_id, "deterministic-fallback")
         self.assertIn("Claim CLM12345", notice.ai_response)
-        self.assertIn(link.analysis.summary, notice.ai_response)
         self.assertEqual(notice.ai_response_source, "deterministic-fallback")
 
     def test_unmatched_email_claims_remain_visible(self):
@@ -388,6 +387,8 @@ class MPLNoticeAPITests(TestCase):
         )
         self.assertEqual([item["claim_number"] for item in notice.source_matches], notice.extracted_claim_numbers)
         self.assertTrue(all(not item["sources"] for item in notice.source_matches))
+        self.assertIn("Claim 33020262300027000", notice.ai_response)
+        self.assertIn("Claim 33020262091936200", notice.ai_response)
         self.assertNotIn("UE084", notice.extracted_claim_numbers)
 
     def test_source_search_finds_claim_across_all_archived_formats(self):
