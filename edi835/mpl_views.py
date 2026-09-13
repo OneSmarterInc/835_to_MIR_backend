@@ -179,7 +179,18 @@ def _client_for_request(request, requested_id=None):
 @require_http_methods(["GET", "POST"])
 def mpl_notices(request):
     if request.method == "GET":
-        queryset = scope_client_queryset(MPLNotice.objects.select_related("client"), request.user)
+        # Inbox rows need metadata only. Do not read large email bodies or
+        # Outlook attachment binaries before the list can render.
+        queryset = scope_client_queryset(
+            MPLNotice.objects.select_related("client").defer(
+                "source_file",
+                "raw_email_body",
+                "normalized_email",
+                "latest_message_body",
+                "quoted_email_history",
+            ),
+            request.user,
+        ).order_by("-received_at", "-created_at")
         client_id = request.GET.get("client_id")
         if client_id:
             if not can_access_client(request.user, client_id):
