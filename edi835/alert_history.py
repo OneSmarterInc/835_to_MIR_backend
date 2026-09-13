@@ -112,11 +112,11 @@ def _visible_alerts(request):
             qs = qs.filter(client_id__in=active_client_grant_ids(user))
     else:
         qs = qs.filter(client=getattr(user, "client", None))
-    return qs.order_by("-sent_at", "-created_at")[:500]
+    return qs.order_by("-sent_at", "-created_at")
 
 
 def api_claim_alert_email_history(request):
-    """Return sent conversion-hold and missing-reference alert emails for Checks."""
+    """Return all sent conversion-hold and missing-reference alert emails for Checks."""
     payload = []
     for row in _visible_alerts(request):
         payload.append({
