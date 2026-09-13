@@ -107,19 +107,19 @@ class LongHoldAlertTests(TestCase):
 
     @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
-    def test_alerts_stop_after_seven_daily_emails(self, send_email, _recipients):
+    def test_alerts_continue_daily_after_seven_until_resolved(self, send_email, _recipients):
         source = self._source()
 
-        for day in range(7):
+        for day in range(8):
             result = send_overdue_nonduplicate_hold_alerts(now=self.now + timedelta(days=day))
             self.assertEqual(result["emailed_claims"], 1)
 
-        eighth_day = send_overdue_nonduplicate_hold_alerts(now=self.now + timedelta(days=7))
-        self.assertEqual(eighth_day["emailed_claims"], 0)
-        self.assertEqual(send_email.call_count, 7)
+        self.assertEqual(send_email.call_count, 8)
+        self.assertIn("8/∞", send_email.call_args.args[2])
+        self.assertIn("once per day while the claim remains unresolved", send_email.call_args.args[2])
 
         source.refresh_from_db()
-        self.assertEqual(source.conversion_findings[0].get(ALERT_COUNT_FIELD), 7)
+        self.assertEqual(source.conversion_findings[0].get(ALERT_COUNT_FIELD), 8)
 
     @patch("edi835.long_hold_alerts.alert_recipients", return_value=[])
     @patch("edi835.long_hold_alerts.send_client_email", return_value=True)
