@@ -802,8 +802,45 @@ def collect_evidence(claim):
     if canonical_highmark:
         mir_q |= Q(claim_control_number__istartswith=canonical_highmark)
         recon_q |= Q(claim_control_number__istartswith=canonical_highmark)
-    mir_claims = list(MIRClaim.objects.filter(mir_file__client=claim.client).filter(mir_q).select_related("mir_file", "mir_file__source_835").prefetch_related("service_lines")[:20]) if match_values else []
-    recon_claims = list(RECONClaim.objects.filter(client=claim.client).filter(recon_q).select_related("recon_file")[:20]) if match_values else []
+    mir_candidates = list(
+        MIRClaim.objects.filter(mir_file__client=claim.client)
+        .filter(mir_q)
+        .select_related("mir_file", "mir_file__source_835")
+        .prefetch_related("service_lines")[:100]
+    ) if match_values else []
+    recon_candidates = list(
+        RECONClaim.objects.filter(client=claim.client)
+        .filter(recon_q)
+        .select_related("recon_file")[:100]
+    ) if match_values else []
+
+    exact_identifiers = {str(value).strip().upper() for value in match_values if value}
+
+    def exact_claim_match(value):
+        raw = str(value or "").strip()
+        if not raw:
+            return False
+        upper = raw.upper()
+        parsed = split_claim_number(raw)
+        parsed_values = {
+            upper,
+            str(parsed.get("highmark_claim_number") or "").strip().upper(),
+            str(parsed.get("internal_claim_number") or "").strip().upper(),
+        }
+        parsed_values.discard("")
+        return bool(parsed_values & exact_identifiers)
+
+    # Prefixes are used only to retrieve candidates. Every row must then pass
+    # exact identifier normalization before it is allowed into AI evidence.
+    mir_claims = [
+        row for row in mir_candidates
+        if exact_claim_match(row.claim_control_number)
+    ][:20]
+    recon_claims = [
+        row for row in recon_candidates
+        if exact_claim_match(row.claim_control_number)
+        or exact_claim_match(row.patient_control_number)
+    ][:20]
     if not mir_claims:
         findings.append(_finding("MIR_CLAIM_MISSING", "error", "No matching MIR claim was found for this 837 claim.", "837/MIR comparison"))
     for mir in mir_claims:
@@ -944,7 +981,10 @@ def call_local_model(notice, claim, timeline, findings, actions):
         "analysis separating verified facts from unverified email statements; and (7) numbered corrective steps drawn only "
         "from approved_actions, citing their action IDs. Do not give generic advice. Do not omit an issue or timeline event. "
         "Never invent facts, code meanings, history, or corrective actions. Clearly disclose unknown codes, conflicts, and "
-        "missing evidence. Never guarantee payer approval. Return JSON keys: summary, reported_issue, verified_evidence, "
+        "missing evidence. Structure summary with concise labeled sections: Claim identity, Issues and error codes, "
+        "History, Duplicate and hold status, Root-cause analysis, and Resolution steps. Every issue must include its exact "
+        "ID/code, evidence, impact, and approved resolution when supplied. Never guarantee payer approval. "
+        "Return JSON keys: summary, reported_issue, verified_evidence, missing_evidence, "
         "missing_evidence, unknown_codes, unclear_items, primary_issue_code, needs_response, recommended_actions, confidence, "
         "requires_human_review. summary must contain the complete readable response. Arrays must be arrays; "
         "recommended_actions items use action_id and reason; confidence is 0..1; requires_human_review is true."
@@ -995,9 +1035,22 @@ def call_local_model(notice, claim, timeline, findings, actions):
     if result.get("primary_issue_code", "") not in allowed_issue_codes | {""}:
         return None
 
-    invented_claims = set(extract_claim_identifiers(json.dumps(result))) - {
-        str(claim.claim_control_number).upper()
+    allowed_claim_identifiers = {
+        str(value).strip().upper()
+        for value in (
+            claim.claim_control_number,
+            claim.highmark_claim_number,
+            claim.internal_claim_number,
+            claim.reference_9c,
+            split_claim_number(claim.claim_control_number)["highmark_claim_number"],
+            split_claim_number(claim.claim_control_number)["internal_claim_number"],
+        )
+        if value
     }
+    invented_claims = (
+        set(extract_claim_identifiers(json.dumps(result)))
+        - allowed_claim_identifiers
+    )
     if invented_claims:
         return None
 
