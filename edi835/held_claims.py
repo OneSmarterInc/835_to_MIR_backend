@@ -1,4 +1,4 @@
-"""Fourth-day duplicate-claim quarantine and automatic held-claim release."""
+"""Four-day duplicate-claim quarantine and automatic held-claim release."""
 
 from __future__ import annotations
 
@@ -10,10 +10,12 @@ from django.db.models.functions import Left, Trim
 from django.utils import timezone
 
 
-# Business rule is inclusive by calendar-day count: a claim successfully sent
-# on the 1st becomes eligible to send again on the 4th at 5:30 PM Eastern.
-DUPLICATE_HOLD_WINDOW = timedelta(days=3)
-DUPLICATE_HISTORY_LOOKBACK = timedelta(days=4)
+# Business rule: a claim remains quarantined for four full calendar-day offsets
+# and becomes eligible at 5:30 PM Eastern on that fourth day after the send date.
+DUPLICATE_HOLD_WINDOW = timedelta(days=4)
+# Keep one extra day of pushed MIR history because a claim sent early in the day
+# is still blocked until 5:30 PM Eastern after the four-day calendar offset.
+DUPLICATE_HISTORY_LOOKBACK = timedelta(days=5)
 EASTERN_TIME_ZONE = ZoneInfo("America/New_York")
 ELIGIBLE_SEND_HOUR = 17
 ELIGIBLE_SEND_MINUTE = 30
@@ -28,7 +30,7 @@ def mir_claim_number(value) -> str:
 
 
 def duplicate_eligible_send_at(sent_at):
-    """Return 5:30 PM Eastern on the fourth calendar day of the hold."""
+    """Return 5:30 PM Eastern after four full calendar-day offsets."""
     if sent_at is None:
         return None
     if timezone.is_naive(sent_at):
