@@ -626,29 +626,22 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "download_url": f"/edi835/api/mpl-files/mir/{source.id}/download/",
             })
 
-        files_835 = (
-            EDI835File.objects.filter(
-                client=notice.client,
-                input_file_content__contains=identifier,
+        claims_835 = (
+            EDI835Claim.objects.filter(edi_file__client=notice.client)
+            .filter(
+                Q(highmark_claim_number__iexact=identifier)
+                | Q(internal_claim_number__iexact=identifier)
             )
-            .order_by("-uploaded_at")[:3]
+            .select_related("edi_file")
+            .order_by("-edi_file__uploaded_at", "-id")[:20]
         )
-        for source in files_835:
-            # The archived 835 is stored in the database. Its CLP01
-            # contains the Highmark number and CLP07 contains the suffix used
-            # by the corresponding MIR.
-            stored_835_internal = internal_claim_number_from_835(
-                source.input_file_content, identifier
-            )
+        for claim_835 in claims_835:
+            source = claim_835.edi_file
             append_source("835", source.id, {
                 "type": "835",
-                "internal_claim_number": internal_claim_number_from_source(
-                    identifier,
-                    stored_835_internal,
-                    source.input_file_content,
-                ),
+                "internal_claim_number": claim_835.internal_claim_number,
                 "filename": source.original_filename,
-                "status": source.status,
+                "status": claim_835.claim_status or source.status,
                 "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
                 "details": {
                     "claims": source.claims_count,
