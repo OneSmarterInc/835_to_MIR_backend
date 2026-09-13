@@ -319,6 +319,28 @@ def mpl_notice_process_now(request, notice_id):
     return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)})
 
 
+@require_http_methods(["PATCH", "POST"])
+def mpl_claim_workflow_status(request, notice_id, claim_id):
+    notice = MPLNotice.objects.filter(pk=notice_id).first()
+    if not notice:
+        return JsonResponse({"success": False, "error": "Notice not found."}, status=404)
+    if not can_access_client(request.user, notice.client_id):
+        return JsonResponse({"success": False, "error": "Access denied."}, status=403)
+    try:
+        status = str(_body(request).get("workflow_status") or "").upper()
+    except NoticeValidationError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    allowed = {value for value, _label in MPLNoticeClaim.WORKFLOW_STATUS_CHOICES}
+    if status not in allowed:
+        return JsonResponse({"success": False, "error": "Invalid workflow status."}, status=400)
+    link = MPLNoticeClaim.objects.filter(notice=notice, claim_id=claim_id).first()
+    if not link:
+        return JsonResponse({"success": False, "error": "Claim not found in this notice."}, status=404)
+    link.workflow_status = status
+    link.save(update_fields=["workflow_status"])
+    return JsonResponse({"success": True, "workflow_status": status, "notice": serialize_notice(notice, detail=True)})
+
+
 @require_http_methods(["POST"])
 def mpl_analysis_review(request, notice_id, claim_id):
     notice = MPLNotice.objects.filter(pk=notice_id).first()
