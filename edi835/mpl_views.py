@@ -15,7 +15,7 @@ from django.views.decorators.http import require_http_methods
 from accounts.models import Client
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from .models import EDI835File, EDI837File, MIRFile, MPLNotice, MPLNoticeClaim, RECONFile
-from .mpl_notices import NoticeValidationError, parse_subject, process_notice, serialize_notice
+from .mpl_notices import NoticeValidationError, notice_workflow_status, parse_subject, process_notice, serialize_notice
 
 
 def _body(request):
@@ -321,6 +321,8 @@ def mpl_notice_process_now(request, notice_id):
 
 @require_http_methods(["PATCH", "POST"])
 def mpl_claim_workflow_status(request, notice_id, claim_id=None):
+    if not (getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)):
+        return JsonResponse({"success": False, "error": "Administrator access required."}, status=403)
     notice = MPLNotice.objects.filter(pk=notice_id).first()
     if not notice:
         return JsonResponse({"success": False, "error": "Notice not found."}, status=404)
@@ -349,7 +351,7 @@ def mpl_claim_workflow_status(request, notice_id, claim_id=None):
     if link:
         link.workflow_status = status
         link.save(update_fields=["workflow_status"])
-    return JsonResponse({"success": True, "workflow_status": status, "notice": serialize_notice(notice, detail=True)})
+    return JsonResponse({"success": True, "workflow_status": status, "notice_workflow_status": notice_workflow_status(notice)})
 
 
 @require_http_methods(["POST"])
