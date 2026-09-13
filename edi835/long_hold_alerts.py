@@ -19,7 +19,7 @@ from .models import EDI835File, MIRClaim
 
 EASTERN = ZoneInfo("America/New_York")
 LONG_HOLD_AGE = timedelta(days=7)
-MAX_ALERT_DAYS = 7
+ALERT_LIMIT_LABEL = "∞"
 BLOCKING_SEVERITIES = {"HOLD", "REFUSE"}
 
 # Keep the original field for backward compatibility with alerts already sent
@@ -273,8 +273,6 @@ def _collect_overdue(now):
                 continue
 
             alert_count, last_alert = _claim_alert_state(claim_findings)
-            if alert_count >= MAX_ALERT_DAYS:
-                continue
             if last_alert and last_alert.astimezone(EASTERN).date() >= today_eastern:
                 continue
 
@@ -296,7 +294,7 @@ def _collect_overdue(now):
                 "days_held": max(7, int((now - held_since).total_seconds() // 86400)),
                 "reasons": reasons,
                 "alert_number": alert_count + 1,
-                "alert_limit": MAX_ALERT_DAYS,
+                "alert_limit": ALERT_LIMIT_LABEL,
             })
 
     return grouped
@@ -321,7 +319,7 @@ def _send_client_alert(client, items, now) -> bool:
     html = (
         f'<p>Dear {escape(client.name)} Team,</p>'
         '<p>The following claim(s) remain on a non-duplicate conversion hold for more than seven days and require review.</p>'
-        '<p>This alert is sent once per day for up to seven alert days. Alerts stop if the same claim is later included in another MIR that is successfully pushed.</p>'
+        '<p>This alert is sent once per day while the claim remains unresolved. Alerts stop automatically when the claim is resolved.</p>'
         f'<p><strong>Alert generated:</strong> {escape(_format_eastern(now))}</p>'
         '<div style="overflow-x:auto"><table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="border-collapse:collapse;font-size:12px">'
         '<thead><tr>'
@@ -387,7 +385,7 @@ def _mark_alerted(items, sent_at) -> None:
                 if not matching:
                     continue
                 count, _last = _claim_alert_state(matching)
-                new_count = min(MAX_ALERT_DAYS, count + 1)
+                new_count = count + 1
                 for finding in matching:
                     if not finding.get(ALERT_FIELD):
                         finding[ALERT_FIELD] = sent_at.isoformat()
@@ -400,7 +398,7 @@ def _mark_alerted(items, sent_at) -> None:
 
 
 def send_overdue_nonduplicate_hold_alerts(now=None) -> dict:
-    """Send each unresolved claim at most once per Eastern day for seven alert days."""
+    """Send each unresolved claim at most once per Eastern day until it resolves."""
     now = now or timezone.now()
     grouped = _collect_overdue(now)
     emailed_claims = 0
