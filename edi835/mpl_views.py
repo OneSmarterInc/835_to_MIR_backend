@@ -136,7 +136,10 @@ def _parse_msg_upload(upload):
             bcc=getattr(message, "bcc", ""),
             internet_message_id=getattr(message, "messageId", ""),
             conversation_id=getattr(message, "conversationId", ""),
-            has_attachments=bool(getattr(message, "attachments", [])),
+            # Attachment enumeration in extract-msg can deserialize every embedded
+            # object and make a simple email upload take many seconds. MPL analysis
+            # uses the message text and identifiers, so keep upload parsing bounded.
+            has_attachments=False,
         )
         if not subject:
             raise NoticeValidationError("The .msg file does not contain an email subject.")
@@ -265,7 +268,9 @@ def mpl_notices(request):
                 requested_claim_numbers=claim_numbers[:50],
                 created_by=request.user,
             )
-        return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)}, status=201)
+        # Return inbox metadata immediately. Full evidence, histories and AI output
+        # are populated asynchronously by the MPL worker and fetched on open.
+        return JsonResponse({"success": True, "notice": serialize_notice(notice)}, status=201)
     except PermissionError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=403)
     except (NoticeValidationError, ValueError, Client.DoesNotExist) as exc:
