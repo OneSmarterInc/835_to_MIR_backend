@@ -732,10 +732,6 @@ def match_claims(notice):
         | Q(reference_9c__in=identifiers)
         | Q(patient_control_number__in=identifiers)
     )
-    for identifier in identifiers:
-        query |= Q(claim_control_number__startswith=identifier)
-        query |= Q(highmark_claim_number__startswith=identifier)
-
     candidates = list(
         EDI837Claim.objects.filter(client=notice.client)
         .filter(query)
@@ -757,8 +753,8 @@ def match_claims(notice):
                     "patient_control_number",
                 )
             }
-            claim_control = str(claim.claim_control_number or "").strip().upper()
-            if wanted not in exact_values and not claim_control.startswith(wanted):
+            exact_values.add(str(claim.claim_control_number or "").strip().upper())
+            if wanted not in exact_values:
                 continue
             if claim.id not in seen:
                 seen.add(claim.id)
