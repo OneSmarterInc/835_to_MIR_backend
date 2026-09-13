@@ -801,7 +801,9 @@ def collect_evidence(claim):
         recon_q |= Q(claim_control_number__iexact=value)
     if canonical_highmark:
         mir_q |= Q(claim_control_number__istartswith=canonical_highmark)
+        mir_q |= Q(header_raw__contains=canonical_highmark)
         recon_q |= Q(claim_control_number__istartswith=canonical_highmark)
+        recon_q |= Q(raw_record__contains=canonical_highmark)
     mir_candidates = list(
         MIRClaim.objects.filter(mir_file__client=claim.client)
         .filter(mir_q)
@@ -830,16 +832,29 @@ def collect_evidence(claim):
         parsed_values.discard("")
         return bool(parsed_values & exact_identifiers)
 
-    # Prefixes are used only to retrieve candidates. Every row must then pass
-    # exact identifier normalization before it is allowed into AI evidence.
+    def exact_highmark_in_text(value):
+        if not canonical_highmark or not value:
+            return False
+        # Reject a numeric substring of another claim while permitting a
+        # file-format prefix/suffix (for example HI<Highmark><internal>).
+        return bool(re.search(
+            rf"(?<!\\d){re.escape(str(canonical_highmark))}(?!\\d)",
+            str(value),
+            re.I,
+        ))
+
+    # Broad predicates retrieve candidates only. Each row then passes exact
+    # normalized-identifier or digit-boundary validation before entering AI evidence.
     mir_claims = [
         row for row in mir_candidates
         if exact_claim_match(row.claim_control_number)
+        or exact_highmark_in_text(row.header_raw)
     ][:20]
     recon_claims = [
         row for row in recon_candidates
         if exact_claim_match(row.claim_control_number)
         or exact_claim_match(row.patient_control_number)
+        or exact_highmark_in_text(row.raw_record)
     ][:20]
     if not mir_claims:
         findings.append(_finding("MIR_CLAIM_MISSING", "error", "No matching MIR claim was found for this 837 claim.", "837/MIR comparison"))
