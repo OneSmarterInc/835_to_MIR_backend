@@ -39,6 +39,7 @@ from .mpl_views import (
     mpl_notice_analyze, mpl_notice_detail, mpl_notice_process_now,
     mpl_analysis_review, mpl_claim_workflow_status, mpl_notice_select_claim, mpl_notice_source_file, mpl_notices, mpl_related_file,
 )
+from .mpl_slice_views import mpl_claim_slice
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list_eastern)
@@ -76,6 +77,7 @@ mpl_notice_select_claim = authenticated_api(mpl_notice_select_claim)
 mpl_notice_process_now = authenticated_api(mpl_notice_process_now)
 mpl_notice_source_file = authenticated_api(mpl_notice_source_file)
 mpl_related_file = authenticated_api(mpl_related_file)
+mpl_claim_slice = authenticated_api(mpl_claim_slice)
 mpl_analysis_review = authenticated_api(mpl_analysis_review)
 mpl_claim_workflow_status = authenticated_api(mpl_claim_workflow_status)
 
@@ -87,6 +89,7 @@ urlpatterns = [
     path("api/mpl-notices/<uuid:notice_id>/process-now/", mpl_notice_process_now, name="mpl_notice_process_now"),
     path("api/mpl-notices/<uuid:notice_id>/source-file/", mpl_notice_source_file, name="mpl_notice_source_file"),
     path("api/mpl-files/<str:file_type>/<uuid:file_id>/download/", mpl_related_file, name="mpl_related_file"),
+    path("api/mpl-files/<str:file_type>/<uuid:file_id>/claim-slice/", mpl_claim_slice, name="mpl_claim_slice"),
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/review/", mpl_analysis_review, name="mpl_analysis_review"),
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/workflow-status/", mpl_claim_workflow_status, name="mpl_claim_workflow_status"),
     path("api/mpl-notices/<uuid:notice_id>/claims/workflow-status/", mpl_claim_workflow_status, name="mpl_notice_claim_workflow_status"),
