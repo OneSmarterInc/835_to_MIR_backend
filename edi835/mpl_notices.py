@@ -13,6 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .claim_numbers import split_claim_number
+from .edi837_views import search_837_claim_records
 from .models import EDI835Claim, EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLIssueDefinition, MPLNotice, MPLNoticeClaim, RECONClaim
 from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
 
@@ -509,8 +510,12 @@ def _837_claim_matches_internal(claim, internal_numbers):
         getattr(claim, "claim_control_number", ""),
     ):
         value = str(candidate or "").strip()
-        if value.upper() in wanted:
-            return value
+        folded_value = value.casefold()
+        for internal in wanted:
+            if internal.casefold() in folded_value:
+                # Return the proven source identity rather than a combined
+                # legacy 837 field such as HI<Highmark><internal>.
+                return internal
     raw_claim = str(getattr(claim, "raw_claim", "") or "")
     folded_raw = raw_claim.casefold()
     for value in wanted:
@@ -763,21 +768,9 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 if source.get("type") in {"835", "MIR", "RECON"}
                 and source.get("internal_claim_number")
             }
-            internal_query = Q()
-            for internal in known_internals:
-                internal_query |= (
-                    Q(internal_claim_number__iexact=internal)
-                    | Q(reference_9c__iexact=internal)
-                    | Q(patient_control_number__iexact=internal)
-                    | Q(claim_control_number__iexact=internal)
-                    | Q(raw_claim__icontains=internal)
-                )
-            fallback_837 = list(
-                EDI837Claim.objects.filter(client=notice.client)
-                .filter(internal_query)
-                .select_related("edi_file")
-                .order_by("-edi_file__uploaded_at", "-id")[:200]
-            ) if known_internals else []
+            fallback_837 = search_837_claim_records(
+                notice.client, known_internals, limit=200,
+            )
             for claim_837 in fallback_837:
                 matched_internal = _837_claim_matches_internal(claim_837, known_internals)
                 if not matched_internal:
