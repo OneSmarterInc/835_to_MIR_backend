@@ -1,4 +1,5 @@
 import uuid
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.utils import timezone
 
@@ -466,6 +467,7 @@ class EDI837Claim(models.Model):
             models.Index(fields=["client", "claim_control_number"], name="edi837_claim_control_idx"),
             models.Index(fields=["client", "highmark_claim_number"], name="edi837_highmark_idx"),
             models.Index(fields=["client", "internal_claim_number"], name="edi837_internal_idx"),
+            GinIndex(fields=["raw_claim"], name="edi837_raw_claim_trgm_idx", opclasses=["gin_trgm_ops"]),
         ]
 
 
