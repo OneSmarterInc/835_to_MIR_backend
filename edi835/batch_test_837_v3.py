@@ -8,6 +8,7 @@ import stat
 import uuid
 
 from django.http import JsonResponse
+from django.utils import timezone
 
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .batch_test_837_v2 import _selected_client
@@ -18,12 +19,19 @@ from .file_types import has_valid_file_extension
 from .views import api_start_batch_conversion as _original_api_start_batch_conversion
 
 
+def _append_hhss(filename, now=None):
+    """Append the requested hour+seconds stamp immediately before the extension."""
+    stamp = timezone.localtime(now or timezone.now()).strftime("%H%S")
+    stem, extension = os.path.splitext(os.path.basename(filename))
+    return f"{stem}_{stamp}{extension}"
+
+
 def _relay_837_for_test(request, client):
     """Process each 837 from 837_IN, then rename and deliver it to 837_OUT.
 
-    Processing is intentionally completed before the outbound upload.  A file
-    is only removed from 837_IN after it has been parsed/indexed, uploaded to
-    837_OUT, and the outbound object has been verified with stat().
+    Processing is intentionally completed before the outbound upload. Each file
+    is handled end-to-end before the next file starts, so 30+ file SFTP batches
+    do not accumulate payloads or partially processed files in memory.
     """
     if client is None:
         return {
@@ -61,7 +69,7 @@ def _relay_837_for_test(request, client):
         )
 
         filename_format = get_saved_837_filename_format(client)
-        resolved_base = resolve_837_filename_format(filename_format)
+        resolved_base = _append_hhss(resolve_837_filename_format(filename_format))
 
         if not candidates:
             return {
@@ -109,9 +117,6 @@ def _relay_837_for_test(request, client):
             if not payload:
                 raise ValueError(f"{source_name} is empty.")
 
-            # Parse and index before anything is sent to 837_OUT.  ingest_837
-            # also marks duplicate records as SFTP when the same bytes had
-            # previously been indexed through a manual workflow.
             edi_file, duplicate = ingest_837(
                 client,
                 request.user,
@@ -150,7 +155,6 @@ def _relay_837_for_test(request, client):
                     f"{source_name} reached 837 outbound but could not be removed from inbound; outbound was rolled back: {exc}"
                 )
 
-            # Persist the exact SFTP lifecycle used by the Search tables.
             edi_file.import_mode = "SFTP"
             edi_file.remote_path = source_path
             edi_file.outbound_path = target_path
@@ -168,6 +172,8 @@ def _relay_837_for_test(request, client):
                 "service_count": edi_file.service_count,
                 "already_indexed": bool(duplicate),
             })
+            # Do not retain a large EDI payload while the next file is handled.
+            del payload
 
         return {
             "success": True,
@@ -179,7 +185,7 @@ def _relay_837_for_test(request, client):
             "inbound_folder": resolved_inbound,
             "outbound_folder": resolved_outbound,
             "message": (
-                f"Processed, indexed, renamed and moved {len(transferred)} 837 file(s) "
+                f"Processed, indexed, renamed and moved {len(transferred)} 837 file(s) one by one "
                 "using the saved client naming format and admin-configured 837_IN/837_OUT routes."
             ),
         }
@@ -238,25 +244,10 @@ def api_start_batch_conversion_with_837(request):
                 status=409,
             )
 
-        relay_result = _relay_837_for_test(request, client)
-        if not relay_result.get("success"):
-            return JsonResponse(
-                {
-                    "success": False,
-                    "error": relay_result.get("error") or "837 inbound-to-outbound relay failed.",
-                    "sftp_837_transfer": relay_result,
-                },
-                status=400,
-            )
-
-        response = _original_api_start_batch_conversion(request)
-        try:
-            response_data = json.loads(response.content.decode("utf-8"))
-            response_data["sftp_837_transfer"] = relay_result
-            response.content = json.dumps(response_data).encode("utf-8")
-            response["Content-Length"] = str(len(response.content))
-        except Exception:
-            pass
-        return response
+        # Queue first. The isolated worker owns all heavy SFTP processing.
+        # Previously this wrapper relayed every 837 synchronously before the
+        # queue write, which could make the web request time out/return HTML 500
+        # when 30+ files were present.
+        return _original_api_start_batch_conversion(request)
 
     return _original_api_start_batch_conversion(request)
