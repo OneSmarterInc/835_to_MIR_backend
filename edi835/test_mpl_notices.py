@@ -360,6 +360,53 @@ class MPLClaimExtractionTests(TestCase):
         self.assertEqual([item["resolution"] for item in issues], ["R1", "R2"])
 
 
+    def test_exact_highmark_and_internal_identity_is_duplicate_with_conversion_hold(self):
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYD579"},
+                {
+                    "type": "835", "filename": "payment.835", "internal_claim_number": "QYD579",
+                    "details": {"conversion_findings": [{
+                        "code": "DUPLICATE_ICN", "severity": "hold",
+                        "description": "Matching claim is held by conversion.",
+                    }]},
+                },
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "DUPLICATE")
+        self.assertTrue(report["duplicate"]["found"])
+        self.assertTrue(report["hold"]["found"])
+        self.assertEqual(
+            report["duplicate"]["details"][0]["conversion_findings"][0]["filename"],
+            "payment.835",
+        )
+
+    def test_matching_highmark_with_different_internal_identity_is_adjustment(self):
+        MPLIssueDefinition.objects.update_or_create(
+            code="ADJUSTMENT_PENDING",
+            defaults={
+                "title": "Adjustment",
+                "description": "Internal identities differ.",
+                "resolution": "Review the original claim and adjustment.",
+                "mapping_status": "LOCAL_CATEGORY",
+                "source": "Approved identity rule",
+            },
+        )
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYD579"},
+                {"type": "835", "filename": "payment.835", "internal_claim_number": "QYD580"},
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertFalse(report["duplicate"]["found"])
+        self.assertEqual(report["issues"][0]["issue_id"], "ADJUSTMENT_PENDING")
+
+
 class MPLAIEnablementTests(TestCase):
     def test_local_ai_is_enabled_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
