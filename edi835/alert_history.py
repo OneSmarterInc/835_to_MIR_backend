@@ -7,6 +7,7 @@ from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
 from django.db import IntegrityError, transaction
+from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
 
@@ -162,28 +163,108 @@ def _serialize_row(row):
 
 
 def _preview_missing_reference(client, preview_now):
-    from .missing_reference_alerts import _collect_due_missing
+    """Build a read-only, client-scoped missing-reference digest for one date.
 
-    items = list(_collect_due_missing(preview_now).get(str(client.id), []) or [])
-    if not items:
+    Do not call the worker collector here. The worker collector intentionally
+    scans operational state for every client; doing that in an HTTP request can
+    exceed the reverse-proxy timeout. This preview performs only client-scoped
+    reads and never changes alert or claim state.
+    """
+    from .held_claims import mir_claim_number
+    from .missing_reference_alerts import missing_reference_eligible_at, normalize_claim_id
+    from .models import EDI837Claim, MIRClaim, RECONClaim
+
+    local_now = preview_now.astimezone(EASTERN)
+    rows = (
+        MIRClaim.objects.select_related("mir_file")
+        .filter(
+            mir_file__client=client,
+            mir_file__status="PUSHED",
+            mir_file__updated_at__lte=preview_now,
+        )
+        .order_by("mir_file__updated_at", "claim_sequence")
+    )
+
+    earliest = {}
+    for claim in rows.iterator(chunk_size=1000):
+        claim_number = mir_claim_number(claim.claim_control_number)
+        normalized_short = normalize_claim_id(claim_number)
+        if not normalized_short:
+            continue
+        eligible_at = missing_reference_eligible_at(claim.mir_file.updated_at)
+        if eligible_at is None or eligible_at > local_now:
+            continue
+        if normalized_short not in earliest:
+            earliest[normalized_short] = {
+                "claim_number": claim_number,
+                "claim_control_number": claim.claim_control_number,
+                "mir_filename": claim.mir_file.mir_filename,
+                "sent_at": claim.mir_file.updated_at,
+                "eligible_at": eligible_at,
+            }
+
+    if not earliest:
         return None
+
+    keys_837 = set()
+    rows_837 = EDI837Claim.objects.filter(client=client, edi_file__status="PROCESSED").values_list(
+        "highmark_claim_number", "claim_control_number"
+    )
+    for highmark, control in rows_837.iterator(chunk_size=2000):
+        for value in (highmark, control):
+            normalized = normalize_claim_id(value)
+            if normalized:
+                keys_837.add(normalized)
+
+    keys_recon = set()
+    rows_recon = RECONClaim.objects.filter(
+        Q(client=client) | Q(client__isnull=True, recon_file__client=client),
+        recon_file__status__in=("PROCESSED", "PARTIAL"),
+    ).values_list("claim_control_number", flat=True)
+    for value in rows_recon.iterator(chunk_size=2000):
+        normalized = normalize_claim_id(value)
+        if normalized:
+            keys_recon.add(normalized)
+
+    claims = []
+    for item in earliest.values():
+        identity_keys = {
+            value
+            for value in (
+                normalize_claim_id(mir_claim_number(item["claim_control_number"])),
+                normalize_claim_id(item["claim_control_number"]),
+            )
+            if value
+        }
+        in_837 = bool(identity_keys & keys_837)
+        in_recon = bool(identity_keys & keys_recon)
+        if in_837 and in_recon:
+            continue
+
+        missing_in = []
+        if not in_837:
+            missing_in.append("837")
+        if not in_recon:
+            missing_in.append("RECON")
+        claims.append({
+            "claim_number": item["claim_number"],
+            "claim_control_number": str(item["claim_control_number"] or "").strip(),
+            "missing_in": missing_in,
+            "missing_in_label": " and ".join(missing_in),
+            "sent_at": item["sent_at"].isoformat(),
+            "eligible_at": item["eligible_at"].isoformat(),
+            "mir_filename": item["mir_filename"],
+        })
+
+    if not claims:
+        return None
+    claims.sort(key=lambda item: (item.get("sent_at") or "", item.get("claim_number") or ""))
     return {
         "category": "MISSING_REFERENCE",
         "category_label": "Missing 837 / RECON",
-        "subject": f"OneSmarter: Daily Alert - {len(items)} Claim(s) Missing 837 / RECON After 7 Days",
+        "subject": f"OneSmarter: Daily Alert - {len(claims)} Claim(s) Missing 837 / RECON After 7 Days",
         "recipients": alert_recipients(client),
-        "claims": [
-            {
-                "claim_number": item["claim_number"],
-                "claim_control_number": str(item["claim_control_number"] or "").strip(),
-                "missing_in": list(item["missing_in"]),
-                "missing_in_label": item["missing_in_label"],
-                "sent_at": item["sent_at"].isoformat(),
-                "eligible_at": item["eligible_at"].isoformat(),
-                "mir_filename": item["mir_filename"],
-            }
-            for item in items
-        ],
+        "claims": claims,
     }
 
 
@@ -242,8 +323,6 @@ def _preview_conversion_hold(client, preview_now):
                     last_alert_dates.append(parsed.astimezone(EASTERN).date())
                 except (TypeError, ValueError):
                     pass
-        # A row actually sent on the selected date is represented by the audit
-        # record instead of this synthetic preview.
         if selected_date in last_alert_dates:
             continue
 
@@ -294,10 +373,14 @@ def _scheduled_alerts_for_date(request, selected_date):
         for row in _visible_alerts(request, include_unsent=True).filter(alert_date=selected_date)
     }
 
-    previews = {
-        "MISSING_REFERENCE": _preview_missing_reference(client, preview_now),
-        "CONVERSION_HOLD": _preview_conversion_hold(client, preview_now),
-    }
+    # Historical sent/pending/failed audit rows already contain the exact claim
+    # payload for that day. Do not recompute those categories: returning the
+    # persisted row is both more accurate and avoids an unnecessary heavy scan.
+    previews = {}
+    if "MISSING_REFERENCE" not in existing_rows:
+        previews["MISSING_REFERENCE"] = _preview_missing_reference(client, preview_now)
+    if "CONVERSION_HOLD" not in existing_rows:
+        previews["CONVERSION_HOLD"] = _preview_conversion_hold(client, preview_now)
 
     payload = []
     for category in ("MISSING_REFERENCE", "CONVERSION_HOLD"):
