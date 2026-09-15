@@ -1701,6 +1701,12 @@ def _claim_report_matches(claim_data, claim_number, source_internal_numbers):
     ))
 
 
+ISSUE_CODE_ALIASES = {
+    "REPORTED_NO_PREFIX_RETURN": "NO_PREFIX_RETURN",
+    "NO_PREFIX_NOTICE": "NO_PREFIX_RETURN",
+}
+
+
 def build_claim_reports(source_matches, claims):
     """Build compact claim-wise reports using Python and persisted evidence."""
     definition_codes = {
@@ -1875,10 +1881,16 @@ def build_claim_reports(source_matches, claims):
                 "source": "837/835 claim identity comparison",
                 "severity": "warning",
             })
-        issues = list({
-            (item["issue_id"], item["reported_description"], item["source"]): item
-            for item in issues
-        }.values())
+        # Presentation aliases describe the same operational issue. Keep
+        # the last occurrence because verified Python findings are appended
+        # after reported email categories and carry the more specific evidence.
+        canonical_issues = {}
+        for item in issues:
+            item["issue_id"] = ISSUE_CODE_ALIASES.get(
+                str(item["issue_id"]).upper(), str(item["issue_id"]).upper(),
+            )
+            canonical_issues[item["issue_id"]] = item
+        issues = list(canonical_issues.values())
         for issue in issues:
             definition = definition_map.get(issue["issue_id"])
             if definition:
