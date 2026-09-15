@@ -16,7 +16,6 @@ import uuid
 from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
-from django.utils import timezone
 
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .batch_test_837_v3 import _relay_837_for_test
@@ -137,7 +136,7 @@ def process_recon_incoming(client, actor):
 
 
 def process_835_to_mir_sftp(client, actor):
-    """Read each inbound 835, convert it, push MIR, then delete that 835."""
+    """Read each inbound 835, convert it, confirm MIR delivery, then delete that 835."""
     _config, credentials, _folder = resolve_admin_sftp_route(client, "835_IN")
     import paramiko
 
@@ -172,8 +171,6 @@ def process_835_to_mir_sftp(client, actor):
                     continue
 
                 processed.append(name)
-                push_result = push_local_outbound(client, "mir")
-                mir_sent.extend(push_result.get("sent_files") or [])
                 record.refresh_from_db()
                 mir = getattr(record, "mir_file", None)
                 if mir is None:
@@ -181,6 +178,16 @@ def process_835_to_mir_sftp(client, actor):
                     retained.append(name)
                     continue
                 mir.refresh_from_db()
+
+                # Normal conversion already attempts the configured MIR SFTP
+                # delivery. Only drain the local MIR queue if that direct push
+                # did not succeed, avoiding duplicate remote files.
+                push_result = {"sent_files": [], "errors": []}
+                if mir.status != "PUSHED":
+                    push_result = push_local_outbound(client, "mir")
+                    mir_sent.extend(push_result.get("sent_files") or [])
+                    mir.refresh_from_db()
+
                 if mir.status != "PUSHED":
                     detail = "; ".join(push_result.get("errors") or []) or "MIR was not confirmed on outbound SFTP"
                     errors.append(f"{name}: {detail}")
