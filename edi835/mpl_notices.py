@@ -1668,13 +1668,19 @@ def build_claim_reports(source_matches, claims):
             and source.get("internal_claim_number")
         }
         exact_internal_matches = internal_837 & internal_835
-        internal_mismatch = bool(internal_837 and internal_835 and not exact_internal_matches)
+        all_source_internals = {
+            str(source.get("internal_claim_number") or "").strip().upper()
+            for source in sources if source.get("internal_claim_number")
+        }
+        # A single matching pair must never hide another internal number for
+        # the same Highmark claim. Any conflict is an adjustment.
+        internal_mismatch = len(all_source_internals) > 1
         conversion_findings = []
         for source in sources:
             if str(source.get("type") or "").upper() != "835":
                 continue
             source_internal = str(source.get("internal_claim_number") or "").strip().upper()
-            if exact_internal_matches and source_internal not in exact_internal_matches:
+            if not internal_mismatch and exact_internal_matches and source_internal not in exact_internal_matches:
                 continue
             for finding in (source.get("details") or {}).get("conversion_findings") or []:
                 conversion_findings.append({
@@ -1762,20 +1768,25 @@ def build_claim_reports(source_matches, claims):
                     "definition_source": "Unmapped portal value",
                 })
 
-        duplicate_evidence = [
-            item for item in [*issues, *history]
-            if "DUPLICATE" in json.dumps(item, default=str).upper()
+        duplicate_conversion_findings = [
+            finding for finding in conversion_findings
+            if re.sub(r"[^A-Z0-9]", "", str(
+                finding.get("code") or finding.get("rule_code") or ""
+            ).upper()) in {"DUPLICATEICN", "MPL011D"}
         ]
-        if internal_mismatch:
-            # The approved identity rule takes precedence over wording in the
-            # email or old history: a different internal number is adjustment.
-            duplicate_evidence = []
-        elif exact_internal_matches:
-            duplicate_evidence.insert(0, {
+        duplicate_confirmed = bool(
+            not internal_mismatch
+            and len(all_source_internals) == 1
+            and exact_internal_matches
+            and duplicate_conversion_findings
+        )
+        duplicate_evidence = []
+        if duplicate_confirmed:
+            duplicate_evidence.append({
                 "source": "837/835 exact claim identity match",
                 "highmark_claim_number": claim_number,
                 "internal_claim_numbers": sorted(exact_internal_matches),
-                "conversion_findings": conversion_findings,
+                "conversion_findings": duplicate_conversion_findings,
             })
         hold_evidence = [
             item for item in [*issues, *history]
@@ -1798,7 +1809,7 @@ def build_claim_reports(source_matches, claims):
         reports.append({
             "claim_number": claim_number,
             "classification": (
-                "DUPLICATE" if exact_internal_matches
+                "DUPLICATE" if duplicate_confirmed
                 else "ADJUSTMENT" if internal_mismatch
                 else "UNDETERMINED"
             ),
