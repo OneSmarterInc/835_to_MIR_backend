@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_QWEN_BASE_URL = "http://127.0.0.1:8080/v1"
 DEFAULT_QWEN_MODEL = "qwen3-0.6b-instruct-q8_0"
+SERVER_ENV_PATH = "/etc/mpl-ai-server.env"
 
 
 def _suggestion_text(item):
@@ -125,12 +126,49 @@ def _available_model_ids(payload):
     return ids
 
 
-def _discover_live_model(base_url, headers, preferred):
-    """Use the model actually exposed by the local Qwen server.
+def _read_env_value(path, key):
+    """Read one simple KEY=value setting without executing an env file."""
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                name, value = line.split("=", 1)
+                if name.strip() != key:
+                    continue
+                value = value.strip()
+                if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
+                    value = value[1:-1]
+                return value.strip()
+    except (OSError, UnicodeError):
+        return ""
+    return ""
 
-    Production has changed quantization aliases over time. A stale env alias must
-    not make the MPL AI step fail when the local server is healthy.
-    """
+
+def _qwen_api_key(base_url):
+    """Prefer the credential used by the local llama.cpp server when readable."""
+    configured = str(os.getenv("MPL_AI_API_KEY") or "").strip()
+    local_server = base_url.startswith("http://127.0.0.1:") or base_url.startswith("http://localhost:")
+    if local_server:
+        server_key = _read_env_value(SERVER_ENV_PATH, "MPL_AI_API_KEY")
+        if server_key:
+            if configured and configured != server_key:
+                logger.warning("MPL worker Qwen key differed from local server key; using the server credential.")
+            return server_key
+    return configured
+
+
+def _qwen_headers(base_url):
+    headers = {"Content-Type": "application/json"}
+    api_key = _qwen_api_key(base_url)
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    return headers
+
+
+def _discover_live_model(base_url, headers, preferred):
+    """Use the model actually exposed by the local Qwen server."""
     request_headers = {
         key: value for key, value in headers.items()
         if key.lower() != "content-type"
@@ -164,7 +202,7 @@ def _discover_live_model(base_url, headers, preferred):
 
 
 def _parse_claim_rewrite(text, expected_count):
-    """Accept strict JSON first, then a conservative plain-text fallback."""
+    """Backward-compatible parser used by tests and legacy model output."""
     cleaned = _clean_model_text(text)
     paragraph = ""
     bullets = []
@@ -198,58 +236,75 @@ def _parse_claim_rewrite(text, expected_count):
     return {"paragraph": paragraph, "bullets": bullets}
 
 
-def _rewrite_one_claim(base_url, model_id, headers, claim_number, suggestions):
-    """Rewrite one claim at a time so the 0.6B local model gets a tiny prompt."""
-    expected_count = len(suggestions)
-    system_prompt = (
-        "/no_think\n"
-        "You are a professional copy editor. Do not analyze the claim. Do not add advice. "
-        "Rewrite only the supplied approved suggestions. Return JSON only with exactly two keys: "
-        "paragraph and bullets. paragraph is one short professional paragraph summarizing the supplied "
-        "suggestions. bullets is an array with exactly one rewritten item for each supplied suggestion, "
-        "in exactly the same order. Preserve meaning. Do not add, remove, merge, diagnose, infer, or invent "
-        "any fact, recommendation, cause, outcome, or claim detail."
-    )
+def _strip_single_answer(value):
+    """Normalize one short Qwen response without requiring JSON formatting."""
+    text = _clean_model_text(value)
+    text = re.sub(r"^(?:answer|response|paragraph|rewrite)\s*:\s*", "", text, flags=re.I)
+    text = re.sub(r"^(?:[-*•]|\d+[.)])\s+", "", text).strip()
+    if len(text) >= 2 and text[0] == text[-1] and text[0] in {'"', "'"}:
+        text = text[1:-1].strip()
+    return re.sub(r"\s+", " ", text).strip()
 
+
+def _qwen_text(base_url, model_id, headers, system_prompt, user_payload, max_tokens):
+    """Call Qwen for a plain-text answer; no response_format contract is required."""
     payload = json.dumps({
         "model": model_id,
         "temperature": 0.0,
-        "max_tokens": int(os.getenv("MPL_AI_SUGGESTION_MAX_TOKENS", "700")),
-        "response_format": {"type": "json_object"},
+        "max_tokens": max_tokens,
         "messages": [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": json.dumps({
-                "claim_number": claim_number,
-                "suggestions": suggestions,
-                "required_bullet_count": expected_count,
-            }, ensure_ascii=False)},
+            {"role": "user", "content": user_payload},
         ],
     }).encode("utf-8")
-
     outer = _qwen_chat_completion(base_url, payload, headers)
-    first_text = outer["choices"][0]["message"]["content"]
-    parsed = _parse_claim_rewrite(first_text, expected_count)
-    if parsed:
-        return parsed
+    text = _strip_single_answer(outer["choices"][0]["message"]["content"])
+    if not text:
+        raise ValueError("Qwen returned an empty response.")
+    return text
 
-    repair_prompt = (
+
+def _rewrite_one_claim(base_url, model_id, headers, claim_number, suggestions):
+    """Use tiny independent Qwen prompts so the 0.6B model is reliable.
+
+    One call creates the professional paragraph. Each approved Python suggestion
+    is then rewritten independently, guaranteeing one AI bullet per input action
+    without asking the small model to obey a brittle JSON/counting contract.
+    """
+    paragraph_prompt = (
         "/no_think\n"
-        f"Return JSON only: {{\"paragraph\":\"...\",\"bullets\":[...]}}. "
-        f"There must be exactly {expected_count} bullet strings, one for each input suggestion in the same order. "
-        "Professionally restate the input only. Do not add or remove advice."
+        "You are a professional copy editor. Rewrite only the supplied approved recommendations "
+        "as one concise professional paragraph. Preserve every recommendation's meaning. "
+        "Do not add facts, advice, causes, outcomes, diagnoses, or claim details. "
+        "Return only the paragraph, with no heading and no bullets."
     )
-    repair_payload = json.dumps({
-        "model": model_id,
-        "temperature": 0.0,
-        "max_tokens": int(os.getenv("MPL_AI_SUGGESTION_MAX_TOKENS", "700")),
-        "response_format": {"type": "json_object"},
-        "messages": [
-            {"role": "system", "content": repair_prompt},
-            {"role": "user", "content": json.dumps({"suggestions": suggestions}, ensure_ascii=False)},
-        ],
-    }).encode("utf-8")
-    repaired = _qwen_chat_completion(base_url, repair_payload, headers)
-    return _parse_claim_rewrite(repaired["choices"][0]["message"]["content"], expected_count)
+    paragraph = _qwen_text(
+        base_url,
+        model_id,
+        headers,
+        paragraph_prompt,
+        json.dumps({"approved_recommendations": suggestions}, ensure_ascii=False),
+        int(os.getenv("MPL_AI_PARAGRAPH_MAX_TOKENS", "220")),
+    )
+
+    bullet_prompt = (
+        "/no_think\n"
+        "You are a professional copy editor. Professionally restate the supplied approved recommendation "
+        "as one concise sentence. Preserve its meaning exactly. Do not add facts, advice, causes, outcomes, "
+        "diagnoses, or claim details. Return only the rewritten sentence."
+    )
+    bullets = []
+    for suggestion in suggestions:
+        bullets.append(_qwen_text(
+            base_url,
+            model_id,
+            headers,
+            bullet_prompt,
+            suggestion,
+            int(os.getenv("MPL_AI_BULLET_MAX_TOKENS", "120")),
+        ))
+
+    return {"paragraph": paragraph, "bullets": bullets}
 
 
 def rewrite_python_suggestions(notice):
@@ -266,11 +321,15 @@ def rewrite_python_suggestions(notice):
 
     base_url = os.getenv("MPL_AI_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
     preferred_model = os.getenv("MPL_AI_MODEL", DEFAULT_QWEN_MODEL).strip() or DEFAULT_QWEN_MODEL
-    headers = {"Content-Type": "application/json"}
-    if os.getenv("MPL_AI_API_KEY"):
-        headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
-
+    headers = _qwen_headers(base_url)
     model_id = _discover_live_model(base_url, headers, preferred_model)
+
+    logger.info(
+        "MPL Qwen suggestion rewrite starting: notice=%s model=%s groups=%s",
+        notice.pk,
+        model_id,
+        len(groups),
+    )
 
     claims = []
     failures = []
@@ -285,21 +344,29 @@ def rewrite_python_suggestions(notice):
                 claim_number,
                 suggestions,
             )
-            if not rewritten:
-                raise ValueError("Qwen did not return the required paragraph and bullet count.")
             claims.append({
                 "claim_number": claim_number,
                 "paragraph": rewritten["paragraph"],
                 "bullets": rewritten["bullets"],
             })
+            logger.info(
+                "MPL Qwen suggestion rewrite completed for claim %s with %s bullet(s).",
+                claim_number,
+                len(rewritten["bullets"]),
+            )
         except (HTTPError, URLError, TimeoutError, KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
             failures.append(f"{claim_number}: {type(exc).__name__}: {exc}")
-            logger.warning("MPL Qwen suggestion rewrite failed for %s: %s", claim_number, exc)
+            logger.exception("MPL Qwen suggestion rewrite failed for %s", claim_number)
 
     if not claims:
         notice.ai_response = ""
         notice.ai_response_source = ""
         notice.save(update_fields=["ai_suggestions", "ai_response", "ai_response_source", "updated_at"])
+        logger.error(
+            "MPL Qwen suggestion rewrite produced no claim output for notice %s: %s",
+            notice.pk,
+            "; ".join(failures) or "no groups",
+        )
         return None
 
     if failures:
