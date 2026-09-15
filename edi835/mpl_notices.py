@@ -1766,7 +1766,11 @@ def build_claim_reports(source_matches, claims):
             item for item in [*issues, *history]
             if "DUPLICATE" in json.dumps(item, default=str).upper()
         ]
-        if exact_internal_matches:
+        if internal_mismatch:
+            # The approved identity rule takes precedence over wording in the
+            # email or old history: a different internal number is adjustment.
+            duplicate_evidence = []
+        elif exact_internal_matches:
             duplicate_evidence.insert(0, {
                 "source": "837/835 exact claim identity match",
                 "highmark_claim_number": claim_number,
