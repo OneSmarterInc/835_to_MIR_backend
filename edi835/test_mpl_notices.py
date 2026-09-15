@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Client, User
-from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLNotice, RECONClaim, RECONFile)
+from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLIssueDefinition, MPLNotice, RECONClaim, RECONFile)
 from edi835.mpl_views import _mpl_file_claim_rows
 from edi835.mpl_notices import (
     NoticeValidationError,
@@ -327,6 +327,37 @@ class MPLClaimExtractionTests(TestCase):
         self.assertEqual(reports[0]["history"][0]["filename"], "claim.837")
         self.assertFalse(reports[0]["duplicate"]["found"])
         self.assertFalse(reports[0]["hold"]["found"])
+
+    def test_claim_report_uses_persisted_issue_definition_and_resolution(self):
+        MPLIssueDefinition.objects.update_or_create(code="UE036", defaults={
+            "title": "Room-rate acknowledgement",
+            "description": "Stored convention description.",
+            "resolution": "Stored approved resolution.",
+            "mapping_status": "EMAIL_SUPPORTED",
+            "source": "Test convention source",
+        })
+        issue = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [{"codes": ["UE036"], "description": "Raw email wording."}],
+            "sources": [],
+        }], [])[0]["issues"][0]
+        self.assertEqual(issue["description"], "Stored convention description.")
+        self.assertEqual(issue["resolution"], "Stored approved resolution.")
+        self.assertEqual(issue["reported_description"], "Raw email wording.")
+
+    def test_claim_report_splits_combined_codes_into_mapped_rows(self):
+        for code, description, resolution in (("MP001", "D1", "R1"), ("MP002", "D2", "R2")):
+            MPLIssueDefinition.objects.update_or_create(code=code, defaults={
+                "title": code, "description": description, "resolution": resolution,
+                "mapping_status": "EMAIL_SUPPORTED", "source": "Test",
+            })
+        issues = build_claim_reports([{
+            "claim_number": "44320262370555000",
+            "reported_issues": [{"codes": ["MP001", "MP002"], "description": "Combined instruction."}],
+            "sources": [],
+        }], [])[0]["issues"]
+        self.assertEqual([item["issue_id"] for item in issues], ["MP001", "MP002"])
+        self.assertEqual([item["resolution"] for item in issues], ["R1", "R2"])
 
 
 class MPLAIEnablementTests(TestCase):
