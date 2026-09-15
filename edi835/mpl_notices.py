@@ -1788,18 +1788,44 @@ def build_claim_reports(source_matches, claims):
                 "internal_claim_numbers": sorted(exact_internal_matches),
                 "conversion_findings": duplicate_conversion_findings,
             })
-        hold_evidence = [
-            item for item in [*issues, *history]
-            if re.search(r"\bHOLD|HELD\b", json.dumps(item, default=str), re.I)
-        ]
-        hold_evidence.extend(
-            finding for finding in conversion_findings
+        hold_evidence = []
+        for finding in conversion_findings:
+            severity = str(finding.get("severity") or finding.get("decision") or "").upper()
             if (
-                str(finding.get("severity") or "").upper() in {"HOLD", "REFUSE"}
-                or str(finding.get("decision") or "").upper() in {"HOLD", "REFUSE"}
-                or re.search(r"\bHOLD|HELD\b", json.dumps(finding, default=str), re.I)
-            )
-        )
+                severity in {"HOLD", "HELD", "REFUSE"}
+                or re.search(r"\bHOLD|HELD\b", str(finding.get("description") or ""), re.I)
+            ):
+                hold_evidence.append({
+                    "date": finding.get("date"),
+                    "filename": finding.get("filename") or "—",
+                    "code": finding.get("code") or finding.get("rule_code") or "MIR_CHECK",
+                    "severity": severity or "HOLD",
+                    "description": (
+                        finding.get("description") or finding.get("reason")
+                        or "The conversion gate placed this claim on hold."
+                    ),
+                    "internal_claim_number": finding.get("internal_claim_number") or "",
+                    "source": finding.get("evidence") or "835 conversion gate",
+                })
+        for event in history:
+            status_text = f"{event.get('status', '')} {event.get('event', '')}"
+            if re.search(r"\bHOLD|HELD\b", status_text, re.I):
+                hold_evidence.append({
+                    "date": event.get("date"),
+                    "filename": event.get("filename") or "—",
+                    "code": "HOLD_HISTORY",
+                    "severity": event.get("status") or "HOLD",
+                    "description": event.get("event") or "Claim was recorded as held.",
+                    "internal_claim_number": event.get("internal_claim_number") or "",
+                    "source": event.get("file_type") or "Claim history",
+                })
+        hold_evidence = list({
+            (
+                item.get("date"), item.get("filename"), item.get("code"),
+                item.get("description"), item.get("internal_claim_number"),
+            ): item
+            for item in hold_evidence
+        }.values())
         internal_numbers = sorted(source_internal_numbers)
         if claim_data and claim_data.get("internal_claim_number"):
             value = str(claim_data["internal_claim_number"]).strip()
@@ -1817,19 +1843,27 @@ def build_claim_reports(source_matches, claims):
             "issues": issues,
             "history": history,
             "duplicate": {
-                "found": bool(duplicate_evidence),
+                "status": (
+                    "ADJUSTMENT" if internal_mismatch
+                    else "DUPLICATE_FOUND" if duplicate_confirmed
+                    else "NOT_FOUND"
+                ),
+                "found": duplicate_confirmed,
                 "details": duplicate_evidence,
                 "summary": (
-                    "Duplicate evidence was found in the claim history."
-                    if duplicate_evidence else "No stored duplicate evidence was found."
+                    "Adjustment — the Highmark claim number matches, but the internal claim numbers differ."
+                    if internal_mismatch else
+                    "Duplicate found — the Highmark and internal claim numbers match and the conversion gate recorded duplicate evidence."
+                    if duplicate_confirmed else
+                    "Not found — no verified duplicate conversion evidence was found."
                 ),
             },
             "hold": {
                 "found": bool(hold_evidence),
                 "details": hold_evidence,
                 "summary": (
-                    "Hold evidence was found; see the evidence rows below."
-                    if hold_evidence else "No stored hold evidence was found."
+                    f"Hold found in {len(hold_evidence)} conversion/history event(s)."
+                    if hold_evidence else "No verified hold event was found."
                 ),
             },
             "recommended_actions": analysis.get("recommended_actions") or [],
