@@ -1441,10 +1441,11 @@ def process_notice(notice_id):
         confirmed_links = list(notice.notice_claims.filter(confirmed_by_user=True).select_related("claim"))
         matches = [link.claim for link in confirmed_links] or match_claims(notice)
         if not matches:
-            unmatched_ai = call_unmatched_notice_model(notice, notice.extracted_claim_numbers, notice.source_matches)
-            notice.ai_response = unmatched_ai["summary"]
-            notice.ai_response_source = unmatched_ai["source"]
-            notice.ai_suggestions = unmatched_ai["suggestions"]
+            notice.ai_response = (
+                f"Python evidence analysis completed for {len(notice.extracted_claim_numbers)} claim(s)."
+            )
+            notice.ai_response_source = "python-rules-v1"
+            notice.ai_suggestions = unmatched_notice_actions(notice.source_matches)
             notice.status = "REVIEW_REQUIRED"
             if not identifiers:
                 notice.last_error = "No valid claim numbers were found in the email."
@@ -1519,19 +1520,16 @@ def process_notice(notice_id):
             actions = approved_actions_for_claim(email_context, findings)
             notice.status = "ANALYZING"
             notice.save()
-            # The notice-level AI call below analyzes every email claim in
-            # one request. Avoid one slow model invocation per matched claim.
-            ai = None
             confidence = Decimal(str(0.70 if findings else 0.40))
-            analysis_summary = (ai or {}).get("summary") or fallback_summary(link.claim, findings)
-            analysis_model = (ai or {}).get("model_id", "deterministic-fallback")
+            analysis_summary = fallback_summary(link.claim, findings)
+            analysis_model = "python-rules-v1"
             MPLClaimAnalysis.objects.update_or_create(notice_claim=link, defaults={
                 "model_id": analysis_model, "timeline": timeline,
-                "findings": findings, "recommended_actions": (ai or {}).get("recommended_actions") or actions, "related_files": files,
+                "findings": findings, "recommended_actions": actions, "related_files": files,
                 "summary": analysis_summary,
-                "primary_issue_code": (ai or {}).get("primary_issue_code") or (findings[0]["code"] if findings else ""),
-                "needs_response": bool((ai or {}).get("needs_response", notice.notice_type != "ACKNOWLEDGEMENT")),
-                "confidence": confidence, "raw_model_output": ai or {},
+                "primary_issue_code": findings[0]["code"] if findings else "",
+                "needs_response": notice.notice_type != "ACKNOWLEDGEMENT",
+                "confidence": confidence, "raw_model_output": {},
             })
             highmark = (
                 link.claim.highmark_claim_number
@@ -1549,16 +1547,13 @@ def process_notice(notice_id):
             claim_response_sections.append(f"{identity}\n{analysis_summary}")
             claim_response_sources.append(analysis_model)
 
-        # Analyze the complete email once so unmatched and matched claims are
-        # all represented, without serial per-claim inference delays.
-        notice_ai = call_unmatched_notice_model(
-            notice,
-            notice.extracted_claim_numbers,
-            notice.source_matches,
+        # The structured claim report is generated entirely from stored
+        # evidence. Do not call a local language model from this workflow.
+        notice.ai_response = (
+            f"Python evidence analysis completed for {len(notice.extracted_claim_numbers)} claim(s)."
         )
-        notice.ai_response = notice_ai["summary"]
-        notice.ai_response_source = notice_ai["source"]
-        notice.ai_suggestions = notice_ai["suggestions"]
+        notice.ai_response_source = "python-rules-v1"
+        notice.ai_suggestions = unmatched_notice_actions(notice.source_matches)
         notice.status, notice.processing_completed_at = "COMPLETED", timezone.now()
         notice.save()
     except Exception as exc:
@@ -1593,6 +1588,127 @@ def notice_workflow_status(notice):
     return "IN_PROGRESS"
 
 
+def _claim_report_matches(claim_data, claim_number, source_internal_numbers):
+    wanted = str(claim_number or "").strip().upper()
+    values = {
+        str(claim_data.get(key) or "").strip().upper()
+        for key in ("claim_number", "highmark_claim_number", "internal_claim_number")
+    }
+    values.update(source_internal_numbers)
+    values.discard("")
+    return bool(wanted and any(
+        value == wanted or value.startswith(wanted) or wanted.startswith(value)
+        for value in values
+    ))
+
+
+def build_claim_reports(source_matches, claims):
+    """Build compact claim-wise reports using Python and persisted evidence."""
+    reports = []
+    for match in source_matches or []:
+        claim_number = str(match.get("claim_number") or "").strip()
+        sources = list(match.get("sources") or [])
+        source_internal_numbers = {
+            str(source.get("internal_claim_number") or "").strip().upper()
+            for source in sources
+            if source.get("internal_claim_number")
+        }
+        claim_data = next((
+            item for item in claims
+            if _claim_report_matches(item, claim_number, source_internal_numbers)
+        ), None)
+        analysis = (claim_data or {}).get("analysis") or {}
+
+        history = []
+        for source in sources:
+            history.append({
+                "date": source.get("date"),
+                "file_type": str(source.get("type") or "SOURCE").upper(),
+                "filename": source.get("filename") or "—",
+                "status": source.get("status") or "—",
+                "event": "Claim found in archived file",
+                "internal_claim_number": source.get("internal_claim_number") or "",
+            })
+        for event in analysis.get("timeline") or []:
+            history.append({
+                "date": event.get("date"),
+                "file_type": str(event.get("type") or event.get("source_type") or "").upper(),
+                "filename": event.get("file") or event.get("filename") or "—",
+                "status": event.get("status") or "—",
+                "event": event.get("event") or "Claim history event",
+                "internal_claim_number": event.get("internal_claim_number") or "",
+            })
+        history = list({
+            (
+                item.get("date"), item.get("file_type"), item.get("filename"),
+                item.get("status"), item.get("event"),
+            ): item
+            for item in history
+        }.values())
+        history.sort(key=lambda item: item.get("date") or "")
+
+        issues = []
+        for issue in match.get("reported_issues") or []:
+            codes = [str(code).upper() for code in issue.get("codes") or []]
+            issues.append({
+                "issue_id": ", ".join(codes) or issue.get("category") or "REPORTED_ISSUE",
+                "description": issue.get("description") or "Issue reported in the MPL email.",
+                "source": "MPL email",
+                "severity": "reported",
+            })
+        for finding in analysis.get("findings") or []:
+            issues.append({
+                "issue_id": finding.get("code") or "VALIDATION_FINDING",
+                "description": finding.get("description") or "Stored validation finding.",
+                "source": finding.get("evidence") or "Application evidence",
+                "severity": finding.get("severity") or "warning",
+            })
+        issues = list({
+            (item["issue_id"], item["description"], item["source"]): item
+            for item in issues
+        }.values())
+
+        duplicate_evidence = [
+            item for item in [*issues, *history]
+            if "DUPLICATE" in json.dumps(item, default=str).upper()
+        ]
+        hold_evidence = [
+            item for item in [*issues, *history]
+            if re.search(r"\bHOLD|HELD\b", json.dumps(item, default=str), re.I)
+        ]
+        internal_numbers = sorted(source_internal_numbers)
+        if claim_data and claim_data.get("internal_claim_number"):
+            value = str(claim_data["internal_claim_number"]).strip()
+            if value and value.upper() not in {item.upper() for item in internal_numbers}:
+                internal_numbers.append(value)
+
+        reports.append({
+            "claim_number": claim_number,
+            "internal_claim_numbers": internal_numbers,
+            "issues": issues,
+            "history": history,
+            "duplicate": {
+                "found": bool(duplicate_evidence),
+                "details": duplicate_evidence,
+                "summary": (
+                    "Duplicate evidence was found in the claim history."
+                    if duplicate_evidence else "No stored duplicate evidence was found."
+                ),
+            },
+            "hold": {
+                "found": bool(hold_evidence),
+                "details": hold_evidence,
+                "summary": (
+                    "Hold evidence was found; see the evidence rows below."
+                    if hold_evidence else "No stored hold evidence was found."
+                ),
+            },
+            "recommended_actions": analysis.get("recommended_actions") or [],
+            "workflow_status": (claim_data or {}).get("workflow_status") or "YET_TO_START",
+        })
+    return reports
+
+
 def serialize_notice(notice, detail=False):
     # Source matching is performed once by the worker and stored on the
     # notice. Detail polling must stay read-only and inexpensive.
@@ -1622,6 +1738,16 @@ def serialize_notice(notice, detail=False):
         "extracted_claim_numbers": notice.extracted_claim_numbers,
     }
     if detail:
+        claims = [
+            claim_summary(link)
+            for link in notice.notice_claims.select_related("claim", "analysis").all()
+        ]
+        claim_reports = build_claim_reports(source_matches, claims)
+        stored_workflow_statuses = notice.claim_workflow_statuses or {}
+        for report in claim_reports:
+            report["workflow_status"] = stored_workflow_statuses.get(
+                report["claim_number"], report["workflow_status"]
+            )
         data.update({
             "source_matches": source_matches,
             "ai_response": notice.ai_response,
@@ -1629,9 +1755,7 @@ def serialize_notice(notice, detail=False):
             "ai_suggestions": notice.ai_suggestions,
             "email_body": notice_email_body(notice),
             "latest_message": notice.latest_message_body,
-            "claims": [
-                claim_summary(link)
-                for link in notice.notice_claims.select_related("claim", "analysis").all()
-            ],
+            "claims": claims,
+            "claim_reports": claim_reports,
         })
     return data
