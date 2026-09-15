@@ -12,3 +12,6 @@ class Edi835Config(AppConfig):
         # Django's app registry before request/worker code uses it.
         from . import alert_models  # noqa: F401
         from . import signals  # noqa: F401
+        from .mpl_source_fixes import install as install_mpl_source_fixes
+
+        install_mpl_source_fixes()
