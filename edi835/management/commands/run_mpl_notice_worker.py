@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from edi835.models import MPLNotice
 from edi835.mpl_notices import process_notice
+from edi835.mpl_ai_suggestions import rewrite_python_suggestions
 
 
 PROCESSING_STATUSES = (
@@ -18,7 +19,7 @@ PROCESSING_STATUSES = (
 
 
 class Command(BaseCommand):
-    help = "Process queued MPL notices with deterministic evidence and optional local Qwen."
+    help = "Process queued MPL notices with deterministic Python evidence and a lightweight Qwen suggestion rewrite."
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
@@ -69,6 +70,9 @@ class Command(BaseCommand):
 
                 if notice_id:
                     processed = process_notice(notice_id)
+                    if processed.status in {"COMPLETED", "REVIEW_REQUIRED"}:
+                        rewrite_python_suggestions(processed)
+                        processed.refresh_from_db()
                     self.stdout.write(
                         f"Processed MPL notice {notice_id}: {processed.status}"
                     )
