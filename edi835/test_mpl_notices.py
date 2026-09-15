@@ -376,8 +376,12 @@ class MPLClaimExtractionTests(TestCase):
             ],
         }], [])[0]
         self.assertEqual(report["classification"], "DUPLICATE")
+        self.assertEqual(report["duplicate"]["status"], "DUPLICATE_FOUND")
         self.assertTrue(report["duplicate"]["found"])
         self.assertTrue(report["hold"]["found"])
+        self.assertEqual(report["hold"]["details"][0]["filename"], "payment.835")
+        self.assertEqual(report["hold"]["details"][0]["code"], "DUPLICATE_ICN")
+        self.assertEqual(report["hold"]["details"][0]["description"], "Matching claim is held by conversion.")
         self.assertEqual(
             report["duplicate"]["details"][0]["conversion_findings"][0]["filename"],
             "payment.835",
@@ -403,6 +407,7 @@ class MPLClaimExtractionTests(TestCase):
             ],
         }], [])[0]
         self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertEqual(report["duplicate"]["status"], "ADJUSTMENT")
         self.assertFalse(report["duplicate"]["found"])
         self.assertEqual(report["issues"][0]["issue_id"], "ADJUSTMENT_PENDING")
 
@@ -424,6 +429,7 @@ class MPLClaimExtractionTests(TestCase):
             ],
         }], [])[0]
         self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertEqual(report["duplicate"]["status"], "ADJUSTMENT")
         self.assertFalse(report["duplicate"]["found"])
         self.assertEqual(
             set(report["internal_claim_numbers"]),
