@@ -561,6 +561,40 @@ class MPLNoticeAPITests(TestCase):
         }
         self.assertEqual(internals, {"Q00841", "QYW218"})
 
+    def test_source_search_finds_legacy_837_number_only_in_raw_claim(self):
+        claim_number = "37820262180001800"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="legacy.837",
+            stored_filename="legacy.837",
+            file_content="x",
+            file_hash="8" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-ROW-1",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim=f"HI{claim_number}QAB123    CLAIM DATA",
+        )
+
+        sources = search_claim_sources(notice, [claim_number])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], "QAB123")
+        self.assertEqual(source_837["filename"], "legacy.837")
+
     def test_client_cannot_change_claim_workflow_status(self):
         claim_number = "33020262300027000"
         notice = MPLNotice.objects.create(
