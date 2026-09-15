@@ -2,6 +2,7 @@ import io
 import json
 import os
 import posixpath
+import re
 import stat
 import uuid
 
@@ -464,6 +465,24 @@ def edi837_search(request):
         "837": Q(edi_file__original_filename__icontains=query),
     }
 
+    # Claim-number searches are the common path. Start with indexed identity
+    # columns instead of scanning large raw payloads and filenames.
+    exact_highmark_search = bool(
+        field in {"all", "highmark"} and re.fullmatch(r"\d{12,25}", query)
+    )
+    if exact_highmark_search:
+        filter_835[field] = Q(highmark_claim_number=query)
+        filter_mir[field] = Q(claim_control_number__startswith=query)
+        filter_recon[field] = (
+            Q(claim_control_number__startswith=query)
+            | Q(patient_control_number__startswith=query)
+        )
+        filter_837[field] = (
+            Q(highmark_claim_number=query)
+            | Q(claim_control_number=query)
+            | Q(claim_control_number__startswith=query)
+        )
+
     source_835 = list(
         EDI835Claim.objects.select_related("edi_file")
         .filter(edi_file__client=client).filter(filter_835[field])[:200]
@@ -481,6 +500,33 @@ def edi837_search(request):
         EDI837Claim.objects.select_related("edi_file")
         .filter(client=client).filter(filter_837[field])[:200]
     ) if field in filter_837 else list(empty_837)
+
+    # Legacy imports can keep the claim number only in raw text. Pay for that
+    # fallback scan only when the indexed lookup found nothing for that source.
+    if exact_highmark_search:
+        if not source_835:
+            source_835 = list(
+                EDI835Claim.objects.select_related("edi_file")
+                .filter(edi_file__client=client, raw_claim__contains=query)[:50]
+            )
+        if not source_mir:
+            source_mir = list(
+                MIRClaim.objects.select_related("mir_file")
+                .filter(mir_file__client=client, header_raw__contains=query)[:50]
+            )
+        if not source_recon:
+            source_recon = list(
+                RECONClaim.objects.select_related("recon_file")
+                .filter(
+                    client=client, recon_file__file_kind="RECON",
+                    raw_record__contains=query,
+                )[:50]
+            )
+        if not source_837:
+            source_837 = list(
+                EDI837Claim.objects.select_related("edi_file")
+                .filter(client=client, raw_claim__contains=query)[:50]
+            )
 
     def source_numbers(value):
         parts = split_claim_number(value)
@@ -506,18 +552,18 @@ def edi837_search(request):
         source_835 = list(
             EDI835Claim.objects.select_related("edi_file")
             .filter(edi_file__client=client, highmark_claim_number__in=highmarks)
-            .order_by("edi_file__uploaded_at", "claim_sequence")
+            .order_by("-edi_file__uploaded_at", "claim_sequence")[:1000]
         )
         if cross_filter:
             source_mir = list(
                 MIRClaim.objects.select_related("mir_file")
                 .filter(cross_filter, mir_file__client=client)
-                .order_by("mir_file__converted_at")
+                .order_by("-mir_file__converted_at")[:1000]
             )
             source_recon = list(
                 RECONClaim.objects.select_related("recon_file")
                 .filter(cross_filter, client=client, recon_file__file_kind="RECON")
-                .order_by("recon_file__uploaded_at")
+                .order_by("-recon_file__uploaded_at")[:1000]
             )
         source_837 = list(
             EDI837Claim.objects.select_related("edi_file")
@@ -527,7 +573,7 @@ def edi837_search(request):
                 | Q(claim_control_number__in=highmarks)
                 | cross_filter
             )
-            .order_by("-edi_file__processed_at")
+            .order_by("-edi_file__processed_at")[:1000]
         )
 
     grouped = {}
