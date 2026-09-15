@@ -1787,13 +1787,43 @@ def build_claim_reports(source_matches, claims):
                 "event": event.get("event") or "Claim history event",
                 "internal_claim_number": event.get("internal_claim_number") or "",
             })
-        history = list({
-            (
-                item.get("date"), item.get("file_type"), item.get("filename"),
-                item.get("status"), item.get("event"),
-            ): item
-            for item in history
-        }.values())
+        # The same occurrence arrives through both source_matches and
+        # the persisted analysis timeline. Normalize timeline-only event names
+        # (for example "837 processed") and merge the pair into one row.
+        merged_history = {}
+        for item in history:
+            file_type = str(item.get("file_type") or "").upper()
+            event_text = str(item.get("event") or "")
+            if not file_type:
+                normalized_event = event_text.upper()
+                if "837" in normalized_event:
+                    file_type = "837"
+                elif "835" in normalized_event:
+                    file_type = "835"
+                elif "RECON" in normalized_event:
+                    file_type = "RECON"
+                elif "MIR" in normalized_event:
+                    file_type = "MIR"
+            item["file_type"] = file_type or "SOURCE"
+            key = (
+                item.get("date"),
+                item["file_type"],
+                item.get("filename"),
+                item.get("status"),
+            )
+            existing = merged_history.get(key)
+            if not existing:
+                merged_history[key] = item
+                continue
+            if not existing.get("internal_claim_number") and item.get("internal_claim_number"):
+                existing["internal_claim_number"] = item["internal_claim_number"]
+            if (
+                existing.get("event") == "Claim found in archived file"
+                and event_text
+                and event_text != "Claim history event"
+            ):
+                existing["event"] = event_text
+        history = list(merged_history.values())
         history.sort(key=lambda item: item.get("date") or "")
 
         issues = []
