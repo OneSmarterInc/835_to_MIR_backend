@@ -328,6 +328,35 @@ class MPLClaimExtractionTests(TestCase):
         self.assertFalse(reports[0]["duplicate"]["found"])
         self.assertFalse(reports[0]["hold"]["found"])
 
+    def test_claim_report_merges_source_and_timeline_occurrence(self):
+        occurred_at = "2026-09-15T14:49:23+00:00"
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [{
+                "type": "837",
+                "filename": "IP7A260807I",
+                "date": occurred_at,
+                "status": "PROCESSED",
+                "internal_claim_number": "QYD579",
+            }],
+        }], [{
+            "claim_number": "86520262000982500",
+            "highmark_claim_number": "86520262000982500",
+            "internal_claim_number": "QYD579",
+            "analysis": {"timeline": [{
+                "date": occurred_at,
+                "file": "IP7A260807I",
+                "status": "PROCESSED",
+                "event": "837 processed",
+            }]},
+        }])[0]
+
+        self.assertEqual(len(report["history"]), 1)
+        self.assertEqual(report["history"][0]["file_type"], "837")
+        self.assertEqual(report["history"][0]["internal_claim_number"], "QYD579")
+        self.assertEqual(report["history"][0]["event"], "837 processed")
+
     def test_claim_report_uses_persisted_issue_definition_and_resolution(self):
         MPLIssueDefinition.objects.update_or_create(code="UE036", defaults={
             "title": "Room-rate acknowledgement",
