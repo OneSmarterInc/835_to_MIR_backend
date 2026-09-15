@@ -494,6 +494,30 @@ def _837_claim_matches_highmark(claim, highmark_claim_number):
     ))
 
 
+def _837_claim_matches_internal(claim, internal_numbers):
+    """Match an archived 837 row by an exact, client-scoped internal number."""
+    wanted = {
+        str(value or "").strip().upper()
+        for value in internal_numbers if str(value or "").strip()
+    }
+    if not wanted:
+        return ""
+    for candidate in (
+        getattr(claim, "internal_claim_number", ""),
+        getattr(claim, "reference_9c", ""),
+        getattr(claim, "patient_control_number", ""),
+        getattr(claim, "claim_control_number", ""),
+    ):
+        value = str(candidate or "").strip()
+        if value.upper() in wanted:
+            return value
+    raw_claim = str(getattr(claim, "raw_claim", "") or "")
+    for value in wanted:
+        if re.search(rf"(?<![A-Z0-9]){re.escape(value)}(?![A-Z0-9])", raw_claim, re.I):
+            return value
+    return ""
+
+
 def internal_claim_number_from_837_claim(claim, highmark_claim_number):
     """Return an internal number only when the same normalized 837 claim proves it."""
     wanted = str(highmark_claim_number or "").strip()
@@ -723,6 +747,51 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 },
                 "download_url": f"/edi835/api/mpl-files/recon/{source.id}/download/",
             })
+
+        # Legacy 837 rows sometimes omit the normalized Highmark number but
+        # retain the exact internal number. Reverse-link only from internal
+        # numbers already proven by this claim's 835/MIR/RECON sources.
+        if not any(source.get("type") == "837" for source in sources):
+            known_internals = {
+                str(source.get("internal_claim_number") or "").strip()
+                for source in sources
+                if source.get("type") in {"835", "MIR", "RECON"}
+                and source.get("internal_claim_number")
+            }
+            internal_query = Q()
+            for internal in known_internals:
+                internal_query |= (
+                    Q(internal_claim_number__iexact=internal)
+                    | Q(reference_9c__iexact=internal)
+                    | Q(patient_control_number__iexact=internal)
+                    | Q(claim_control_number__iexact=internal)
+                    | Q(raw_claim__contains=internal)
+                )
+            fallback_837 = list(
+                EDI837Claim.objects.filter(client=notice.client)
+                .filter(internal_query)
+                .select_related("edi_file")
+                .order_by("-edi_file__uploaded_at", "-id")[:200]
+            ) if known_internals else []
+            for claim_837 in fallback_837:
+                matched_internal = _837_claim_matches_internal(claim_837, known_internals)
+                if not matched_internal:
+                    continue
+                source = claim_837.edi_file
+                append_source("837", source.id, {
+                    "type": "837",
+                    "internal_claim_number": matched_internal,
+                    "filename": source.original_filename,
+                    "status": source.status,
+                    "date": source.uploaded_at.isoformat() if source.uploaded_at else None,
+                    "details": {
+                        "service_dates": f"{claim_837.service_from_date or '—'} – {claim_837.service_to_date or '—'}",
+                        "services": claim_837.service_count,
+                        "total_charge": str(claim_837.total_charge_amount),
+                        "matched_by": "Exact internal claim number",
+                    },
+                    "download_url": f"/edi835/api/mpl-files/837/{source.id}/download/",
+                })
 
         sources.sort(key=lambda item: (
             {"837": 0, "MIR": 1, "835": 2, "RECON": 3}.get(item["type"], 9),
