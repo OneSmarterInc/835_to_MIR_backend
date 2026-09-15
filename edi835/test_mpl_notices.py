@@ -759,6 +759,54 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual(source_837["internal_claim_number"], internal)
         self.assertEqual(source_837["filename"], "fixed-width.837")
 
+    def test_source_search_uses_universal_search_837_identity_columns(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="search-screen.837",
+            stored_filename="search-screen.837",
+            file_content="x",
+            file_hash="5" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number=f"LEGACY-{internal}-ROW",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "search-screen.837")
+        self.assertEqual(source_837["details"]["matched_by"], "Exact internal claim number")
+
     def test_source_search_finds_legacy_837_number_only_in_raw_claim(self):
         claim_number = "37820262180001800"
         notice = MPLNotice.objects.create(
