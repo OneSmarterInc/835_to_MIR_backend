@@ -565,9 +565,33 @@ def search_claim_sources(notice, identifiers, issue_map=None):
     client, while 837 raw-claim matching covers identifiers stored in REF
     segments instead of the normalized columns.
     """
+    identifiers = [str(value).strip() for value in identifiers[:50] if str(value).strip()]
     results = []
     issue_map = issue_map or {}
-    for identifier in identifiers[:50]:
+
+    # Legacy 837 imports can contain the Highmark number only in raw_claim.
+    # Fetch all normalized and raw matches once for the notice; the previous
+    # per-claim raw scan was slow and also missed additional rows from a file.
+    query_837 = Q()
+    for identifier in identifiers:
+        query_837 |= (
+            Q(claim_control_number=identifier)
+            | Q(claim_control_number__startswith=identifier)
+            | Q(highmark_claim_number=identifier)
+            | Q(highmark_claim_number__startswith=identifier)
+            | Q(internal_claim_number=identifier)
+            | Q(reference_9c=identifier)
+            | Q(patient_control_number=identifier)
+            | Q(raw_claim__contains=identifier)
+        )
+    all_claims_837 = list(
+        EDI837Claim.objects.filter(client=notice.client)
+        .filter(query_837)
+        .select_related("edi_file")
+        .order_by("-edi_file__uploaded_at", "-id")[:2000]
+    ) if identifiers else []
+
+    for identifier in identifiers:
         sources = []
         seen_sources = set()
 
@@ -584,20 +608,10 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 seen_sources.add(key)
                 sources.append(payload)
 
-        claims_837 = (
-            EDI837Claim.objects.filter(client=notice.client)
-            .filter(
-                Q(claim_control_number=identifier)
-                | Q(claim_control_number__startswith=identifier)
-                | Q(highmark_claim_number=identifier)
-                | Q(highmark_claim_number__startswith=identifier)
-                | Q(internal_claim_number=identifier)
-                | Q(reference_9c=identifier)
-                | Q(patient_control_number=identifier)
-            )
-            .select_related("edi_file")
-            .order_by("-edi_file__uploaded_at", "-id")[:200]
-        )
+        claims_837 = [
+            claim for claim in all_claims_837
+            if _837_claim_matches_highmark(claim, identifier)
+        ][:200]
         for claim_837 in claims_837:
             internal_837 = internal_claim_number_from_837_claim(claim_837, identifier)
             if not _837_claim_matches_highmark(claim_837, identifier):
