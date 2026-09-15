@@ -387,6 +387,31 @@ class MPLClaimExtractionTests(TestCase):
             "payment.835",
         )
 
+    def test_claim_report_recognizes_conversion_status_hold(self):
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [{
+                "type": "835",
+                "filename": "payment.835",
+                "date": "2026-09-09T10:00:00+00:00",
+                "internal_claim_number": "QYD579",
+                "details": {"conversion_findings": [{
+                    "code": "MPL-011",
+                    "severity": "warning",
+                    "decision": "HOLD",
+                    "description": "Timely filing validation failed.",
+                }]},
+            }],
+        }], [])[0]
+        self.assertTrue(report["hold"]["found"])
+        self.assertEqual(report["hold"]["details"][0]["filename"], "payment.835")
+        self.assertEqual(report["hold"]["details"][0]["severity"], "HOLD")
+        self.assertEqual(
+            report["hold"]["details"][0]["description"],
+            "Timely filing validation failed.",
+        )
+
     def test_matching_highmark_with_different_internal_identity_is_adjustment(self):
         MPLIssueDefinition.objects.update_or_create(
             code="ADJUSTMENT_PENDING",
@@ -686,6 +711,53 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual(source_837["internal_claim_number"], internal)
         self.assertEqual(source_837["filename"], "legacy-internal.837")
         self.assertEqual(source_837["details"]["matched_by"], "Exact internal claim number")
+
+    def test_source_search_reverse_links_fixed_width_837_internal(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="fixed-width.837",
+            stored_filename="fixed-width.837",
+            file_content="x",
+            file_hash="6" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-FIXED-WIDTH",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim=f"PREFIX{internal}SUFFIX",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "fixed-width.837")
 
     def test_source_search_finds_legacy_837_number_only_in_raw_claim(self):
         claim_number = "37820262180001800"
