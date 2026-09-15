@@ -46,6 +46,15 @@ def _append_hhss(filename, now=None):
     return f"{stem}_{stamp}{extension}"
 
 
+def _numbered_outbound_name(filename, sequence, total):
+    """Add a deterministic sequence when one push contains multiple 837 files."""
+    safe_name = os.path.basename(filename)
+    if total <= 1:
+        return safe_name
+    stem, extension = os.path.splitext(safe_name)
+    return f"{stem}_{sequence:03d}{extension or '.837'}"
+
+
 def ingest_835_incoming(client, actor):
     """Validate, persist and archive inbound 835 files without converting them."""
     _config, credentials = _connected(client, "835_IN")
@@ -171,8 +180,25 @@ def push_local_outbound(client, kind):
             path for path in directory.iterdir()
             if path.is_file() and not path.name.startswith(".")
         )
-        for local_path in local_files:
-            remote_name = _append_hhss(local_path.name)
+        batch_now = timezone.now()
+        configured_837_base = ""
+        if kind == "837" and local_files:
+            from .edi837_naming_views import get_saved_837_filename_format, resolve_837_filename_format
+            configured_837_base = resolve_837_filename_format(
+                get_saved_837_filename_format(client),
+                now=batch_now,
+            )
+
+        for sequence, local_path in enumerate(local_files, start=1):
+            if kind == "837":
+                configured_name = _numbered_outbound_name(
+                    configured_837_base,
+                    sequence,
+                    len(local_files),
+                )
+                remote_name = _append_hhss(configured_name, now=batch_now)
+            else:
+                remote_name = _append_hhss(local_path.name, now=batch_now)
             target = posixpath.join(folder, remote_name)
             temporary = posixpath.join(folder, f".{remote_name}.{uuid.uuid4().hex}.uploading")
             if remote_name in existing:
