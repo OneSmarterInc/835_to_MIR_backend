@@ -385,6 +385,86 @@ class MPLClaimExtractionTests(TestCase):
             {internal},
         )
 
+    def test_claim_report_maps_python_findings_and_consolidates_no_prefix(self):
+        for code, title, description, resolution in (
+            (
+                "MIR_CLAIM_MISSING",
+                "Matching MIR claim not found",
+                "No matching MIR identity was found.",
+                "Verify the conversion batch and regenerate the MIR.",
+            ),
+            (
+                "CHARGE_MISMATCH",
+                "837 and reconciliation charge mismatch",
+                "The stored charges differ.",
+                "Compare the source charges and rerun reconciliation.",
+            ),
+            (
+                "NO_PREFIX_RETURN",
+                "No-prefix return",
+                "The expected prefix is absent.",
+                "Verify prefix configuration and regenerate the MIR.",
+            ),
+        ):
+            MPLIssueDefinition.objects.update_or_create(code=code, defaults={
+                "title": title,
+                "description": description,
+                "resolution": resolution,
+                "mapping_status": "LOCAL_CATEGORY",
+                "source": "Test approved mapping",
+                "active": True,
+            })
+
+        report = build_claim_reports([{
+            "claim_number": "89020262161295900",
+            "reported_issues": [{
+                "category": "NO_PREFIX_RETURN",
+                "codes": [],
+                "description": "Reported without a prefix.",
+            }],
+            "sources": [],
+        }], [{
+            "claim_number": "89020262161295900",
+            "highmark_claim_number": "89020262161295900",
+            "analysis": {"findings": [
+                {
+                    "code": "MIR_CLAIM_MISSING",
+                    "description": "No matching MIR claim was found for this 837 claim.",
+                    "evidence": "837/MIR comparison",
+                },
+                {
+                    "code": "CHARGE_MISMATCH",
+                    "description": "837 charge differs from reconciliation.",
+                    "evidence": "837/RECON comparison",
+                },
+                {
+                    "code": "REPORTED_NO_PREFIX_RETURN",
+                    "description": "Reported without a prefix.",
+                    "evidence": "MPL email",
+                },
+                {
+                    "code": "NO_PREFIX_NOTICE",
+                    "description": "The MPL email reports that the returned claim has no prefix.",
+                    "evidence": "MPL email",
+                },
+            ]},
+        }])[0]
+
+        issues = {item["issue_id"]: item for item in report["issues"]}
+        self.assertEqual(
+            set(issues),
+            {"MIR_CLAIM_MISSING", "CHARGE_MISMATCH", "NO_PREFIX_RETURN"},
+        )
+        self.assertEqual(issues["MIR_CLAIM_MISSING"]["title"], "Matching MIR claim not found")
+        self.assertEqual(
+            issues["CHARGE_MISMATCH"]["resolution"],
+            "Compare the source charges and rerun reconciliation.",
+        )
+        self.assertEqual(
+            issues["NO_PREFIX_RETURN"]["reported_description"],
+            "The MPL email reports that the returned claim has no prefix.",
+        )
+
     def test_claim_report_uses_persisted_issue_definition_and_resolution(self):
         MPLIssueDefinition.objects.update_or_create(code="UE036", defaults={
             "title": "Room-rate acknowledgement",
