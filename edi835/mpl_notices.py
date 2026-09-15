@@ -13,7 +13,7 @@ from django.db.models import Q
 from django.utils import timezone
 
 from .claim_numbers import split_claim_number
-from .models import EDI835Claim, EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLNotice, MPLNoticeClaim, RECONClaim
+from .models import EDI835Claim, EDI835File, EDI837Claim, MIRClaim, MPLClaimAnalysis, MPLIssueDefinition, MPLNotice, MPLNoticeClaim, RECONClaim
 from admin_panel.mir_mapper_logic.rule_registry import RULE_REGISTRY
 
 logger = logging.getLogger(__name__)
@@ -1604,6 +1604,20 @@ def _claim_report_matches(claim_data, claim_number, source_internal_numbers):
 
 def build_claim_reports(source_matches, claims):
     """Build compact claim-wise reports using Python and persisted evidence."""
+    definition_codes = {
+        str(code).upper()
+        for match in source_matches or []
+        for issue in match.get("reported_issues") or []
+        for code in (issue.get("codes") or [issue.get("category") or "REPORTED_ISSUE"])
+    }
+    definition_codes.update(
+        str(finding.get("code") or "VALIDATION_FINDING").upper()
+        for claim in claims or []
+        for finding in ((claim.get("analysis") or {}).get("findings") or [])
+    )
+    definition_map = MPLIssueDefinition.objects.filter(
+        active=True, code__in=definition_codes,
+    ).in_bulk(field_name="code")
     reports = []
     for match in source_matches or []:
         claim_number = str(match.get("claim_number") or "").strip()
@@ -1650,23 +1664,43 @@ def build_claim_reports(source_matches, claims):
         issues = []
         for issue in match.get("reported_issues") or []:
             codes = [str(code).upper() for code in issue.get("codes") or []]
-            issues.append({
-                "issue_id": ", ".join(codes) or issue.get("category") or "REPORTED_ISSUE",
-                "description": issue.get("description") or "Issue reported in the MPL email.",
-                "source": "MPL email",
-                "severity": "reported",
-            })
+            issue_ids = codes or [issue.get("category") or "REPORTED_ISSUE"]
+            for issue_id in issue_ids:
+                issues.append({
+                    "issue_id": issue_id,
+                    "reported_description": issue.get("description") or "Issue reported in the MPL email.",
+                    "source": "MPL email",
+                    "severity": "reported",
+                })
         for finding in analysis.get("findings") or []:
             issues.append({
                 "issue_id": finding.get("code") or "VALIDATION_FINDING",
-                "description": finding.get("description") or "Stored validation finding.",
+                "reported_description": finding.get("description") or "Stored validation finding.",
                 "source": finding.get("evidence") or "Application evidence",
                 "severity": finding.get("severity") or "warning",
             })
         issues = list({
-            (item["issue_id"], item["description"], item["source"]): item
+            (item["issue_id"], item["reported_description"], item["source"]): item
             for item in issues
         }.values())
+        for issue in issues:
+            definition = definition_map.get(issue["issue_id"])
+            if definition:
+                issue.update({
+                    "title": definition.title,
+                    "description": definition.description,
+                    "resolution": definition.resolution,
+                    "mapping_status": definition.mapping_status,
+                    "definition_source": definition.source,
+                })
+            else:
+                issue.update({
+                    "title": "Unmapped convention code",
+                    "description": "No approved convention-code definition is stored for this issue.",
+                    "resolution": "Obtain and approve the convention-code definition before changing or resubmitting the claim.",
+                    "mapping_status": "REQUIRES_MAPPING",
+                    "definition_source": "Unmapped portal value",
+                })
 
         duplicate_evidence = [
             item for item in [*issues, *history]
