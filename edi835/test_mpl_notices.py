@@ -407,6 +407,31 @@ class MPLClaimExtractionTests(TestCase):
         self.assertEqual(report["issues"][0]["issue_id"], "ADJUSTMENT_PENDING")
 
 
+    def test_internal_conflict_overrides_one_exact_pair_and_duplicate_finding(self):
+        report = build_claim_reports([{
+            "claim_number": "45520262120111800",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYW218"},
+                {
+                    "type": "835", "filename": "first.835", "internal_claim_number": "QYW218",
+                    "details": {"conversion_findings": [{
+                        "code": "DUPLICATE_ICN", "severity": "hold",
+                        "description": "Old duplicate finding.",
+                    }]},
+                },
+                {"type": "835", "filename": "adjustment.835", "internal_claim_number": "Q00841"},
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertFalse(report["duplicate"]["found"])
+        self.assertEqual(
+            set(report["internal_claim_numbers"]),
+            {"Q00841", "QYW218"},
+        )
+
+
+
 class MPLAIEnablementTests(TestCase):
     def test_local_ai_is_enabled_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
