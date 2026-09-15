@@ -208,8 +208,6 @@ def push_local_outbound(client, kind):
                 with local_path.open("rb") as source:
                     sftp.putfo(source, temporary, file_size=local_path.stat().st_size, confirm=True)
                 sftp.rename(temporary, target)
-                # Do not delete the local queue copy until the remote file can
-                # actually be stat'ed after the atomic rename.
                 sftp.stat(target)
                 remove_delivered_outbound(client, kind, local_path)
                 sent.append(remote_name)
@@ -237,6 +235,10 @@ def push_local_outbound(client, kind):
 
 def execute_directional_operation(client, actor, automation_type, direction):
     key = (automation_type.upper(), direction.upper())
+
+    if key == ("ALL", "FULL_PIPELINE"):
+        from .full_sftp_pipeline import run_full_sftp_pipeline
+        return run_full_sftp_pipeline(client, actor)
 
     if key[0] == "ALL":
         return None
