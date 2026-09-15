@@ -11,12 +11,14 @@ import os
 import re
 
 from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from .mpl_notices import _qwen_chat_completion, local_ai_enabled
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_QWEN_BASE_URL = "http://127.0.0.1:8080/v1"
+DEFAULT_QWEN_MODEL = "qwen3-0.6b-instruct-q8_0"
 
 
 def _suggestion_text(item):
@@ -67,9 +69,6 @@ def python_suggestions_by_claim(notice):
                 "python_suggestions": suggestions,
             })
 
-    # Notices without a normalized 837 match can still have deterministic
-    # Python suggestions directly on the notice. Keep them as one notice-level
-    # group so Qwen still performs only a wording/presentation pass.
     if not grouped:
         suggestions = []
         for item in notice.ai_suggestions or []:
@@ -101,6 +100,69 @@ def _clean_model_text(value):
     return text
 
 
+def _available_model_ids(payload):
+    """Read both OpenAI-style and llama.cpp-style model-list responses."""
+    rows = []
+    if isinstance(payload, dict):
+        if isinstance(payload.get("data"), list):
+            rows.extend(payload["data"])
+        if isinstance(payload.get("models"), list):
+            rows.extend(payload["models"])
+    ids = []
+    for row in rows:
+        if isinstance(row, str):
+            candidate = row.strip()
+            if candidate and candidate not in ids:
+                ids.append(candidate)
+            continue
+        if not isinstance(row, dict):
+            continue
+        for key in ("id", "model", "name"):
+            candidate = str(row.get(key) or "").strip()
+            if candidate and candidate not in ids:
+                ids.append(candidate)
+                break
+    return ids
+
+
+def _discover_live_model(base_url, headers, preferred):
+    """Use the model actually exposed by the local Qwen server.
+
+    Production has changed quantization aliases over time. A stale env alias must
+    not make the MPL AI step fail when the local server is healthy.
+    """
+    request_headers = {
+        key: value for key, value in headers.items()
+        if key.lower() != "content-type"
+    }
+    request = Request(
+        f"{base_url}/models",
+        headers=request_headers,
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=10) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except (HTTPError, URLError, TimeoutError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Could not discover live Qwen model; using configured alias %s: %s", preferred, exc)
+        return preferred
+
+    available = _available_model_ids(payload)
+    if not available:
+        logger.warning("Qwen /models returned no usable aliases; using configured alias %s", preferred)
+        return preferred
+    if preferred in available:
+        return preferred
+
+    selected = available[0]
+    logger.warning(
+        "Configured Qwen model %s is not live; using server model %s instead.",
+        preferred,
+        selected,
+    )
+    return selected
+
+
 def _parse_claim_rewrite(text, expected_count):
     """Accept strict JSON first, then a conservative plain-text fallback."""
     cleaned = _clean_model_text(text)
@@ -119,9 +181,6 @@ def _parse_claim_rewrite(text, expected_count):
                     if str(value or "").strip()
                 ]
     except json.JSONDecodeError:
-        # Small local models occasionally ignore response_format. Accept only a
-        # very simple paragraph + numbered/bulleted list shape; never infer new
-        # content from malformed output.
         lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
         bullet_lines = []
         paragraph_lines = []
@@ -173,8 +232,6 @@ def _rewrite_one_claim(base_url, model_id, headers, claim_number, suggestions):
     if parsed:
         return parsed
 
-    # One short repair attempt is much more reliable on the small Qwen model
-    # than rejecting the whole notice because of a formatting mistake.
     repair_prompt = (
         "/no_think\n"
         f"Return JSON only: {{\"paragraph\":\"...\",\"bullets\":[...]}}. "
@@ -196,12 +253,7 @@ def _rewrite_one_claim(base_url, model_id, headers, claim_number, suggestions):
 
 
 def rewrite_python_suggestions(notice):
-    """Ask Qwen only to professionally restate Python-generated suggestions.
-
-    The model receives no email, claim evidence, source files, rule definitions,
-    or history. It receives only claim identifiers plus the Python-generated
-    recommendation text shown by the portal.
-    """
+    """Ask Qwen only to professionally restate Python-generated suggestions."""
     groups = python_suggestions_by_claim(notice)
     flat_suggestions = python_suggestions_for_notice(notice)
     notice.ai_suggestions = flat_suggestions
@@ -212,14 +264,13 @@ def rewrite_python_suggestions(notice):
         notice.save(update_fields=["ai_suggestions", "ai_response", "ai_response_source", "updated_at"])
         return None
 
-    # The Qwen server is a local service on production. Keep the environment
-    # override, but use the deployed local URL by default so a missing optional
-    # worker env file does not silently disable AI suggestions.
     base_url = os.getenv("MPL_AI_BASE_URL", DEFAULT_QWEN_BASE_URL).rstrip("/")
-    model_id = os.getenv("MPL_AI_MODEL", "qwen3-0.6b-instruct-q4_k_m")
+    preferred_model = os.getenv("MPL_AI_MODEL", DEFAULT_QWEN_MODEL).strip() or DEFAULT_QWEN_MODEL
     headers = {"Content-Type": "application/json"}
     if os.getenv("MPL_AI_API_KEY"):
         headers["Authorization"] = f"Bearer {os.environ['MPL_AI_API_KEY']}"
+
+    model_id = _discover_live_model(base_url, headers, preferred_model)
 
     claims = []
     failures = []
