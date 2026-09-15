@@ -24,6 +24,32 @@ from .models import EDI835Claim, EDI835File, EDI837Claim, EDI837File, MIRClaim, 
 from .services import resolve_sftp_config
 
 
+def search_837_claim_records(client, identifiers, limit=200):
+    """Use the Universal Search 837 lookup across every stored identity field."""
+    values = list(dict.fromkeys(
+        str(value or "").strip() for value in identifiers if str(value or "").strip()
+    ))
+    if not values:
+        return []
+
+    identity_filter = Q()
+    for value in values:
+        identity_filter |= (
+            Q(claim_control_number__icontains=value)
+            | Q(highmark_claim_number__icontains=value)
+            | Q(internal_claim_number__icontains=value)
+            | Q(patient_control_number__icontains=value)
+            | Q(reference_9c__icontains=value)
+            | Q(raw_claim__icontains=value)
+        )
+    return list(
+        EDI837Claim.objects.select_related("edi_file")
+        .filter(client=client)
+        .filter(identity_filter)
+        .order_by("-edi_file__processed_at", "-edi_file__uploaded_at", "-id")[:limit]
+    )
+
+
 def _client_for_request(request, supplied_id=None):
     if getattr(request.user, "client_id", None):
         return request.user.client
@@ -523,10 +549,7 @@ def edi837_search(request):
                 )[:50]
             )
         if not source_837:
-            source_837 = list(
-                EDI837Claim.objects.select_related("edi_file")
-                .filter(client=client, raw_claim__contains=query)[:50]
-            )
+            source_837 = search_837_claim_records(client, [query], limit=50)
 
     def source_numbers(value):
         parts = split_claim_number(value)
@@ -565,15 +588,17 @@ def edi837_search(request):
                 .filter(cross_filter, client=client, recon_file__file_kind="RECON")
                 .order_by("-recon_file__uploaded_at")[:1000]
             )
-        source_837 = list(
-            EDI837Claim.objects.select_related("edi_file")
-            .filter(client=client)
-            .filter(
-                Q(highmark_claim_number__in=highmarks)
-                | Q(claim_control_number__in=highmarks)
-                | cross_filter
-            )
-            .order_by("-edi_file__processed_at")[:1000]
+        known_internals = {
+            str(item.internal_claim_number or "").strip()
+            for item in source_835 if item.internal_claim_number
+        }
+        known_internals.update(
+            source_numbers(item.claim_control_number)[1]
+            for item in (*source_mir, *source_recon)
+            if source_numbers(item.claim_control_number)[1]
+        )
+        source_837 = search_837_claim_records(
+            client, [*highmarks, *known_internals], limit=1000,
         )
 
     grouped = {}
