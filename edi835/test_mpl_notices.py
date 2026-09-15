@@ -13,6 +13,7 @@ from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
     authoritative_rule_catalog,
+    build_claim_reports,
     conversion_findings_for_claim,
     call_local_model,
     extract_claim_identifiers,
@@ -301,6 +302,31 @@ class MPLClaimExtractionTests(TestCase):
         self.assertIn("reconciliation status", joined)
         self.assertIn("UE999", joined)
         self.assertNotIn("Confirm that the correct client", joined)
+
+    def test_builds_structured_python_claim_report(self):
+        reports = build_claim_reports(
+            [{
+                "claim_number": "86520262000982500",
+                "reported_issues": [{
+                    "codes": ["MP011"],
+                    "category": "",
+                    "description": "Timely filing issue.",
+                }],
+                "sources": [{
+                    "type": "837",
+                    "filename": "claim.837",
+                    "date": "2026-09-09T10:00:00+00:00",
+                    "status": "PROCESSED",
+                    "internal_claim_number": "QYD579",
+                }],
+            }],
+            [],
+        )
+        self.assertEqual(reports[0]["internal_claim_numbers"], ["QYD579"])
+        self.assertEqual(reports[0]["issues"][0]["issue_id"], "MP011")
+        self.assertEqual(reports[0]["history"][0]["filename"], "claim.837")
+        self.assertFalse(reports[0]["duplicate"]["found"])
+        self.assertFalse(reports[0]["hold"]["found"])
 
 
 class MPLAIEnablementTests(TestCase):
