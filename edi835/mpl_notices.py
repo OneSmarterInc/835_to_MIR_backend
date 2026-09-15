@@ -1721,6 +1721,9 @@ def build_claim_reports(source_matches, claims):
         for finding in ((claim.get("analysis") or {}).get("findings") or [])
     )
     definition_codes.add("ADJUSTMENT_PENDING")
+    definition_codes.update(
+        ISSUE_CODE_ALIASES.get(code, code) for code in list(definition_codes)
+    )
     definition_map = MPLIssueDefinition.objects.filter(
         active=True, code__in=definition_codes,
     ).in_bulk(field_name="code")
