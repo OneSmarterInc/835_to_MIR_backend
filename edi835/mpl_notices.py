@@ -1721,7 +1721,29 @@ def build_claim_reports(source_matches, claims):
     reports = []
     for match in source_matches or []:
         claim_number = str(match.get("claim_number") or "").strip()
-        sources = list(match.get("sources") or [])
+
+        def normalized_internal(value):
+            raw = str(value or "").strip()
+            if not raw or raw.upper() == claim_number.upper():
+                return ""
+            extracted = internal_claim_number_from_source(claim_number, raw)
+            if extracted:
+                return extracted
+            parsed = split_claim_number(raw)
+            if (
+                str(parsed.get("highmark_claim_number") or "").upper()
+                == claim_number.upper()
+            ):
+                return str(parsed.get("internal_claim_number") or "").strip()
+            return raw
+
+        sources = []
+        for raw_source in match.get("sources") or []:
+            source = dict(raw_source)
+            source["internal_claim_number"] = normalized_internal(
+                source.get("internal_claim_number")
+            )
+            sources.append(source)
         source_internal_numbers = {
             str(source.get("internal_claim_number") or "").strip().upper()
             for source in sources
@@ -1943,7 +1965,7 @@ def build_claim_reports(source_matches, claims):
         }.values())
         internal_numbers = sorted(source_internal_numbers)
         if claim_data and claim_data.get("internal_claim_number"):
-            value = str(claim_data["internal_claim_number"]).strip()
+            value = normalized_internal(claim_data["internal_claim_number"])
             if value and value.upper() not in {item.upper() for item in internal_numbers}:
                 internal_numbers.append(value)
 
