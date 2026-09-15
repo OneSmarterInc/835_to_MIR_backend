@@ -7,7 +7,7 @@ from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Client, User
-from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLIssueDefinition, MPLNotice, RECONClaim, RECONFile)
+from edi835.models import (EDI835Claim, EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLIssueDefinition, MPLNotice, RECONClaim, RECONFile)
 from edi835.mpl_views import _mpl_file_claim_rows
 from edi835.mpl_notices import (
     NoticeValidationError,
@@ -638,6 +638,54 @@ class MPLNoticeAPITests(TestCase):
             if source["type"] == "837"
         }
         self.assertEqual(internals, {"Q00841", "QYW218"})
+
+    def test_source_search_reverse_links_837_by_internal_number(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="legacy-internal.837",
+            stored_filename="legacy-internal.837",
+            file_content="x",
+            file_hash="7" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-ROW-INTERNAL",
+            highmark_claim_number="",
+            internal_claim_number=internal,
+            reference_9c=internal,
+            raw_claim=f"REF*9C*{internal}~",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "legacy-internal.837")
+        self.assertEqual(source_837["details"]["matched_by"], "Exact internal claim number")
 
     def test_source_search_finds_legacy_837_number_only_in_raw_claim(self):
         claim_number = "37820262180001800"
