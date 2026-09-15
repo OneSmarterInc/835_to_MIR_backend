@@ -357,6 +357,34 @@ class MPLClaimExtractionTests(TestCase):
         self.assertEqual(report["history"][0]["internal_claim_number"], "QYD579")
         self.assertEqual(report["history"][0]["event"], "837 processed")
 
+    def test_claim_report_strips_highmark_from_internal_identity(self):
+        highmark = "89020262161295900"
+        internal = "QZG591"
+        report = build_claim_reports([{
+            "claim_number": highmark,
+            "reported_issues": [],
+            "sources": [{
+                "type": "837",
+                "filename": "claim.837",
+                "internal_claim_number": f"{highmark}{internal}",
+            }, {
+                "type": "835",
+                "filename": "payment.835",
+                "internal_claim_number": internal,
+            }],
+        }], [{
+            "claim_number": highmark,
+            "highmark_claim_number": highmark,
+            "internal_claim_number": f"{highmark}{internal}",
+            "analysis": {},
+        }])[0]
+
+        self.assertEqual(report["internal_claim_numbers"], [internal])
+        self.assertEqual(
+            {row["internal_claim_number"] for row in report["history"]},
+            {internal},
+        )
+
     def test_claim_report_uses_persisted_issue_definition_and_resolution(self):
         MPLIssueDefinition.objects.update_or_create(code="UE036", defaults={
             "title": "Room-rate acknowledgement",
