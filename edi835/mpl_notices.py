@@ -671,6 +671,10 @@ def search_claim_sources(notice, identifiers, issue_map=None):
         )
         for claim_835 in claims_835:
             source = claim_835.edi_file
+            conversion_findings = conversion_findings_for_claim(
+                source,
+                [identifier, claim_835.internal_claim_number],
+            )
             append_source("835", source.id, {
                 "type": "835",
                 "internal_claim_number": claim_835.internal_claim_number,
@@ -680,6 +684,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                 "details": {
                     "claims": source.claims_count,
                     "services": source.services_count,
+                    "conversion_findings": conversion_findings,
                 },
                 "download_url": f"/edi835/api/mpl-files/835/{source.id}/download/",
             })
@@ -1631,6 +1636,7 @@ def build_claim_reports(source_matches, claims):
         for claim in claims or []
         for finding in ((claim.get("analysis") or {}).get("findings") or [])
     )
+    definition_codes.add("ADJUSTMENT_PENDING")
     definition_map = MPLIssueDefinition.objects.filter(
         active=True, code__in=definition_codes,
     ).in_bulk(field_name="code")
@@ -1648,6 +1654,35 @@ def build_claim_reports(source_matches, claims):
             if _claim_report_matches(item, claim_number, source_internal_numbers)
         ), None)
         analysis = (claim_data or {}).get("analysis") or {}
+
+        internal_837 = {
+            str(source.get("internal_claim_number") or "").strip().upper()
+            for source in sources
+            if str(source.get("type") or "").upper() == "837"
+            and source.get("internal_claim_number")
+        }
+        internal_835 = {
+            str(source.get("internal_claim_number") or "").strip().upper()
+            for source in sources
+            if str(source.get("type") or "").upper() == "835"
+            and source.get("internal_claim_number")
+        }
+        exact_internal_matches = internal_837 & internal_835
+        internal_mismatch = bool(internal_837 and internal_835 and not exact_internal_matches)
+        conversion_findings = []
+        for source in sources:
+            if str(source.get("type") or "").upper() != "835":
+                continue
+            source_internal = str(source.get("internal_claim_number") or "").strip().upper()
+            if exact_internal_matches and source_internal not in exact_internal_matches:
+                continue
+            for finding in (source.get("details") or {}).get("conversion_findings") or []:
+                conversion_findings.append({
+                    **finding,
+                    "filename": source.get("filename") or "—",
+                    "date": source.get("date"),
+                    "internal_claim_number": source.get("internal_claim_number") or "",
+                })
 
         history = []
         for source in sources:
@@ -1695,6 +1730,15 @@ def build_claim_reports(source_matches, claims):
                 "source": finding.get("evidence") or "Application evidence",
                 "severity": finding.get("severity") or "warning",
             })
+        if internal_mismatch:
+            issues.append({
+                "issue_id": "ADJUSTMENT_PENDING",
+                "reported_description": (
+                    "The Highmark claim number matches, but the 837 and 835 internal claim numbers differ."
+                ),
+                "source": "837/835 claim identity comparison",
+                "severity": "warning",
+            })
         issues = list({
             (item["issue_id"], item["reported_description"], item["source"]): item
             for item in issues
@@ -1722,10 +1766,25 @@ def build_claim_reports(source_matches, claims):
             item for item in [*issues, *history]
             if "DUPLICATE" in json.dumps(item, default=str).upper()
         ]
+        if exact_internal_matches:
+            duplicate_evidence.insert(0, {
+                "source": "837/835 exact claim identity match",
+                "highmark_claim_number": claim_number,
+                "internal_claim_numbers": sorted(exact_internal_matches),
+                "conversion_findings": conversion_findings,
+            })
         hold_evidence = [
             item for item in [*issues, *history]
             if re.search(r"\bHOLD|HELD\b", json.dumps(item, default=str), re.I)
         ]
+        hold_evidence.extend(
+            finding for finding in conversion_findings
+            if (
+                str(finding.get("severity") or "").upper() in {"HOLD", "REFUSE"}
+                or str(finding.get("decision") or "").upper() in {"HOLD", "REFUSE"}
+                or re.search(r"\bHOLD|HELD\b", json.dumps(finding, default=str), re.I)
+            )
+        )
         internal_numbers = sorted(source_internal_numbers)
         if claim_data and claim_data.get("internal_claim_number"):
             value = str(claim_data["internal_claim_number"]).strip()
@@ -1734,6 +1793,11 @@ def build_claim_reports(source_matches, claims):
 
         reports.append({
             "claim_number": claim_number,
+            "classification": (
+                "DUPLICATE" if exact_internal_matches
+                else "ADJUSTMENT" if internal_mismatch
+                else "UNDETERMINED"
+            ),
             "internal_claim_numbers": internal_numbers,
             "issues": issues,
             "history": history,
