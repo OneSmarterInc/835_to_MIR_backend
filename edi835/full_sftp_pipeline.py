@@ -1,9 +1,10 @@
 """End-to-end SFTP Test pipeline for 837, RECON and 835/MIR.
 
-The pipeline is intentionally sequential. Each inbound object is processed one
-at a time; inbound files are only removed after the durable downstream step has
-succeeded. This keeps 50+ file folders safe from request timeouts and memory
-spikes while preserving failed files for retry.
+837 and RECON are processed sequentially one file at a time. Inbound 835 files
+are collected as one conversion batch so every valid 835 present in the SFTP
+folder contributes to one combined MIR. Source 835 files are removed from SFTP
+only after that single MIR has been confirmed delivered. Failed/refused inputs
+remain available for retry.
 """
 
 from __future__ import annotations
@@ -23,8 +24,7 @@ from .edi837_transfer import _normalize_folder, _open_sftp
 from .file_types import has_valid_file_extension
 from .models import EDI835File, RECONFile
 from .recon_service import process_recon_file
-from .services import process_edi835_file_content
-from .sftp_automation_operations import push_local_outbound
+from .services import process_multiple_edi835_files
 from .storage import stage_inbound
 
 
@@ -136,74 +136,179 @@ def process_recon_incoming(client, actor):
 
 
 def process_835_to_mir_sftp(client, actor):
-    """Read each inbound 835, convert it, confirm MIR delivery, then delete that 835."""
+    """Combine every valid inbound 835 into ONE MIR, push it, then delete inputs.
+
+    The SFTP folder is treated as one conversion batch regardless of whether it
+    contains 2, 50, or more files. Files are read sequentially, then passed to
+    the existing multi-835 converter, which validates each file independently
+    and produces one MIR from all accepted claims. Refused/unreadable files are
+    retained on inbound SFTP. Accepted files are deleted only after the single
+    combined MIR has been confirmed uploaded to MIR_OUT.
+    """
     _config, credentials, _folder = resolve_admin_sftp_route(client, "835_IN")
     import paramiko
 
     ssh = sftp = None
-    processed, deleted_inputs, retained, errors, mir_sent = [], [], [], [], []
+    candidate_names = []
+    batch_items = []
+    retained = []
+    errors = []
+    deleted_inputs = []
+
     try:
         ssh, sftp = _open_sftp(paramiko, credentials)
         folder = _normalize_folder(sftp, credentials["remote_folder"])
         entries = sorted(sftp.listdir_attr(folder), key=lambda item: item.filename)
+
+        # Read remote objects one at a time. We keep only the text needed by the
+        # combined converter; there is no per-file conversion or per-file MIR.
         for entry in entries:
             name = entry.filename
             if stat.S_ISDIR(entry.st_mode) or name.startswith(".") or not has_valid_file_extension(name, "835"):
                 continue
+            candidate_names.append(name)
             remote_path = posixpath.join(folder, name)
             try:
                 with sftp.open(remote_path, "rb") as handle:
                     raw = handle.read()
                 if not raw:
                     raise ValueError("835 file is empty")
-                text = raw.decode("utf-8-sig", errors="replace").strip()
-
-                result = process_edi835_file_content(
-                    text,
-                    original_filename=name,
-                    ingestion_source="SFTP",
-                    client=client,
-                )
-                record = result.get("db_record")
-                if not result.get("success") or record is None:
-                    errors.append(f"{name}: {result.get('error') or '835 conversion failed'}")
-                    retained.append(name)
-                    continue
-
-                processed.append(name)
-                record.refresh_from_db()
-                mir = getattr(record, "mir_file", None)
-                if mir is None:
-                    errors.append(f"{name}: conversion completed but no MIR record was created")
-                    retained.append(name)
-                    continue
-                mir.refresh_from_db()
-
-                # Normal conversion already attempts the configured MIR SFTP
-                # delivery. Only drain the local MIR queue if that direct push
-                # did not succeed, avoiding duplicate remote files.
-                push_result = {"sent_files": [], "errors": []}
-                if mir.status != "PUSHED":
-                    push_result = push_local_outbound(client, "mir")
-                    mir_sent.extend(push_result.get("sent_files") or [])
-                    mir.refresh_from_db()
-
-                if mir.status != "PUSHED":
-                    detail = "; ".join(push_result.get("errors") or []) or "MIR was not confirmed on outbound SFTP"
-                    errors.append(f"{name}: {detail}")
-                    retained.append(name)
-                    continue
-
-                deleted, delete_error = _remove_with_retry(sftp, remote_path)
-                if not deleted:
-                    errors.append(f"{name}: MIR pushed but inbound delete failed: {delete_error}")
-                    retained.append(name)
-                    continue
-                deleted_inputs.append(name)
-                EDI835File.objects.filter(id=record.id).update(present_in_sftp=False)
+                batch_items.append({
+                    "filename": name,
+                    "content": raw.decode("utf-8-sig", errors="replace").strip(),
+                    "remote_path": remote_path,
+                })
             except Exception as exc:
-                errors.append(f"{name}: {exc}")
+                errors.append(f"{name}: could not read inbound 835: {exc}")
                 retained.append(name)
+
+        if not candidate_names:
+            return {
+                "success": True,
+                "processed_count": 0,
+                "deleted_input_count": 0,
+                "processed_files": [],
+                "deleted_inputs": [],
+                "retained_files": [],
+                "sent_files": [],
+                "errors": [],
+                "combined_mir": "",
+                "message": "No inbound 835 files were found.",
+            }
+
+        if not batch_items:
+            return {
+                "success": False,
+                "processed_count": 0,
+                "deleted_input_count": 0,
+                "processed_files": [],
+                "deleted_inputs": [],
+                "retained_files": sorted(set(retained or candidate_names)),
+                "sent_files": [],
+                "errors": errors or ["No readable 835 files were available for combined conversion."],
+                "combined_mir": "",
+                "message": "No readable inbound 835 files could be converted.",
+            }
+
+        # This is the key contract: one invocation creates one MIR from every
+        # valid 835 in the current SFTP folder.
+        result = process_multiple_edi835_files(
+            batch_items,
+            ingestion_source="SFTP",
+            client=client,
+            deliver_outbound=True,
+        )
+
+        accepted = list(result.get("accepted_files") or [])
+        refused = list(result.get("refused_files") or [])
+        refused_names = {
+            os.path.basename(str(item.get("filename") or ""))
+            for item in refused
+            if item.get("filename")
+        }
+        for item in refused:
+            name = os.path.basename(str(item.get("filename") or ""))
+            reasons = item.get("errors") or []
+            detail = "; ".join(str(reason) for reason in reasons) or "835 validation refused the file"
+            if name:
+                errors.append(f"{name}: {detail}")
+                retained.append(name)
+
+        if not result.get("success"):
+            # No successful combined MIR means no accepted source is safe to
+            # delete. Keep every remote source available for correction/retry.
+            retained.extend(name for name in candidate_names if name not in retained)
+            return {
+                "success": False,
+                "processed_count": 0,
+                "deleted_input_count": 0,
+                "processed_files": accepted,
+                "deleted_inputs": [],
+                "retained_files": sorted(set(retained)),
+                "sent_files": [],
+                "errors": errors + [str(result.get("error") or "Combined MIR conversion failed")],
+                "combined_mir": "",
+                "message": "Combined 835 conversion failed; no inbound 835 files were deleted.",
+            }
+
+        combined_mir = str(result.get("combined_filename") or "")
+        sftp_uploaded = bool(result.get("sftp_uploaded"))
+        if not sftp_uploaded:
+            delivery_error = str(result.get("sftp_error") or "Combined MIR was not confirmed on outbound SFTP")
+            errors.append(delivery_error)
+            # Conversion succeeded locally, but deletion is forbidden until the
+            # single MIR is durably present on MIR_OUT.
+            retained.extend(name for name in accepted if name not in retained)
+            retained.extend(name for name in refused_names if name not in retained)
+            return {
+                "success": False,
+                "processed_count": len(accepted),
+                "deleted_input_count": 0,
+                "processed_files": accepted,
+                "deleted_inputs": [],
+                "retained_files": sorted(set(retained)),
+                "sent_files": [],
+                "errors": errors,
+                "combined_mir": combined_mir,
+                "message": (
+                    f"Combined {len(accepted)} accepted 835 file(s) into one MIR, but MIR delivery failed; "
+                    "all inbound 835 files were retained."
+                ),
+            }
+
+        # The ONE combined MIR is safely remote. Delete only source files that
+        # actually contributed to it. Refused/unreadable files stay in 835_IN.
+        accepted_set = set(accepted)
+        for item in batch_items:
+            name = item["filename"]
+            if name not in accepted_set:
+                continue
+            remote_path = item["remote_path"]
+            deleted, delete_error = _remove_with_retry(sftp, remote_path)
+            if deleted:
+                deleted_inputs.append(name)
+            else:
+                errors.append(f"{name}: combined MIR pushed but inbound delete failed: {delete_error}")
+                retained.append(name)
+
+        return {
+            "success": not any(name in accepted_set for name in retained),
+            "partial": bool(errors or refused_names),
+            "processed_count": len(accepted),
+            "deleted_input_count": len(deleted_inputs),
+            "processed_files": accepted,
+            "deleted_inputs": deleted_inputs,
+            "retained_files": sorted(set(retained)),
+            "sent_files": [combined_mir] if combined_mir else [],
+            "errors": errors,
+            "combined_mir": combined_mir,
+            "accepted_file_count": len(accepted),
+            "refused_file_count": len(refused_names),
+            "message": (
+                f"Combined {len(accepted)} accepted 835 file(s) into one MIR ({combined_mir or 'generated MIR'}); "
+                f"deleted {len(deleted_inputs)} contributing inbound file(s) after confirmed MIR delivery."
+            ),
+        }
     finally:
         if sftp:
             try:
@@ -216,24 +321,9 @@ def process_835_to_mir_sftp(client, actor):
             except Exception:
                 pass
 
-    return {
-        "success": not errors or bool(deleted_inputs),
-        "processed_count": len(processed),
-        "deleted_input_count": len(deleted_inputs),
-        "processed_files": processed,
-        "deleted_inputs": deleted_inputs,
-        "retained_files": retained,
-        "sent_files": mir_sent,
-        "errors": errors,
-        "message": (
-            f"Converted {len(processed)} 835 file(s); confirmed and deleted {len(deleted_inputs)} inbound file(s) "
-            "only after MIR delivery."
-        ),
-    }
-
 
 def run_full_sftp_pipeline(client, actor):
-    """Run 837, RECON and 835/MIR end-to-end without a hard file-count cap."""
+    """Run 837, RECON and combined 835/MIR end-to-end without a hard file-count cap."""
     request = SimpleNamespace(user=actor)
     stages = {}
     stage_errors = []
@@ -270,8 +360,9 @@ def run_full_sftp_pipeline(client, actor):
         "errors": stage_errors + file_errors,
         "processed_count": sum(int(stage.get("processed_count") or stage.get("transferred_count") or 0) for stage in stages.values()),
         "message": (
-            "Full SFTP Test completed sequentially. Successful 837 files were pushed then removed from 837_IN; "
-            "successful RECON files were processed then removed from RECON_IN; successful 835 files were converted, "
-            "their MIR outputs were pushed, and only then were the source 835 files removed from 835_IN."
+            "Full SFTP Test completed. Successful 837 files were pushed then removed from 837_IN; "
+            "successful RECON files were processed then removed from RECON_IN; all valid 835 files present in "
+            "835_IN were combined into one MIR, that single MIR was pushed to MIR_OUT, and only then were the "
+            "contributing 835 source files removed from 835_IN."
         ),
     }
