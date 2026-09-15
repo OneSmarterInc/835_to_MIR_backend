@@ -36,9 +36,6 @@ def reserve_daily_alert(*, client, category, alert_date, subject, recipients, cl
             if row.status == "SENT":
                 return None
             if row.updated_at and row.updated_at > now - PENDING_RETRY_AFTER:
-                # Avoid a tight retry loop for either an in-flight send or a
-                # failed SMTP attempt. The batch worker may poll every few
-                # seconds, but operational email retries are spaced 15 minutes.
                 return None
             row.status = "PENDING"
             row.subject = subject
@@ -112,11 +109,16 @@ def _visible_alerts(request):
             qs = qs.filter(client_id__in=active_client_grant_ids(user))
     else:
         qs = qs.filter(client=getattr(user, "client", None))
+
+    requested_client_id = str(request.GET.get("client_id") or "").strip()
+    if requested_client_id:
+        qs = qs.filter(client_id=requested_client_id)
+
     return qs.order_by("-sent_at", "-created_at")
 
 
 def api_claim_alert_email_history(request):
-    """Return all sent conversion-hold and missing-reference alert emails for Checks."""
+    """Return sent claim alert emails scoped to the selected/visible client."""
     payload = []
     for row in _visible_alerts(request):
         payload.append({
