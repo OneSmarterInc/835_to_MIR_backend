@@ -146,6 +146,7 @@ def _normalize_and_dedupe_matches(matches):
         item = dict(match)
         output_sources = []
         seen_counts = {}
+        allowed_counts = {}
 
         for raw_source in match.get("sources") or []:
             source = dict(raw_source)
@@ -161,8 +162,9 @@ def _normalize_and_dedupe_matches(matches):
                 internal.upper(),
             )
             seen_counts[identity] = seen_counts.get(identity, 0) + 1
-            allowed = _actual_occurrence_count(source, claim_number, internal)
-            if seen_counts[identity] <= allowed:
+            if identity not in allowed_counts:
+                allowed_counts[identity] = _actual_occurrence_count(source, claim_number, internal)
+            if seen_counts[identity] <= allowed_counts[identity]:
                 output_sources.append(source)
 
         item["sources"] = output_sources
@@ -177,12 +179,20 @@ def install():
         return
 
     original_search = mpl_notices.search_claim_sources
+    original_serialize = mpl_notices.serialize_notice
 
     def search_claim_sources(notice, identifiers, issue_map=None):
         return _normalize_and_dedupe_matches(
             original_search(notice, identifiers, issue_map=issue_map)
         )
 
+    def serialize_notice(notice, detail=False):
+        data = original_serialize(notice, detail=detail)
+        if detail and data.get("source_matches"):
+            data["source_matches"] = _normalize_and_dedupe_matches(data["source_matches"])
+        return data
+
     mpl_notices.internal_claim_number_from_source = strict_internal_claim_number_from_source
     mpl_notices.search_claim_sources = search_claim_sources
+    mpl_notices.serialize_notice = serialize_notice
     mpl_notices._source_fixes_installed = True
