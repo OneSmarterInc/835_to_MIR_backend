@@ -512,8 +512,13 @@ def _837_claim_matches_internal(claim, internal_numbers):
         if value.upper() in wanted:
             return value
     raw_claim = str(getattr(claim, "raw_claim", "") or "")
+    folded_raw = raw_claim.casefold()
     for value in wanted:
-        if re.search(rf"(?<![A-Z0-9]){re.escape(value)}(?![A-Z0-9])", raw_claim, re.I):
+        # Fixed-width partner exports can concatenate REF/HI values directly
+        # with adjacent alphanumeric data. The candidate row is already
+        # client-scoped and was retrieved for this exact internal identifier,
+        # so requiring token boundaries incorrectly discards valid claims.
+        if value.casefold() in folded_raw:
             return value
     return ""
 
@@ -765,7 +770,7 @@ def search_claim_sources(notice, identifiers, issue_map=None):
                     | Q(reference_9c__iexact=internal)
                     | Q(patient_control_number__iexact=internal)
                     | Q(claim_control_number__iexact=internal)
-                    | Q(raw_claim__contains=internal)
+                    | Q(raw_claim__icontains=internal)
                 )
             fallback_837 = list(
                 EDI837Claim.objects.filter(client=notice.client)
@@ -880,13 +885,24 @@ def conversion_findings_for_claim(source_835, identifiers):
             continue
         code = str(raw.get("rule_code") or raw.get("code") or "MIR_CHECK").strip().upper()
         description = str(raw.get("reason") or raw.get("description") or "Stored MIR conversion finding.").strip()
-        selected.append(_finding(
+        operational_status = str(
+            raw.get("decision")
+            or raw.get("status")
+            or raw.get("action")
+            or raw.get("outcome")
+            or raw.get("gate_result")
+            or ""
+        ).strip()
+        finding = _finding(
             code,
-            str(raw.get("severity") or "warning").lower(),
+            str(raw.get("severity") or operational_status or "warning").lower(),
             description,
             f"{source_835.original_filename} · Checks/MIR rule engine",
             raw.get("evidence") or raw.get("provenance"),
-        ))
+        )
+        if operational_status:
+            finding["decision"] = operational_status
+        selected.append(finding)
     return selected
 
 
@@ -1859,9 +1875,16 @@ def build_claim_reports(source_matches, claims):
             })
         hold_evidence = []
         for finding in conversion_findings:
-            severity = str(finding.get("severity") or finding.get("decision") or "").upper()
+            operational_text = " ".join(str(
+                finding.get(key) or ""
+            ) for key in (
+                "severity", "decision", "status", "action", "outcome", "gate_result",
+            )).upper()
+            severity = str(
+                finding.get("decision") or finding.get("severity") or "HOLD"
+            ).upper()
             if (
-                severity in {"HOLD", "HELD", "REFUSE"}
+                re.search(r"\b(?:HOLD|HELD|REFUSE|REFUSED)\b", operational_text)
                 or re.search(r"\bHOLD|HELD\b", str(finding.get("description") or ""), re.I)
             ):
                 hold_evidence.append({
