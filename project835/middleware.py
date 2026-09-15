@@ -3,6 +3,7 @@ from django.conf import settings
 import json
 import re
 from accounts.admin_screens import user_can_access_screen
+from accounts.request_context import _current_request
 
 
 OFFBOARDED_PAYLOAD = {
@@ -86,9 +87,6 @@ class AdminAccessMiddleware:
             if not enrolled or not request.session.get("totp_verified", False):
                 return JsonResponse({"success": False, "error": "MFA enrollment and verification required."}, status=403)
 
-        # A delegated administrator may only address a tenant while an
-        # explicit, unexpired grant exists. This check is independent of the
-        # optional MFA setting and cannot be bypassed by calling an API directly.
         if request.user.is_authenticated and request.user.is_staff and not request.user.is_superuser:
             from admin_panel.access_control import has_active_client_grant
             client_id = requested_client_id(request, normalized_path)
@@ -97,8 +95,6 @@ class AdminAccessMiddleware:
             if client_scoped and (not client_id or not has_active_client_grant(request.user, client_id)):
                 return JsonResponse({"success": False, "error": "Temporary approved client access is required.", "code": "CLIENT_GRANT_REQUIRED"}, status=403)
 
-        # --- OFFBOARDED CLIENT BLOCK (highest priority) ---
-        # Allow logout and login endpoints so user can see the error and log out
         exempt_paths = {
             '/accounts/api/login/',
             '/accounts/api/logout/',
@@ -115,11 +111,6 @@ class AdminAccessMiddleware:
                     "Access denied. Contact your administrator."
                 )
 
-        # The administrator/mapping routes serve the React application shell.
-        # Anonymous visitors must be allowed to load that shell so React can
-        # display the dedicated Admin Sign In screen.  Actual admin APIs remain
-        # protected, and an authenticated standard user still cannot enter an
-        # administrative UI route.
         is_admin_api = path.startswith('/admin-panel/') or path.startswith('/accounts/api/admin/')
         is_admin_ui = path.startswith('/administrator') or path.startswith('/mapping')
         if is_admin_api or is_admin_ui:
@@ -135,7 +126,6 @@ class AdminAccessMiddleware:
             if is_admin_api and screen and not user_can_access_screen(request.user, screen):
                 return JsonResponse({"success": False, "error": f"Access to the {screen} screen is not assigned."}, status=403)
             
-            # Block administrative API access if TOTP is enabled but not verified in the session
             if request.user.is_authenticated and getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False):
                 if '/api/' in path:
                     return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
@@ -147,15 +137,17 @@ class ClientAccessMiddleware:
         self.get_response = get_response
 
     def __call__(self, request):
-        path = request.path.lower()
-        
-        # Protect general /api/ routes that aren't for accounts/login
-        if path.startswith('/api/') and not path.startswith('/accounts/api/login') and not path.startswith('/accounts/api/signup') and not path.startswith('/admin-panel/'):
-            if not request.user.is_authenticated:
-                return JsonResponse({"success": False, "error": "Access denied. Authentication required."}, status=401)
+        token = _current_request.set(request)
+        try:
+            path = request.path.lower()
             
-            # Enforce MFA verification for standard API access if TOTP is enabled
-            if getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False) and not path.startswith('/accounts/api/totp'):
-                return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
+            if path.startswith('/api/') and not path.startswith('/accounts/api/login') and not path.startswith('/accounts/api/signup') and not path.startswith('/admin-panel/'):
+                if not request.user.is_authenticated:
+                    return JsonResponse({"success": False, "error": "Access denied. Authentication required."}, status=401)
                 
-        return self.get_response(request)
+                if getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None) and not request.session.get("totp_verified", False) and not path.startswith('/accounts/api/totp'):
+                    return JsonResponse({"success": False, "error": "MFA verification required."}, status=403)
+                    
+            return self.get_response(request)
+        finally:
+            _current_request.reset(token)
