@@ -4,7 +4,7 @@ from django.http import JsonResponse
 
 from admin_panel.access_control import scope_client_queryset
 
-from .models import EDI835File
+from .models import EDI835File, MIRFile
 
 
 def _scoped_files(request):
@@ -29,6 +29,59 @@ def _claim_key(finding, index):
     claim_number = str(claim_number or f"held-claim-{index + 1}")
     claim_index = str(finding.get("claim_index") or "").strip()
     return f"{claim_number}:claim-index:{claim_index}" if claim_index else claim_number
+
+
+def _conversion_findings_with_previous_835(record):
+    """Enrich duplicate findings with the 835 source that created the prior MIR.
+
+    Historical conversion findings already persist the previous MIR id/name.  Resolve
+    that MIR back through MIRFile.source_835 so the Checks screen can show exactly
+    which 835 input(s) produced the previous MIR.  This is response-only enrichment;
+    stored audit findings are never rewritten.
+    """
+    raw_findings = list(record.conversion_findings or [])
+    if not raw_findings:
+        return []
+
+    previous_ids = {
+        str(finding.get("previous_mir_id") or "").strip()
+        for finding in raw_findings
+        if str(finding.get("previous_mir_id") or "").strip()
+    }
+    previous_names = {
+        str(finding.get("previous_mir_filename") or "").strip()
+        for finding in raw_findings
+        if str(finding.get("previous_mir_filename") or "").strip()
+    }
+
+    candidates = MIRFile.objects.select_related("source_835").filter(client_id=record.client_id)
+    by_id = {
+        str(mir.id): mir
+        for mir in candidates.filter(id__in=previous_ids)
+    } if previous_ids else {}
+    by_name = {
+        mir.mir_filename: mir
+        for mir in candidates.filter(mir_filename__in=previous_names)
+    } if previous_names else {}
+
+    enriched = []
+    for original in raw_findings:
+        finding = dict(original or {})
+        previous_id = str(finding.get("previous_mir_id") or "").strip()
+        previous_name = str(finding.get("previous_mir_filename") or "").strip()
+        previous_mir = by_id.get(previous_id) or by_name.get(previous_name)
+        if previous_mir is not None and previous_mir.source_835 is not None:
+            source_835 = str(previous_mir.source_835.original_filename or "").strip()
+            if source_835:
+                finding["previous_835_filename"] = source_835
+                # Existing frontend already renders previous_mir_filename in the
+                # Previous MIR File column. Include the source there as well so
+                # historical rows gain the information without a data migration.
+                finding["previous_mir_filename"] = (
+                    f"{previous_name or previous_mir.mir_filename} — 835: {source_835}"
+                )
+        enriched.append(finding)
+    return enriched
 
 
 def tracked_file_details(request, file_id):
@@ -58,7 +111,7 @@ def tracked_file_details(request, file_id):
                 "processing_started_at": record.processing_started_at.isoformat() if record.processing_started_at else None,
                 "processing_completed_at": record.processing_completed_at.isoformat() if record.processing_completed_at else None,
                 "error_message": record.error_message,
-                "conversion_findings": record.conversion_findings or [],
+                "conversion_findings": _conversion_findings_with_previous_835(record),
                 "present_in_sftp": record.present_in_sftp,
                 "present_in_archive_folder": record.present_in_archive_folder,
                 "ingestion_source": record.ingestion_source or "MANUAL",
