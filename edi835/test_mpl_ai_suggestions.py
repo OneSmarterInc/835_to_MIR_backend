@@ -1,6 +1,6 @@
 from django.test import SimpleTestCase
 
-from edi835.mpl_ai_suggestions import _parse_claim_rewrite
+from edi835.mpl_ai_suggestions import _available_model_ids, _parse_claim_rewrite
 
 
 class MPLAISuggestionParsingTests(SimpleTestCase):
@@ -26,3 +26,22 @@ class MPLAISuggestionParsingTests(SimpleTestCase):
             2,
         )
         self.assertIsNone(result)
+
+    def test_reads_llama_cpp_models_shape(self):
+        self.assertEqual(
+            _available_model_ids({
+                "models": [{
+                    "name": "qwen3-0.6b-instruct-q8_0",
+                    "model": "qwen3-0.6b-instruct-q8_0",
+                }]
+            }),
+            ["qwen3-0.6b-instruct-q8_0"],
+        )
+
+    def test_reads_openai_models_shape(self):
+        self.assertEqual(
+            _available_model_ids({
+                "data": [{"id": "qwen3-0.6b-instruct-q8_0", "object": "model"}]
+            }),
+            ["qwen3-0.6b-instruct-q8_0"],
+        )
