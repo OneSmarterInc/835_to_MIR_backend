@@ -1,6 +1,6 @@
 [Unit]
 Description=MIR MPL Notice Analysis Worker
-After=network-online.target mir.service
+After=network-online.target mir.service mpl-ai.service
 Wants=network-online.target
 
 [Service]
@@ -8,8 +8,11 @@ Type=simple
 User=ubuntu
 Group=www-data
 WorkingDirectory=/var/www/835_to_MIR_backend
-EnvironmentFile=-/etc/mir-mpl-ai.env
 EnvironmentFile=/var/www/835_to_MIR_backend/.env
+EnvironmentFile=-/etc/mir-mpl-ai.env
+# Load the exact API key used by the local Qwen server last so the worker and
+# llama-server cannot drift onto different credentials.
+EnvironmentFile=-/etc/mpl-ai-server.env
 ExecStart=/var/www/835_to_MIR_backend/venv/bin/python manage.py run_mpl_notice_worker --poll-seconds 2
 Restart=always
 RestartSec=5
