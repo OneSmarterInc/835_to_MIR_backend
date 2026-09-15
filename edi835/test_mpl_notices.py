@@ -393,7 +393,7 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(MPLNotice.objects.get().client, self.client_record)
 
-    def test_processes_exact_claim_with_deterministic_fallback(self):
+    def test_processes_exact_claim_with_python_rules(self):
         edi_file = EDI837File.objects.create(client=self.client_record, uploaded_by=self.user, original_filename="abc.837", stored_filename="abc.837", file_content="x", file_hash="a" * 64, status="PROCESSED", processed_at=timezone.now())
         claim = EDI837Claim.objects.create(edi_file=edi_file, client=self.client_record, claim_sequence=1, claim_control_number="CLM12345", service_count=1, total_charge_amount="100.00")
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Hi Everyone! MIR Results: claim CLM12345 returned with NO PREFIX. Please review.", reporting_year=2026, created_by=self.user)
@@ -404,9 +404,9 @@ class MPLNoticeAPITests(TestCase):
         codes = {item["code"] for item in link.analysis.findings}
         self.assertIn("MIR_CLAIM_MISSING", codes)
         self.assertIn("NO_PREFIX_NOTICE", codes)
-        self.assertEqual(link.analysis.model_id, "deterministic-fallback")
-        self.assertIn("Claim CLM12345", notice.ai_response)
-        self.assertEqual(notice.ai_response_source, "deterministic-fallback")
+        self.assertEqual(link.analysis.model_id, "python-rules-v1")
+        self.assertIn("Python evidence analysis completed", notice.ai_response)
+        self.assertEqual(notice.ai_response_source, "python-rules-v1")
 
     def test_unmatched_email_claims_remain_visible(self):
         notice = MPLNotice.objects.create(
