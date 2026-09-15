@@ -740,6 +740,34 @@ class MPLNotice(models.Model):
         ]
 
 
+class MPLIssueDefinition(models.Model):
+    """Governed descriptions and resolutions for MPL convention issue tags."""
+
+    MAPPING_STATUS_CHOICES = [
+        ("AUTHORITATIVE", "Authoritative convention rule"),
+        ("EMAIL_SUPPORTED", "Supported by MPL instructions"),
+        ("LOCAL_CATEGORY", "Portal operational category"),
+        ("REQUIRES_MAPPING", "Requires authoritative mapping"),
+    ]
+
+    code = models.CharField(max_length=50, unique=True)
+    title = models.CharField(max_length=160)
+    description = models.TextField()
+    resolution = models.TextField()
+    mapping_status = models.CharField(max_length=30, choices=MAPPING_STATUS_CHOICES)
+    source = models.CharField(max_length=255)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mpl_issue_definition"
+        ordering = ["code"]
+
+    def __str__(self):
+        return f"{self.code} — {self.title}"
+
+
 class MPLNoticeClaim(models.Model):
     """One 837 claim matched to a notice; ambiguous matches require confirmation."""
 
