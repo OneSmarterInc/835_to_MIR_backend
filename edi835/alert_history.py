@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import defaultdict
 from datetime import datetime, time, timedelta
 from zoneinfo import ZoneInfo
 
@@ -187,28 +188,93 @@ def _preview_missing_reference(client, preview_now):
 
 
 def _preview_conversion_hold(client, preview_now):
-    from .long_hold_alerts import _collect_overdue
+    """Build the selected-day long-hold digest without mutating hold state."""
+    from .models import EDI835File
 
-    items = list(_collect_overdue(preview_now).get(str(client.id), []) or [])
-    if not items:
+    by_claim = defaultdict(lambda: {"findings": [], "source": None})
+    cutoff = preview_now - timedelta(days=7)
+    sources = (
+        EDI835File.objects.filter(client=client, held_claims_count__gt=0, uploaded_at__lt=cutoff)
+        .exclude(conversion_findings=[])
+        .order_by("uploaded_at")
+    )
+
+    for source in sources.iterator(chunk_size=100):
+        held_since = source.processing_completed_at or source.uploaded_at
+        if not held_since or held_since + timedelta(days=7) >= preview_now:
+            continue
+        for finding in list(source.conversion_findings or []):
+            severity = str(finding.get("severity") or "").upper()
+            code = str(finding.get("rule_code") or finding.get("rule_name") or "").upper()
+            if severity not in {"HOLD", "REFUSE"} or code.startswith("DUPLICATE"):
+                continue
+            if str(finding.get("hold_resolution_status") or "").upper() == "RESOLVED":
+                continue
+            claim_number = str(finding.get("claim_number") or finding.get("claim_control_number") or "").strip()
+            claim_index = str(finding.get("claim_index") or "").strip()
+            if not claim_number:
+                continue
+            key = (str(source.id), claim_index or claim_number)
+            by_claim[key]["source"] = source
+            by_claim[key]["findings"].append(finding)
+
+    claims = []
+    selected_date = preview_now.astimezone(EASTERN).date()
+    for group in by_claim.values():
+        source = group["source"]
+        findings = group["findings"]
+        if source is None or not findings:
+            continue
+        first = findings[0]
+        last_alert_dates = []
+        alert_count = 0
+        for finding in findings:
+            try:
+                alert_count = max(alert_count, int(finding.get("seven_day_hold_alert_count") or 0))
+            except (TypeError, ValueError):
+                pass
+            raw_last = finding.get("seven_day_hold_last_alert_sent_at") or finding.get("seven_day_hold_alert_sent_at")
+            if raw_last:
+                try:
+                    parsed = datetime.fromisoformat(str(raw_last).replace("Z", "+00:00"))
+                    if timezone.is_naive(parsed):
+                        parsed = timezone.make_aware(parsed)
+                    last_alert_dates.append(parsed.astimezone(EASTERN).date())
+                except (TypeError, ValueError):
+                    pass
+        # A row actually sent on the selected date is represented by the audit
+        # record instead of this synthetic preview.
+        if selected_date in last_alert_dates:
+            continue
+
+        reasons = []
+        for finding in findings:
+            code = str(finding.get("rule_code") or finding.get("rule_name") or "HOLD").strip()
+            reason = str(finding.get("reason") or finding.get("message") or "Claim remains held.").strip()
+            text = f"{code}: {reason}" if code else reason
+            if text not in reasons:
+                reasons.append(text)
+
+        held_since = source.processing_completed_at or source.uploaded_at
+        claims.append({
+            "claim_number": str(first.get("claim_number") or first.get("claim_control_number") or "").strip(),
+            "source_835_filename": source.original_filename or source.stored_filename or "",
+            "held_since": held_since.isoformat() if held_since else None,
+            "days_held": max(7, int((preview_now - held_since).total_seconds() // 86400)) if held_since else 7,
+            "alert_number": alert_count + 1,
+            "alert_limit": "∞",
+            "reasons": reasons,
+        })
+
+    if not claims:
         return None
+    claims.sort(key=lambda item: (item.get("held_since") or "", item.get("claim_number") or ""))
     return {
         "category": "CONVERSION_HOLD",
         "category_label": "Conversion hold",
-        "subject": f"OneSmarter: Daily Alert - {len(items)} Unresolved Claim(s) Held More Than 7 Days",
+        "subject": f"OneSmarter: Daily Alert - {len(claims)} Unresolved Claim(s) Held More Than 7 Days",
         "recipients": alert_recipients(client),
-        "claims": [
-            {
-                "claim_number": item["claim_number"],
-                "source_835_filename": item["source_835_filename"],
-                "held_since": item["held_since"].isoformat(),
-                "days_held": item["days_held"],
-                "alert_number": item["alert_number"],
-                "alert_limit": item["alert_limit"],
-                "reasons": list(item["reasons"]),
-            }
-            for item in items
-        ],
+        "claims": claims,
     }
 
 
@@ -221,8 +287,6 @@ def _scheduled_alerts_for_date(request, selected_date):
         )
 
     scheduled_at = datetime.combine(selected_date, SCHEDULED_ALERT_TIME, tzinfo=EASTERN)
-    # Run previews just after the daily 5:30 PM Eastern checkpoint so the
-    # missing-reference collector includes claims eligible on this date.
     preview_now = scheduled_at + timedelta(seconds=1)
 
     existing_rows = {
