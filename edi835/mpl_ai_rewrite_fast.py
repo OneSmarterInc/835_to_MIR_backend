@@ -1,8 +1,9 @@
 """Fast AI rewrite path for MPL recommendations.
 
 Python remains authoritative for recommendation content. The local model is asked
-once per claim to return one paragraph plus one bullet for each approved Python
-recommendation. No per-bullet inference fallback is used.
+once per claim to turn the approved actions into natural, professional AI wording
+without changing the underlying operational meaning. No per-bullet inference
+fallback is used.
 """
 
 from __future__ import annotations
@@ -29,15 +30,20 @@ logger = logging.getLogger(__name__)
 
 
 def _rewrite_one_claim_single_call(base_url, model_id, headers, claim_number, suggestions):
-    """Return one paragraph and N bullets from exactly one local-model request."""
+    """Return one natural AI paragraph and N action bullets from one model call."""
     prompt = (
         "/no_think\n"
-        "You are a professional copy editor. Rewrite only the approved recommendations supplied by Python. "
-        "Do not analyze the claim and do not add facts, causes, diagnoses, outcomes, or new advice. "
+        "You are writing the final user-facing AI recommendation for a healthcare EDI operations team. "
+        "The supplied recommendations were already approved by deterministic Python rules and are the only actions you may use. "
+        "Rewrite them in polished, natural, professional AI wording rather than copying the source phrases. "
+        "You may improve sentence structure, remove repetitive wording, and make the paragraph flow naturally, "
+        "but you must preserve the operational meaning of every approved recommendation. "
+        "Do not analyze the claim independently. Do not invent facts, causes, diagnoses, outcomes, payer decisions, or new actions. "
+        "Keep action items as action-oriented recommendations; do not turn an instruction such as 'Confirm' or 'Verify' into a factual claim that it already happened. "
         "Return ONLY valid JSON with exactly two keys: paragraph and bullets. "
-        "paragraph must be one concise professional paragraph covering the same recommendations. "
-        "bullets must be an array with exactly one concise rewritten sentence for each input recommendation, "
-        "in the same order and with the same meaning."
+        "paragraph must be a concise, synthesized professional recommendation written in natural AI language, not a pasted list. "
+        "bullets must be an array with exactly one polished action sentence for each input recommendation, in the same order. "
+        "Avoid repeating the source wording verbatim unless a technical term, code, filename, or field name must remain exact."
     )
     payload = json.dumps(
         {
