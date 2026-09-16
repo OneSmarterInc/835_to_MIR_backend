@@ -8,6 +8,7 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 
 from project835.decorators import authenticated_api_required, json_api_errors
 
@@ -27,7 +28,7 @@ def _confirmed_remote_outbound(item):
     """Only an absolute remote SFTP path counts as a successful push.
 
     ingest_837 also creates a local 837_out working copy and stores that local
-    relative path in outbound_path.  That local copy must never be displayed as
+    relative path in outbound_path. That local copy must never be displayed as
     a successful SFTP delivery.
     """
     outbound = str(item.outbound_path or "").strip()
@@ -111,9 +112,17 @@ def _queue_pending_outbound(request, client):
     }, status=202)
 
 
+@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def edi837_files(request):
+    """List 837 files or queue pending outbound delivery.
+
+    POST is intentionally CSRF-exempt because this endpoint is an authenticated
+    JSON API used by both token-backed admin sessions and normal portal sessions.
+    Authentication and tenant authorization continue to be enforced by the
+    existing API decorators and ``_client_for_request``.
+    """
     if request.method not in {"GET", "POST"}:
         return JsonResponse({"success": False, "error": "Only GET and POST are allowed."}, status=405)
 
