@@ -1,9 +1,9 @@
 """Fast AI rewrite path for MPL recommendations.
 
 Python remains authoritative for recommendation content. The local model is asked
-once per claim to turn the approved actions into natural, professional AI wording
-without changing the underlying operational meaning. No per-bullet inference
-fallback is used.
+once per claim to turn the approved Python recommendations into natural,
+professional AI wording. It may consolidate repetitive actions for readability,
+but it may not invent facts, causes, diagnoses, outcomes, or new actions.
 """
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from urllib.error import HTTPError, URLError
 from .mpl_ai_suggestions import (
     DEFAULT_QWEN_BASE_URL,
     DEFAULT_QWEN_MODEL,
+    _clean_model_text,
     _discover_live_model,
-    _parse_claim_rewrite,
     _qwen_headers,
     _qwen_text,
     python_suggestions_by_claim,
@@ -29,35 +29,59 @@ from .mpl_notices import local_ai_enabled
 logger = logging.getLogger(__name__)
 
 
+def _parse_natural_rewrite(text):
+    """Accept a compact JSON response with one paragraph and one or more bullets."""
+    cleaned = _clean_model_text(text)
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        start, end = cleaned.find("{"), cleaned.rfind("}")
+        if start < 0 or end <= start:
+            return None
+        try:
+            parsed = json.loads(cleaned[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+
+    if not isinstance(parsed, dict):
+        return None
+    paragraph = str(parsed.get("paragraph") or "").strip()
+    raw_bullets = parsed.get("bullets") or []
+    if not isinstance(raw_bullets, list):
+        return None
+    bullets = [str(value or "").strip() for value in raw_bullets if str(value or "").strip()]
+    if not paragraph or not bullets:
+        return None
+    return {"paragraph": paragraph, "bullets": bullets}
+
+
 def _rewrite_one_claim_single_call(base_url, model_id, headers, claim_number, suggestions):
-    """Return one natural AI paragraph and N action bullets from one model call."""
+    """Create natural AI wording for one claim using exactly one model request."""
     prompt = (
         "/no_think\n"
-        "You are writing the final user-facing AI recommendation for a healthcare EDI operations team. "
+        "You are writing an operational recommendation for a healthcare EDI/claims team. "
         "The supplied recommendations were already approved by deterministic Python rules and are the only actions you may use. "
-        "Rewrite them in polished, natural, professional AI wording rather than copying the source phrases. "
-        "You may improve sentence structure, remove repetitive wording, and make the paragraph flow naturally, "
-        "but you must preserve the operational meaning of every approved recommendation. "
-        "Do not analyze the claim independently. Do not invent facts, causes, diagnoses, outcomes, payer decisions, or new actions. "
-        "Keep action items as action-oriented recommendations; do not turn an instruction such as 'Confirm' or 'Verify' into a factual claim that it already happened. "
+        "Rewrite them into natural, concise, professional AI wording. "
+        "You may combine repetitive or closely related recommendations so the result reads like a thoughtful analyst wrote it, "
+        "but do not add new actions, facts, causes, diagnoses, outcomes, assumptions, or guarantees. "
+        "Keep action items as instructions using verbs such as Review, Confirm, Verify, Compare, Correct, Reprocess, or Regenerate. "
+        "Do not turn an instruction into an unsupported statement of fact. "
         "Return ONLY valid JSON with exactly two keys: paragraph and bullets. "
-        "paragraph must be a concise, synthesized professional recommendation written in natural AI language, not a pasted list. "
-        "bullets must be an array with exactly one polished action sentence for each input recommendation, in the same order. "
-        "Avoid repeating the source wording verbatim unless a technical term, code, filename, or field name must remain exact."
+        "paragraph should be a short professional synthesis of what should be done and why, based only on the approved recommendations. "
+        "bullets should be a concise action plan, normally 3 to 8 bullets, combining overlap where useful."
     )
     payload = json.dumps(
         {
             "claim_number": str(claim_number or ""),
             "approved_recommendations": list(suggestions),
-            "required_bullet_count": len(suggestions),
         },
         ensure_ascii=False,
     )
     max_tokens = int(os.getenv("MPL_AI_CLAIM_MAX_TOKENS", "700"))
     text = _qwen_text(base_url, model_id, headers, prompt, payload, max_tokens)
-    parsed = _parse_claim_rewrite(text, len(suggestions))
+    parsed = _parse_natural_rewrite(text)
     if not parsed:
-        raise ValueError("AI did not return the required paragraph and bullet count.")
+        raise ValueError("AI did not return a usable paragraph and action list.")
     return parsed
 
 
@@ -104,7 +128,7 @@ def rewrite_python_suggestions_fast(notice):
                 "bullets": rewritten["bullets"],
             })
             logger.info(
-                "MPL AI suggestion rewrite completed for claim %s in one inference call with %s bullet(s).",
+                "MPL AI suggestion rewrite completed for claim %s in one inference call with %s action bullet(s).",
                 claim_number,
                 len(rewritten["bullets"]),
             )
