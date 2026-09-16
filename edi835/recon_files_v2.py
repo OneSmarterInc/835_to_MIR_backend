@@ -140,9 +140,6 @@ def recon_files(request):
         sort = "-uploaded_at"
     queryset = queryset.order_by(sort, "-id")
 
-    # Preserve the long-standing API behavior for callers that have not opted
-    # into pagination yet. The professional archive page supplies page/page_size
-    # and receives a bounded server-side result set.
     paginated = any(key in request.GET for key in ("page", "page_size", "search", "sort"))
     if not paginated:
         rows = list(queryset[:500])
@@ -181,6 +178,17 @@ def recon_download(request, file_id):
         return JsonResponse({"success": False, "error": "RECON file was not found."}, status=404)
 
     safe_name = os.path.basename(recon.original_filename).replace('"', "") or "recon-file"
+
+    # Viewer requests use JSON rather than an attachment response. This avoids
+    # browser/network failures caused by trying to fetch a streamed download
+    # solely to render text in the page. Downloads still use FileResponse.
+    if request.GET.get("view") == "1":
+        return JsonResponse({
+            "success": True,
+            "filename": safe_name,
+            "content": recon.file_content or "",
+        })
+
     archive_path = str(recon.archive_path or "").strip()
     if archive_path:
         root = Path(settings.MEDIA_ROOT).resolve()
