@@ -33,7 +33,7 @@ from .edi837_views import (
     edi837_claim_detail, edi837_claim_export,
     edi837_upload_process,
 )
-from .fast_claim_search import edi837_search
+from .universal_claim_search import edi837_search
 from .edi837_files_v2 import edi837_files
 from .edi837_naming_views import edi837_claim_push_sftp_named
 from .edi837_search_transfer import edi837_sftp_transfer_for_search
