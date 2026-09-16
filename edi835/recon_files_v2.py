@@ -9,6 +9,7 @@ from pathlib import Path
 from django.conf import settings
 from django.db.models import Q
 from django.http import FileResponse, HttpResponse, JsonResponse
+from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
 from admin_panel.access_control import can_access_client, scope_client_queryset
@@ -44,8 +45,6 @@ def _serialize_file(item):
 
 
 def _base_queryset():
-    # file_content can be large and is not needed by the archive table. Keep it
-    # out of list queries; downloads fetch only the selected record.
     return RECONFile.objects.select_related("client", "uploaded_by").defer("file_content")
 
 
@@ -79,7 +78,7 @@ def _visible_file(request, file_id):
     elif not request.user.is_superuser:
         visible_ids = request.user.client_access_grants.filter(
             revoked_at__isnull=True,
-            expires_at__gt=datetime.now().astimezone(),
+            expires_at__gt=timezone.now(),
         ).values_list("client_id", flat=True)
         queryset = queryset.filter(client_id__in=visible_ids)
     try:
@@ -185,7 +184,6 @@ def recon_download(request, file_id):
         if candidate and candidate.is_file():
             return FileResponse(candidate.open("rb"), as_attachment=True, filename=safe_name)
 
-    # Compatibility fallback for older rows whose archived file path is absent.
     content = (recon.file_content or "").encode("utf-8")
     response = HttpResponse(content, content_type="application/octet-stream")
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
