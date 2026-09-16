@@ -1,5 +1,6 @@
 from django.urls import path
-from .views import api_convert, download_mir, api_get_file_content
+from .conversion_views import api_convert
+from .views import download_mir, api_get_file_content
 from .validation_views import api_validate
 from .offboarding_archive import api_download_archive_zip
 from .async_conversion import api_convert_async
