@@ -360,86 +360,57 @@ def api_convert(request):
             'claims_count': batch_res['claims_count'],
             'services_count': batch_res['services_count'],
             'records_count': batch_res['records_count'],
-            'file_id': str(primary_rec.id) if primary_rec else None,
-            'combined_filename': canonical_mir_filename or batch_res.get('combined_filename'),
-            'mir_filename': canonical_mir_filename or batch_res.get('combined_filename'),
-            'sftp_uploaded': batch_res.get('sftp_uploaded', False),
-            'errors': batch_res.get('errors', []),
+            'filename': canonical_mir_filename or batch_res['combined_filename'],
             'accepted_files': batch_res.get('accepted_files', []),
             'refused_files': batch_res.get('refused_files', []),
-            'partial': batch_res.get('partial', False),
-            'delivered_claims_count': getattr(primary_rec, 'delivered_claims_count', 0),
-            'held_claims_count': getattr(primary_rec, 'held_claims_count', 0),
+            'delivered_claims_count': getattr(primary_rec, "delivered_claims_count", 0) if primary_rec else 0,
+            'held_claims_count': getattr(primary_rec, "held_claims_count", 0) if primary_rec else 0,
             'findings': batch_res.get('findings', []),
-            'output_path': getattr(primary_rec, 'output_path', ''),
         })
 
-    edi_text = edi_text.strip()
-    if not edi_text and file_id:
-        try:
-            from pathlib import Path
-            from django.conf import settings
-            from edi835.services import get_edi835_storage_dirs
-            rec = EDI835File.objects.get(id=file_id)
-            if rec.original_filename:
-                original_filename = rec.original_filename
-            dirs = get_edi835_storage_dirs(rec.client)
-            possible_paths = []
-            if rec.input_path:
-                possible_paths.append(Path(settings.BASE_DIR) / rec.input_path)
-            if rec.archive_path:
-                possible_paths.append(Path(settings.BASE_DIR) / rec.archive_path)
-            if rec.stored_filename:
-                possible_paths.append(dirs["input"] / rec.stored_filename)
-                possible_paths.append(dirs["processing"] / rec.stored_filename)
-                possible_paths.append(dirs["archive"] / rec.stored_filename)
-
-            for p in possible_paths:
-                if os.path.exists(p) and os.path.isfile(p):
-                    with open(p, "r", encoding="utf-8", errors="ignore") as f:
-                        content = f.read().strip()
-                    if content:
-                        edi_text = content
-                        break
-        except Exception:
-            pass
-
-    if not edi_text:
-        return JsonResponse({'error': 'Please provide EDI 835 text or upload file(s).'}, status=400)
-
-    res = process_edi835_file_content(edi_text, original_filename=original_filename, file_id=file_id, client=client)
-
-    if not res.get("success"):
+    invalid = _invalid_835_response(original_filename)
+    if invalid:
+        return invalid
+    result = process_edi835_file_content(
+        edi_text,
+        original_filename=original_filename,
+        file_id=file_id,
+        client=client,
+    )
+    rec = result.get("db_record")
+    if not result.get("success"):
         if client:
             try:
                 from admin_panel.email_service import send_conversion_notice
-                err_msg = res.get("error", "Unknown error")
                 send_conversion_notice(
-                    client, request, success=False,
-                    input_files=[original_filename], error=err_msg,
+                    client, request, success=False, batch=False,
+                    input_files=[original_filename],
+                    error=result.get("error") or "Conversion failed.",
                 )
-            except Exception as email_err:
-                logging.getLogger(__name__).error(f"Failed to send conversion failure email: {email_err}")
+            except Exception as e:
+                logging.getLogger(__name__).error(f"Failed to send email: {e}")
         return JsonResponse({
-            'error': f'Failed to convert EDI file: {res.get("error")}',
-            'partial': res.get('partial', False),
-            'file_id': str(res["db_record"].id) if res.get("db_record") else None,
-            'output_path': getattr(res.get("db_record"), "output_path", ""),
-            'delivered_claims_count': getattr(res.get("db_record"), "delivered_claims_count", 0),
-            'held_claims_count': getattr(res.get("db_record"), "held_claims_count", 0),
-            'findings': res.get('findings', []),
+            'error': result.get("error", "Conversion failed."),
+            'partial': result.get("partial", False),
+            'file_id': str(rec.id) if rec else file_id,
+            'output_path': getattr(rec, "output_path", "") if rec else "",
+            'delivered_claims_count': getattr(rec, "delivered_claims_count", 0) if rec else 0,
+            'held_claims_count': getattr(rec, "held_claims_count", 0) if rec else 0,
+            'findings': result.get("findings", []),
         }, status=400)
+
+    canonical_mir_filename = _canonical_mir_filename(rec)
 
     if client:
         try:
             from admin_panel.email_service import send_conversion_notice
             send_conversion_notice(
-                client, request, success=True,
+                client, request, success=True, batch=False,
                 input_files=[original_filename],
-                output_files=[_canonical_mir_filename(res.get('db_record'))],
-                claims=res.get('claims_count', 0),
-                services=res.get('services_count', 0),
-                records=res.get('records_count', 0),
+                output_files=[canonical_mir_filename or result.get('filename')],
+                claims=result.get('claims_count', 0),
+                services=result.get('services_count', 0),
+                records=result.get('records_count', 0),
             )
         except Exception as e:
             logging.getLogger(__name__).error(f"Failed to send email: {e}")
@@ -450,241 +421,28 @@ def api_convert(request):
     from admin_panel.models import log_audit_event
     log_audit_event(
         module="DOCUMENTS",
-        action="FILE_CONVERSION",
-        details=f"Converted EDI 835 file '{original_filename}'. Claims: {res['claims_count']}.",
+        action="CONVERSION",
+        details=f"Converted EDI 835 file '{original_filename}' to MIR.",
         performed_by=user_name,
         client=client
     )
 
-    mir_filename = _canonical_mir_filename(res.get("db_record"))
-
     return JsonResponse({
         'success': True,
-        'text': res['mir_text'],
-        'claims_count': res['claims_count'],
-        'services_count': res['services_count'],
-        'records_count': res['records_count'],
-        'file_id': str(res['db_record'].id),
-        'output_path': res['db_record'].output_path,
-        'archive_path': res['db_record'].archive_path,
-        'mir_filename': mir_filename,
-        'filename': mir_filename,
-        'partial': res.get('partial', False),
-        'delivered_claims_count': res['db_record'].delivered_claims_count,
-        'held_claims_count': res['db_record'].held_claims_count,
-        'findings': res.get('findings', []),
+        'text': result['mir_text'],
+        'claims_count': result['claims_count'],
+        'services_count': result['services_count'],
+        'records_count': result['records_count'],
+        'file_id': str(rec.id) if rec else file_id,
+        'output_path': getattr(rec, "output_path", "") if rec else "",
+        'archive_path': getattr(rec, "archive_path", "") if rec else "",
+        'mir_filename': canonical_mir_filename,
+        'filename': canonical_mir_filename or result.get('filename'),
+        'partial': result.get('partial', False),
+        'delivered_claims_count': getattr(rec, "delivered_claims_count", 0) if rec else 0,
+        'held_claims_count': getattr(rec, "held_claims_count", 0) if rec else 0,
+        'findings': result.get('findings', []),
     })
-
-
-@csrf_exempt
-def api_validate(request):
-    """
-    API Endpoint: Validate EDI 835 files using Local X12/835 PyX12 Engine.
-    Supports single or multi-file validation.
-    """
-    if request.method != 'POST':
-        return JsonResponse({'error': 'Only POST method is allowed.'}, status=405)
-
-    client = None
-    body_client_id = None
-    if request.content_type == 'application/json':
-        try:
-            body = json.loads(request.body.decode('utf-8'))
-            body_client_id = body.get('client_id') or body.get('client')
-        except Exception:
-            pass
-    else:
-        body_client_id = request.POST.get('client_id') or request.POST.get('client')
-
-    client = _request_client(request, body_client_id)
-    offboarded = _offboarded_client_response(client)
-    if offboarded:
-        return offboarded
-
-    files_list = []
-    edi_text = ""
-    original_filename = "uploaded_file.x12"
-
-    if request.content_type == 'application/json':
-        try:
-            body = json.loads(request.body.decode('utf-8'))
-            if body.get('files') and isinstance(body['files'], list) and len(body['files']) > 0:
-                files_list = body['files']
-            else:
-                edi_text = body.get('edi_text', '')
-                original_filename = body.get('original_filename', 'pasted_file.x12')
-        except Exception:
-            edi_text = ''
-    else:
-        file_objs = request.FILES.getlist('edi_files') or request.FILES.getlist('edi_file')
-        if file_objs and len(file_objs) > 1:
-            for fobj in file_objs:
-                invalid = _invalid_835_response(fobj.name)
-                if invalid:
-                    return invalid
-                try:
-                    content = fobj.read().decode('utf-8', errors='ignore')
-                    files_list.append({'filename': fobj.name, 'content': content})
-                except Exception:
-                    pass
-        elif file_objs:
-            original_filename = file_objs[0].name
-            invalid = _invalid_835_response(original_filename)
-            if invalid:
-                return invalid
-            try:
-                edi_text = file_objs[0].read().decode('utf-8', errors='ignore')
-            except Exception as e:
-                return JsonResponse({'error': f'Failed to read uploaded file: {str(e)}'}, status=400)
-        else:
-            edi_text = request.POST.get('edi_text', '')
-            original_filename = request.POST.get('original_filename', 'pasted_file.x12')
-
-    if files_list and len(files_list) > 0:
-        invalid = _invalid_835_batch_response(files_list)
-        if invalid:
-            return invalid
-        total_claims = 0
-        total_errors = []
-        valid_files_count = 0
-        for item in files_list:
-            fname = item.get('filename') or item.get('original_filename') or 'file.835'
-            content = (item.get('content') or item.get('edi_text') or '').strip()
-            if not content:
-                continue
-
-            report = _validate_835_for_conversion(content)
-            is_val = report.get('valid', report.get('is_valid', True))
-            claims = report.get('claims', report.get('claims_found', 0))
-            total_claims += claims
-
-            if is_val:
-                valid_files_count += 1
-            else:
-                errs = report.get('errors', [])
-                total_errors.append(f"{fname}: {', '.join([str(e) for e in errs]) if errs else 'Validation failed'}")
-
-        aggregated_report = {
-            'valid': len(total_errors) == 0,
-            'is_valid': len(total_errors) == 0,
-            'claims': total_claims,
-            'claims_found': total_claims,
-            'valid_files_count': valid_files_count,
-            'total_files_count': len(files_list),
-            'errors': total_errors,
-        }
-
-        if client:
-            try:
-                _send_validation_notice(
-                    client,
-                    request,
-                    [item.get('filename') or item.get('original_filename') or 'file.835' for item in files_list],
-                    not total_errors,
-                    total_claims,
-                    total_errors,
-                )
-            except Exception as e:
-                logging.getLogger(__name__).error(f"Failed to send email: {e}")
-
-        return JsonResponse({
-            'success': True,
-            'report': aggregated_report,
-            'is_valid': len(total_errors) == 0,
-            'files_count': len(files_list)
-        })
-
-    edi_text = edi_text.strip()
-    if not edi_text:
-        return JsonResponse({'error': 'Please provide EDI content to validate.'}, status=400)
-
-    try:
-        from pathlib import Path
-        from django.conf import settings
-        from edi835.services import get_edi835_storage_dirs
-
-        dirs = get_edi835_storage_dirs(client)
-        archive_file_path = dirs["archive"] / original_filename
-        with open(archive_file_path, "w", encoding="utf-8") as f:
-            f.write(edi_text)
-        rel_archive_path = (Path("media") / "edi835" / "archive" / original_filename).as_posix()
-
-        report = _validate_835_for_conversion(edi_text)
-
-        is_valid = report.get('valid', report.get('is_valid', True))
-        claims_found = report.get('claims', report.get('claims_found', 0))
-
-        report['is_valid'] = is_valid
-        report['claims_found'] = claims_found
-
-        if is_valid:
-            db_rec = EDI835File.objects.create(
-                original_filename=original_filename,
-                stored_filename=original_filename,
-                input_file_content=edi_text,
-                status="PROCESSING",
-                claims_count=claims_found,
-                archive_path=rel_archive_path,
-                input_path=rel_archive_path,
-                present_in_archive_folder=True,
-                client=client,
-            )
-        else:
-            err_msg = json.dumps({
-                "message": "835 validation failed",
-                "errors": report.get("errors", ["Validation errors found"]),
-                "findings": report.get("findings", []),
-                "validator_engine": report.get("validator_engine", "OneSmarter 835 structural validation"),
-            })
-            db_rec = EDI835File.objects.create(
-                original_filename=original_filename,
-                stored_filename=original_filename,
-                input_file_content=edi_text,
-                status="ERROR",
-                claims_count=claims_found,
-                error_message=err_msg,
-                archive_path=rel_archive_path,
-                input_path=rel_archive_path,
-                present_in_archive_folder=True,
-                client=client,
-            )
-
-        if client:
-            try:
-                _send_validation_notice(
-                    client,
-                    request,
-                    [original_filename],
-                    is_valid,
-                    claims_found,
-                    report.get('errors', []),
-                )
-            except Exception as e:
-                logging.getLogger(__name__).error(f"Failed to send email: {e}")
-
-        return JsonResponse({
-            'success': True,
-            'file_id': str(db_rec.id),
-            'report': report
-        })
-    except Exception as err:
-        logger.exception(f"Local validation error for file '{original_filename}': {str(err)}")
-        db_rec = EDI835File.objects.create(
-            original_filename=original_filename,
-            stored_filename=original_filename,
-            input_file_content=edi_text,
-            status="ERROR",
-            error_message=str(err),
-            client=client,
-        )
-        try:
-            _send_validation_notice(client, request, [original_filename], False, 0, [str(err)])
-        except Exception as email_err:
-            logger.error("Failed to send validation failure email: %s", email_err)
-        return JsonResponse({
-            'error': f'Local validation error: {str(err)}',
-            'file_id': str(db_rec.id)
-        }, status=400)
 
 
 @csrf_exempt
@@ -730,8 +488,6 @@ def download_mir(request):
                     with open(abs_p, "r", encoding="utf-8", errors="ignore") as f:
                         mir_content = f.read()
 
-            # Backward-compatible physical lookup: the disk name can be tenant-prefixed,
-            # while the response/download name is always the persisted canonical name.
             if not mir_content and rec:
                 physical_name = os.path.basename(rec.output_path or "")
                 if physical_name:
@@ -762,16 +518,16 @@ def download_mir(request):
 def api_download_archive_zip(request):
     """
     Create a ZIP from database-backed content.
-    type parameter: 'mir' | '835' | 'recon' | 'both' | 'all'
+    type parameter: 'mir' | '835' | '837' | 'recon' | 'both' | 'all'
     """
     import io
     import zipfile
     from pathlib import PurePath
-    from edi835.models import EDI835File, MIRFile, RECONFile
+    from edi835.models import EDI835File, EDI837File, MIRFile, RECONFile
 
     download_type = (request.GET.get("type") or "both").lower()
     client_id = request.GET.get("client")
-    if download_type not in {"mir", "835", "recon", "both", "all"}:
+    if download_type not in {"mir", "835", "837", "recon", "both", "all"}:
         return JsonResponse({"error": "Invalid archive type."}, status=400)
 
     mem_zip = io.BytesIO()
@@ -801,6 +557,15 @@ def api_download_archive_zip(request):
             ).iterator():
                 add_text(zf, "835", record.original_filename or record.stored_filename,
                          record.input_file_content, record.id)
+
+        if download_type in {"837", "all"}:
+            records = EDI837File.objects.all()
+            records = records.filter(client_id=client_id) if client_id else scope_client_queryset(records, request.user)
+            for record in records.only(
+                "id", "original_filename", "stored_filename", "file_content"
+            ).iterator():
+                add_text(zf, "837", record.original_filename or record.stored_filename,
+                         record.file_content, record.id)
 
         if download_type in {"mir", "both", "all"}:
             records = MIRFile.objects.all()
