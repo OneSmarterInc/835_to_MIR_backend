@@ -105,8 +105,16 @@ def store_mir_file(
 
     current_claim = None
     current_claim_number = ""
+    current_chunk_sequence = 0
     global_service_number = 0
     claim_count = 0
+
+    def finalize_current_claim():
+        if current_claim is None:
+            return
+        if current_claim.service_count != global_service_number:
+            current_claim.service_count = global_service_number
+            current_claim.save(update_fields=["service_count"])
 
     for row_number, row, sequence, max_sequence, service_count in parsed_rows:
         header = row[:config.MIR_HEADER_LENGTH]
@@ -116,8 +124,12 @@ def store_mir_file(
         # match and prevents exact matching with reference MIR/RECON files.
         claim_number = header[2:25].strip()
         if sequence == 1:
+            # Persist the previous claim's final service count once, instead of
+            # issuing an UPDATE for every physical MIR row.
+            finalize_current_claim()
             claim_count += 1
             global_service_number = 0
+            current_chunk_sequence = 0
             header_data = _extract_fields(header, fields, {"Claim", "Physical record"})
             current_claim = MIRClaim.objects.create(
                 mir_file=mir_file,
@@ -137,7 +149,9 @@ def store_mir_file(
             current_claim_number = claim_number
         elif current_claim is None or claim_number != current_claim_number:
             raise ValueError(f"MIR row {row_number} is an orphan continuation record")
-        elif sequence != current_claim.chunks.count() + 1 or max_sequence != current_claim.chunk_count:
+        elif sequence != current_chunk_sequence + 1 or max_sequence != current_claim.chunk_count:
+            # Keep sequence validation in memory. Calling current_claim.chunks.count()
+            # here caused one extra SELECT for every continuation row.
             raise ValueError(f"MIR row {row_number} has an out-of-order continuation sequence")
 
         service_start = global_service_number + 1 if service_count else 0
@@ -152,6 +166,7 @@ def store_mir_file(
             raw_row=row,
             row_length=len(row),
         )
+        current_chunk_sequence = sequence
 
         service_models = []
         for chunk_position in range(1, service_count + 1):
@@ -182,9 +197,8 @@ def store_mir_file(
                 segment_data=segment_data,
             ))
         MIRServiceLine.objects.bulk_create(service_models, batch_size=1000)
-        current_claim.service_count = global_service_number
-        current_claim.save(update_fields=["service_count"])
 
+    finalize_current_claim()
     mir_file.claim_count = claim_count
     mir_file.save(update_fields=["claim_count"])
     return mir_file
