@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from edi835.batch_jobs import queued_jobs, recover_interrupted_jobs, write_job
+from edi835.batch_jobs import prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
 from edi835.sftp_automation import (
     enqueue_due_automations, finish_automation_run, mark_automation_running,
     recover_interrupted_automation_runs,
@@ -25,6 +25,9 @@ class Command(BaseCommand):
         recovered = recover_interrupted_jobs()
         if recovered:
             self.stderr.write(f"Marked {recovered} interrupted batch job(s) as failed.")
+        pruned = prune_finished_jobs()
+        if pruned:
+            self.stdout.write(f"Pruned {pruned} old completed batch job file(s).")
         recovered_automations = recover_interrupted_automation_runs()
         if recovered_automations:
             self.stderr.write(f"Marked {recovered_automations} interrupted automation run(s) as failed.")
@@ -32,6 +35,7 @@ class Command(BaseCommand):
         last_held_release_scan = None
         last_long_hold_alert_scan = None
         last_missing_reference_alert_scan = None
+        last_queue_prune = timezone.now()
 
         def stop(*_args):
             nonlocal stopping
@@ -48,6 +52,16 @@ class Command(BaseCommand):
                 continue
 
             now = timezone.now()
+            if (now - last_queue_prune).total_seconds() >= 3600:
+                try:
+                    pruned = prune_finished_jobs()
+                    if pruned:
+                        self.stdout.write(f"Pruned {pruned} old completed batch job file(s).")
+                except Exception as exc:
+                    self.stderr.write(f"Could not prune completed batch job files: {exc}")
+                finally:
+                    last_queue_prune = now
+
             if last_held_release_scan is None or (now - last_held_release_scan).total_seconds() >= 60:
                 try:
                     from edi835.held_claims import release_due_held_claims
