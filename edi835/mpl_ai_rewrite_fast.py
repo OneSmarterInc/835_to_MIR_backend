@@ -2,8 +2,7 @@
 
 Python remains authoritative for recommendation content. The local model is asked
 once per claim to return one paragraph plus one bullet for each approved Python
-recommendation. If the small model does not honor that compact contract, this
-module falls back to the existing per-item rewrite for that claim only.
+recommendation. No per-bullet inference fallback is used.
 """
 
 from __future__ import annotations
@@ -21,7 +20,6 @@ from .mpl_ai_suggestions import (
     _parse_claim_rewrite,
     _qwen_headers,
     _qwen_text,
-    _rewrite_one_claim,
     python_suggestions_by_claim,
     python_suggestions_for_notice,
 )
@@ -31,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 def _rewrite_one_claim_single_call(base_url, model_id, headers, claim_number, suggestions):
-    """Return one paragraph and N bullets from one local-model request."""
+    """Return one paragraph and N bullets from exactly one local-model request."""
     prompt = (
         "/no_think\n"
         "You are a professional copy editor. Rewrite only the approved recommendations supplied by Python. "
@@ -58,7 +56,7 @@ def _rewrite_one_claim_single_call(base_url, model_id, headers, claim_number, su
 
 
 def rewrite_python_suggestions_fast(notice):
-    """Rewrite Python recommendations with one model call per claim when possible."""
+    """Rewrite Python recommendations with exactly one model call per claim."""
     groups = python_suggestions_by_claim(notice)
     flat_suggestions = python_suggestions_for_notice(notice)
     notice.ai_suggestions = flat_suggestions
@@ -75,7 +73,7 @@ def rewrite_python_suggestions_fast(notice):
     model_id = _discover_live_model(base_url, headers, preferred_model)
 
     logger.info(
-        "MPL AI batched suggestion rewrite starting: notice=%s model=%s groups=%s",
+        "MPL AI single-call suggestion rewrite starting: notice=%s model=%s groups=%s",
         notice.pk,
         model_id,
         len(groups),
@@ -87,37 +85,20 @@ def rewrite_python_suggestions_fast(notice):
         claim_number = group["claim_number"]
         suggestions = group["python_suggestions"]
         try:
-            try:
-                rewritten = _rewrite_one_claim_single_call(
-                    base_url,
-                    model_id,
-                    headers,
-                    claim_number,
-                    suggestions,
-                )
-            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as contract_error:
-                # Preserve reliability for the small local model while keeping
-                # the common path to one inference request per claim.
-                logger.warning(
-                    "MPL AI batched response was invalid for claim %s; using compatibility fallback: %s",
-                    claim_number,
-                    contract_error,
-                )
-                rewritten = _rewrite_one_claim(
-                    base_url,
-                    model_id,
-                    headers,
-                    claim_number,
-                    suggestions,
-                )
-
+            rewritten = _rewrite_one_claim_single_call(
+                base_url,
+                model_id,
+                headers,
+                claim_number,
+                suggestions,
+            )
             claims.append({
                 "claim_number": claim_number,
                 "paragraph": rewritten["paragraph"],
                 "bullets": rewritten["bullets"],
             })
             logger.info(
-                "MPL AI suggestion rewrite completed for claim %s with %s bullet(s).",
+                "MPL AI suggestion rewrite completed for claim %s in one inference call with %s bullet(s).",
                 claim_number,
                 len(rewritten["bullets"]),
             )
