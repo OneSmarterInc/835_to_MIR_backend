@@ -13,5 +13,7 @@ class Edi835Config(AppConfig):
         from . import alert_models  # noqa: F401
         from . import signals  # noqa: F401
         from .mpl_source_fixes import install as install_mpl_source_fixes
+        from .mpl_history_fixes import install as install_mpl_history_fixes
 
         install_mpl_source_fixes()
+        install_mpl_history_fixes()
