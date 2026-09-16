@@ -72,6 +72,14 @@ def dedupe_history(history):
     for raw in history or []:
         item = dict(raw)
         item["file_type"] = _file_type(item)
+
+        # 837 is the inbound claim submission and does not carry the MIR/RECON
+        # internal claim identifier used later in the workflow. Matching may use
+        # normalized database identities internally, but that derived value must
+        # not be presented as if it came from the 837 itself.
+        if item["file_type"] == "837":
+            item["internal_claim_number"] = ""
+
         key = _occurrence_key(item)
         existing = merged.get(key)
         if existing is None:
@@ -79,7 +87,11 @@ def dedupe_history(history):
             order.append(key)
             continue
 
-        if not existing.get("internal_claim_number") and item.get("internal_claim_number"):
+        if (
+            item["file_type"] != "837"
+            and not existing.get("internal_claim_number")
+            and item.get("internal_claim_number")
+        ):
             existing["internal_claim_number"] = item["internal_claim_number"]
         _prefer_event(existing, item)
 
