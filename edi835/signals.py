@@ -19,16 +19,24 @@ logger = logging.getLogger(__name__)
 
 @receiver(pre_save, sender=EDI835File)
 def remember_previous_sftp_status(sender, instance, **kwargs):
-    """Remember the persisted status so terminal email events fire only once."""
+    """Remember the persisted SFTP status so terminal email events fire only once."""
     instance._previous_validation_status = None
-    if not instance.pk:
+    # Manual/API records never use the SFTP terminal-notification comparison,
+    # so avoid one database read on every save for those records.
+    if not instance.pk or str(instance.ingestion_source or "").upper() != "SFTP":
         return
     previous = sender.objects.filter(pk=instance.pk).values_list("status", flat=True).first()
     instance._previous_validation_status = previous
 
 
 @receiver(post_save, sender=EDI835File)
-def normalize_saved_835_file(sender, instance, **kwargs):
+def normalize_saved_835_file(sender, instance, created=False, update_fields=None, **kwargs):
+    # Most status/progress saves use update_fields. Re-running the normalization
+    # existence/count checks for those metadata-only writes creates avoidable DB
+    # traffic during conversion. Normalize on creation, full saves, or when the
+    # source content itself was explicitly changed.
+    if update_fields is not None and "input_file_content" not in update_fields:
+        return
     if instance.input_file_content:
         normalize_835_file(instance)
 
