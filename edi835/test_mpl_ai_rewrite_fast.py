@@ -31,7 +31,7 @@ class MPLAIBatchedRewriteTests(SimpleTestCase):
         )
 
     @patch("edi835.mpl_ai_rewrite_fast._qwen_text")
-    def test_rejects_wrong_bullet_count(self, qwen_text):
+    def test_rejects_wrong_bullet_count_without_per_bullet_fallback(self, qwen_text):
         qwen_text.return_value = '{"paragraph":"Review it.","bullets":["Only one."]}'
         with self.assertRaises(ValueError):
             _rewrite_one_claim_single_call(
@@ -41,3 +41,4 @@ class MPLAIBatchedRewriteTests(SimpleTestCase):
                 "86520262000982500",
                 ["First approved action.", "Second approved action."],
             )
+        self.assertEqual(qwen_text.call_count, 1)
