@@ -140,6 +140,14 @@ def recon_files(request):
         sort = "-uploaded_at"
     queryset = queryset.order_by(sort, "-id")
 
+    # Preserve the long-standing API behavior for callers that have not opted
+    # into pagination yet. The professional archive page supplies page/page_size
+    # and receives a bounded server-side result set.
+    paginated = any(key in request.GET for key in ("page", "page_size", "search", "sort"))
+    if not paginated:
+        rows = list(queryset[:500])
+        return JsonResponse({"success": True, "files": [_serialize_file(item) for item in rows]})
+
     try:
         page = max(1, int(request.GET.get("page", "1")))
         page_size = min(100, max(10, int(request.GET.get("page_size", "25"))))
