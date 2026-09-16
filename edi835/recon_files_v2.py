@@ -1,14 +1,14 @@
-"""Fast paginated RECON archive listing.
-
-This endpoint preserves the existing response shape (`files`) while adding
-server-side search and pagination metadata. Keeping the heavy archive listing
-bounded prevents every archive open/search from serializing hundreds of rows.
-"""
+"""Fast paginated RECON archive listing and streaming downloads."""
 
 from __future__ import annotations
 
+import os
+from datetime import datetime
+from pathlib import Path
+
+from django.conf import settings
 from django.db.models import Q
-from django.http import JsonResponse
+from django.http import FileResponse, HttpResponse, JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from admin_panel.access_control import can_access_client, scope_client_queryset
@@ -43,8 +43,14 @@ def _serialize_file(item):
     }
 
 
+def _base_queryset():
+    # file_content can be large and is not needed by the archive table. Keep it
+    # out of list queries; downloads fetch only the selected record.
+    return RECONFile.objects.select_related("client", "uploaded_by").defer("file_content")
+
+
 def _scoped_queryset(request):
-    queryset = RECONFile.objects.select_related("client", "uploaded_by")
+    queryset = _base_queryset()
     actor_client_id = getattr(request.user, "client_id", None)
     if actor_client_id:
         return queryset.filter(client_id=actor_client_id)
@@ -61,6 +67,49 @@ def _scoped_queryset(request):
     if not request.user.is_superuser:
         return scope_client_queryset(queryset, request.user)
     return queryset
+
+
+def _visible_file(request, file_id):
+    queryset = RECONFile.objects.select_related("client", "uploaded_by")
+    actor_client_id = getattr(request.user, "client_id", None)
+    if actor_client_id:
+        queryset = queryset.filter(client_id=actor_client_id)
+    elif not request.user.is_staff:
+        return None
+    elif not request.user.is_superuser:
+        visible_ids = request.user.client_access_grants.filter(
+            revoked_at__isnull=True,
+            expires_at__gt=datetime.now().astimezone(),
+        ).values_list("client_id", flat=True)
+        queryset = queryset.filter(client_id__in=visible_ids)
+    try:
+        return queryset.get(id=file_id)
+    except (RECONFile.DoesNotExist, ValueError):
+        return None
+
+
+def _search_filter(search):
+    query = (
+        Q(original_filename__icontains=search)
+        | Q(stored_filename__icontains=search)
+        | Q(status__icontains=search)
+        | Q(import_mode__icontains=search)
+        | Q(client__name__icontains=search)
+        | Q(client__client_code__icontains=search)
+    )
+    compact = search.replace(",", "").strip()
+    if compact.isdigit():
+        value = int(compact)
+        query |= Q(claim_count=value) | Q(record_count=value) | Q(service_count=value) | Q(file_size=value)
+
+    for date_format in ("%m/%d/%Y", "%m-%d-%Y", "%Y-%m-%d"):
+        try:
+            parsed = datetime.strptime(search, date_format).date()
+            query |= Q(uploaded_at__date=parsed) | Q(processed_at__date=parsed)
+            break
+        except ValueError:
+            continue
+    return query
 
 
 @csrf_exempt
@@ -80,14 +129,7 @@ def recon_files(request):
 
     search = str(request.GET.get("search") or "").strip()
     if search:
-        queryset = queryset.filter(
-            Q(original_filename__icontains=search)
-            | Q(stored_filename__icontains=search)
-            | Q(status__icontains=search)
-            | Q(import_mode__icontains=search)
-            | Q(client__name__icontains=search)
-            | Q(client__client_code__icontains=search)
-        )
+        queryset = queryset.filter(_search_filter(search))
 
     sort = str(request.GET.get("sort") or "-uploaded_at").strip()
     allowed_sorts = {
@@ -119,3 +161,33 @@ def recon_files(request):
         "total": total,
         "total_pages": total_pages,
     })
+
+
+@csrf_exempt
+@authenticated_api_required
+@json_api_errors
+def recon_download(request, file_id):
+    if request.method != "GET":
+        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    recon = _visible_file(request, file_id)
+    if not recon:
+        return JsonResponse({"success": False, "error": "RECON file was not found."}, status=404)
+
+    safe_name = os.path.basename(recon.original_filename).replace('"', "") or "recon-file"
+    archive_path = str(recon.archive_path or "").strip()
+    if archive_path:
+        root = Path(settings.MEDIA_ROOT).resolve()
+        candidate = (root / archive_path).resolve()
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            candidate = None
+        if candidate and candidate.is_file():
+            return FileResponse(candidate.open("rb"), as_attachment=True, filename=safe_name)
+
+    # Compatibility fallback for older rows whose archived file path is absent.
+    content = (recon.file_content or "").encode("utf-8")
+    response = HttpResponse(content, content_type="application/octet-stream")
+    response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
+    response["Content-Length"] = len(content)
+    return response
