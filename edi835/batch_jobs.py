@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from django.conf import settings
@@ -91,6 +91,43 @@ def active_job_for(scope_key: str) -> dict | None:
         if job.get("scope_key") == scope_key and job.get("state") in {"QUEUED", "RUNNING"}:
             return job
     return None
+
+
+def prune_finished_jobs(max_age_days: int = 7) -> int:
+    """Remove old terminal queue files so queue scans stay bounded over time.
+
+    Conversion history is persisted elsewhere; these JSON files only support the
+    live durable worker/status handshake. Keeping a week allows recent status
+    lookups while preventing every queue poll from scanning an ever-growing
+    directory of completed work.
+    """
+    cutoff = timezone.now() - timedelta(days=max(1, int(max_age_days)))
+    removed = 0
+    for path in jobs_dir().glob("*.json"):
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                job = json.load(handle)
+        except (OSError, json.JSONDecodeError):
+            continue
+        if job.get("state") not in {"COMPLETED", "FAILED"}:
+            continue
+        timestamp = job.get("finished_at") or job.get("started_at")
+        if not timestamp:
+            continue
+        try:
+            finished = datetime.fromisoformat(str(timestamp))
+            if timezone.is_naive(finished):
+                finished = timezone.make_aware(finished)
+        except (TypeError, ValueError):
+            continue
+        if finished >= cutoff:
+            continue
+        try:
+            path.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def recover_interrupted_jobs() -> int:
