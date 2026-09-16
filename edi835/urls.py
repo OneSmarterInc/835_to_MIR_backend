@@ -20,13 +20,13 @@ from .alert_history import api_claim_alert_email_history
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
-    recon_detail, recon_download, recon_process, recon_upload,
+    recon_detail, recon_process, recon_upload,
     reconciliation_claim_detail, reconciliation_export, reconciliation_results, sftp_837_files, sftp_837_ingest,
     reconciliation_file_dashboard, reconciliation_file_export,
     reconciliation_dashboard,
     reconciliation_review_action,
 )
-from .recon_files_v2 import recon_files
+from .recon_files_v2 import recon_download, recon_files
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
 from .edi837_views import (
