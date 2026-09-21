@@ -7,6 +7,7 @@ from django.utils import timezone
 
 from edi835.models import MPLNotice
 from edi835.mpl_notices import process_notice
+from edi835.mpl_ai_rewrite_fast import rewrite_python_suggestions_fast
 
 
 PROCESSING_STATUSES = (
@@ -18,19 +19,19 @@ PROCESSING_STATUSES = (
 
 
 class Command(BaseCommand):
-    help = "Process queued MPL notices with deterministic evidence and optional local Qwen."
+    help = "Process queued MPL notices with deterministic Python evidence and a lightweight AI suggestion rewrite."
 
     def add_arguments(self, parser):
         parser.add_argument("--once", action="store_true")
         parser.add_argument("--poll-seconds", type=float, default=2.0)
         parser.add_argument("--stale-minutes", type=float, default=15.0)
 
-    def recover_stale_notices(self, stale_minutes):
-        cutoff = timezone.now() - timedelta(minutes=max(stale_minutes, 1.0))
-        recovered = MPLNotice.objects.filter(
-            status__in=PROCESSING_STATUSES,
-            updated_at__lt=cutoff,
-        ).update(
+    def recover_stale_notices(self, stale_minutes, *, recover_all=False):
+        queryset = MPLNotice.objects.filter(status__in=PROCESSING_STATUSES)
+        if not recover_all:
+            cutoff = timezone.now() - timedelta(minutes=max(stale_minutes, 1.0))
+            queryset = queryset.filter(updated_at__lt=cutoff)
+        recovered = queryset.update(
             status="RECEIVED",
             last_error="Automatically requeued after an interrupted worker run.",
         )
@@ -40,12 +41,20 @@ class Command(BaseCommand):
             ))
 
     def handle(self, *args, **options):
-        self.recover_stale_notices(options["stale_minutes"])
+        # A service start means the previous worker process is gone. Reclaim
+        # every in-flight row immediately, including rows updated seconds
+        # before the process was killed. Waiting for the stale cutoff here can
+        # otherwise strand a notice in MATCHING_CLAIMS forever.
+        self.recover_stale_notices(options["stale_minutes"], recover_all=True)
         poll_seconds = max(options["poll_seconds"], 0.2)
+        next_recovery_at = time.monotonic() + 60.0
 
         while True:
             try:
                 close_old_connections()
+                if time.monotonic() >= next_recovery_at:
+                    self.recover_stale_notices(options["stale_minutes"])
+                    next_recovery_at = time.monotonic() + 60.0
                 notice_id = None
                 with transaction.atomic():
                     notice = (
@@ -61,6 +70,9 @@ class Command(BaseCommand):
 
                 if notice_id:
                     processed = process_notice(notice_id)
+                    if processed.status in {"COMPLETED", "REVIEW_REQUIRED"}:
+                        rewrite_python_suggestions_fast(processed)
+                        processed.refresh_from_db()
                     self.stdout.write(
                         f"Processed MPL notice {notice_id}: {processed.status}"
                     )

@@ -31,6 +31,7 @@ from .views import (
     api_webauthn_credentials,
     api_webauthn_credential_delete,
 )
+from .security_views import api_account_security
 from project835.drf_compat import admin_api, authenticated_api, public_api
 
 # Keep the established URL and payload contract while dispatching API traffic
@@ -69,6 +70,7 @@ urlpatterns = [
     path("api/logout/", api_logout, name="api_logout"),
     path("api/contacts/", api_client_contacts, name="api_client_contacts"),
     path("api/user/change-password/", api_change_password, name="api_change_password"),
+    path("api/admin/users/<int:user_id>/security/", api_account_security, name="api_account_security"),
     # Admin Panel API Endpoints
     path("api/admin/clients/", api_admin_clients, name="api_admin_clients"),
     path("api/admin/clients/create/", api_admin_create_client, name="api_admin_create_client"),

@@ -3,6 +3,8 @@ from django.contrib.auth import authenticate
 import phonenumbers
 from .models import User
 from .phone_numbers import normalize_phone_number
+from .login_security import BLOCK_MESSAGE, register_password_failure, reset_password_failures
+from .request_context import get_current_request
 
 
 class SignupForm(forms.ModelForm):
@@ -76,20 +78,36 @@ class LoginForm(forms.Form):
 
         if email and password:
             clean_email = email.strip().lower()
+            candidate = User.objects.select_related("client").filter(email__iexact=clean_email).first()
+
+            # Client accounts blocked by the five-attempt rule never reach
+            # authentication until an administrator explicitly unblocks them.
+            if candidate and not candidate.is_staff and not candidate.is_superuser and candidate.login_blocked_at:
+                self.user = None
+                raise forms.ValidationError(BLOCK_MESSAGE)
+
             user = authenticate(username=clean_email, password=password)
             if user is None:
                 user = authenticate(email=clean_email, password=password)
-            if user is None:
-                try:
-                    user_obj = User.objects.get(email__iexact=clean_email)
-                    if user_obj.check_password(password):
-                        user = user_obj
-                except User.DoesNotExist:
-                    user = None
+            if user is None and candidate and candidate.check_password(password):
+                user = candidate
 
             self.user = user
             if self.user is None:
+                if candidate and not candidate.is_staff and not candidate.is_superuser:
+                    blocked, attempts = register_password_failure(candidate, get_current_request())
+                    if blocked:
+                        raise forms.ValidationError(BLOCK_MESSAGE)
+                    remaining = max(0, 5 - attempts)
+                    raise forms.ValidationError(
+                        f"Invalid email or password. {remaining} attempt(s) remaining before the account is blocked."
+                    )
                 raise forms.ValidationError("Invalid email or password.")
             if not self.user.is_active:
                 raise forms.ValidationError("This account is disabled.")
+
+            # A correct password clears the running failure counter. A blocked
+            # account cannot get here because it must first be admin-unblocked.
+            if not self.user.is_staff and not self.user.is_superuser:
+                reset_password_failures(self.user)
         return cleaned_data

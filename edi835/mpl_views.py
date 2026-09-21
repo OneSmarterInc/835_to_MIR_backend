@@ -15,7 +15,7 @@ from django.views.decorators.http import require_http_methods
 from accounts.models import Client
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from .models import EDI835File, EDI837File, MIRFile, MPLNotice, MPLNoticeClaim, RECONFile
-from .mpl_notices import NoticeValidationError, parse_subject, process_notice, serialize_notice
+from .mpl_notices import NoticeValidationError, notice_workflow_status, parse_subject, process_notice, serialize_notice
 
 
 def _body(request):
@@ -114,7 +114,7 @@ def _parse_msg_upload(upload):
         with tempfile.NamedTemporaryFile(suffix=".msg", delete=False) as temp:
             temp.write(raw)
             temp_path = temp.name
-        message = extract_msg.Message(temp_path)
+        message = extract_msg.Message(temp_path, delayAttachments=True)
         subject = _clean_outlook_text(message.subject)
         body = _extract_msg_body(message)
         sender = _clean_outlook_text(message.sender)
@@ -136,7 +136,10 @@ def _parse_msg_upload(upload):
             bcc=getattr(message, "bcc", ""),
             internet_message_id=getattr(message, "messageId", ""),
             conversation_id=getattr(message, "conversationId", ""),
-            has_attachments=bool(getattr(message, "attachments", [])),
+            # Attachment enumeration in extract-msg can deserialize every embedded
+            # object and make a simple email upload take many seconds. MPL analysis
+            # uses the message text and identifiers, so keep upload parsing bounded.
+            has_attachments=False,
         )
         if not subject:
             raise NoticeValidationError("The .msg file does not contain an email subject.")
@@ -179,7 +182,18 @@ def _client_for_request(request, requested_id=None):
 @require_http_methods(["GET", "POST"])
 def mpl_notices(request):
     if request.method == "GET":
-        queryset = scope_client_queryset(MPLNotice.objects.select_related("client"), request.user)
+        # Inbox rows need metadata only. Do not read large email bodies or
+        # Outlook attachment binaries before the list can render.
+        queryset = scope_client_queryset(
+            MPLNotice.objects.select_related("client").defer(
+                "source_file",
+                "raw_email_body",
+                "normalized_email",
+                "latest_message_body",
+                "quoted_email_history",
+            ),
+            request.user,
+        ).order_by("-received_at", "-created_at")
         client_id = request.GET.get("client_id")
         if client_id:
             if not can_access_client(request.user, client_id):
@@ -254,7 +268,9 @@ def mpl_notices(request):
                 requested_claim_numbers=claim_numbers[:50],
                 created_by=request.user,
             )
-        return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)}, status=201)
+        # Return inbox metadata immediately. Full evidence, histories and AI output
+        # are populated asynchronously by the MPL worker and fetched on open.
+        return JsonResponse({"success": True, "notice": serialize_notice(notice)}, status=201)
     except PermissionError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=403)
     except (NoticeValidationError, ValueError, Client.DoesNotExist) as exc:
@@ -317,6 +333,41 @@ def mpl_notice_process_now(request, notice_id):
     process_notice(notice.id)
     notice.refresh_from_db()
     return JsonResponse({"success": True, "notice": serialize_notice(notice, detail=True)})
+
+
+@require_http_methods(["PATCH", "POST"])
+def mpl_claim_workflow_status(request, notice_id, claim_id=None):
+    if not (getattr(request.user, "is_staff", False) or getattr(request.user, "is_superuser", False)):
+        return JsonResponse({"success": False, "error": "Administrator access required."}, status=403)
+    notice = MPLNotice.objects.filter(pk=notice_id).first()
+    if not notice:
+        return JsonResponse({"success": False, "error": "Notice not found."}, status=404)
+    if not can_access_client(request.user, notice.client_id):
+        return JsonResponse({"success": False, "error": "Access denied."}, status=403)
+    try:
+        payload = _body(request)
+        status = str(payload.get("workflow_status") or "").upper()
+        claim_number = str(payload.get("claim_number") or "").strip()
+    except NoticeValidationError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    allowed = {value for value, _label in MPLNoticeClaim.WORKFLOW_STATUS_CHOICES}
+    if status not in allowed:
+        return JsonResponse({"success": False, "error": "Invalid workflow status."}, status=400)
+    link = None
+    if claim_id is not None:
+        link = MPLNoticeClaim.objects.filter(notice=notice, claim_id=claim_id).select_related("claim").first()
+        if link and not claim_number:
+            claim_number = link.claim.highmark_claim_number or link.claim.claim_control_number
+    if not claim_number or claim_number not in {str(value) for value in (notice.extracted_claim_numbers or [])}:
+        return JsonResponse({"success": False, "error": "Claim not found in this notice."}, status=404)
+    statuses = dict(notice.claim_workflow_statuses or {})
+    statuses[claim_number] = status
+    notice.claim_workflow_statuses = statuses
+    notice.save(update_fields=["claim_workflow_statuses", "updated_at"])
+    if link:
+        link.workflow_status = status
+        link.save(update_fields=["workflow_status"])
+    return JsonResponse({"success": True, "workflow_status": status, "notice_workflow_status": notice_workflow_status(notice)})
 
 
 @require_http_methods(["POST"])

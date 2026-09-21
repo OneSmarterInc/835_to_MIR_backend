@@ -16,28 +16,32 @@ from .sftp_browse_admin_routes import api_browse_sftp_admin_routes
 from .batch_test_837_v3 import api_start_batch_conversion_with_837
 from .checks_catalog import api_checks_catalog
 from .held_release_views import api_held_release_history
+from .alert_history import api_claim_alert_email_history
 
 from converter.views import api_download_archive_zip
 from .recon_views import (
-    recon_detail, recon_download, recon_files, recon_process, recon_upload,
+    recon_detail, recon_process, recon_upload,
     reconciliation_claim_detail, reconciliation_export, reconciliation_results, sftp_837_files, sftp_837_ingest,
     reconciliation_file_dashboard, reconciliation_file_export,
     reconciliation_dashboard,
     reconciliation_review_action,
 )
+from .recon_files_v2 import recon_download, recon_files
 from project835.drf_compat import authenticated_api
 from .sftp_automation_views import sftp_automation
 from .edi837_views import (
-    edi837_claim_detail, edi837_claim_export, edi837_search,
+    edi837_claim_detail, edi837_claim_export,
     edi837_upload_process,
 )
+from .universal_claim_search_sources import edi837_search
 from .edi837_files_v2 import edi837_files
 from .edi837_naming_views import edi837_claim_push_sftp_named
 from .edi837_search_transfer import edi837_sftp_transfer_for_search
 from .mpl_views import (
     mpl_notice_analyze, mpl_notice_detail, mpl_notice_process_now,
-    mpl_analysis_review, mpl_notice_select_claim, mpl_notice_source_file, mpl_notices, mpl_related_file,
+    mpl_analysis_review, mpl_claim_workflow_status, mpl_notice_select_claim, mpl_notice_source_file, mpl_notices, mpl_related_file,
 )
+from .mpl_slice_views import mpl_claim_slice
 
 api_process_tracked_file = authenticated_api(api_process_tracked_file)
 tracked_files_list = authenticated_api(tracked_files_list_eastern)
@@ -55,6 +59,7 @@ api_browse_sftp = authenticated_api(api_browse_sftp_admin_routes)
 api_start_batch_conversion = authenticated_api(api_start_batch_conversion_with_837)
 api_checks_catalog = authenticated_api(api_checks_catalog)
 api_held_release_history = authenticated_api(api_held_release_history)
+api_claim_alert_email_history = authenticated_api(api_claim_alert_email_history)
 api_download_archive_zip = authenticated_api(api_download_archive_zip)
 # RECON views already apply authenticated_api_required and tenant scoping.
 # Leave them as native Django views so standard client sessions remain intact.
@@ -74,7 +79,9 @@ mpl_notice_select_claim = authenticated_api(mpl_notice_select_claim)
 mpl_notice_process_now = authenticated_api(mpl_notice_process_now)
 mpl_notice_source_file = authenticated_api(mpl_notice_source_file)
 mpl_related_file = authenticated_api(mpl_related_file)
+mpl_claim_slice = authenticated_api(mpl_claim_slice)
 mpl_analysis_review = authenticated_api(mpl_analysis_review)
+mpl_claim_workflow_status = authenticated_api(mpl_claim_workflow_status)
 
 urlpatterns = [
     path("api/mpl-notices/", mpl_notices, name="mpl_notices"),
@@ -84,7 +91,10 @@ urlpatterns = [
     path("api/mpl-notices/<uuid:notice_id>/process-now/", mpl_notice_process_now, name="mpl_notice_process_now"),
     path("api/mpl-notices/<uuid:notice_id>/source-file/", mpl_notice_source_file, name="mpl_notice_source_file"),
     path("api/mpl-files/<str:file_type>/<uuid:file_id>/download/", mpl_related_file, name="mpl_related_file"),
+    path("api/mpl-files/<str:file_type>/<uuid:file_id>/claim-slice/", mpl_claim_slice, name="mpl_claim_slice"),
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/review/", mpl_analysis_review, name="mpl_analysis_review"),
+    path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/workflow-status/", mpl_claim_workflow_status, name="mpl_claim_workflow_status"),
+    path("api/mpl-notices/<uuid:notice_id>/claims/workflow-status/", mpl_claim_workflow_status, name="mpl_notice_claim_workflow_status"),
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
     path("api/tracked-files/<uuid:file_id>/details/", tracked_file_details, name="edi835_tracked_file_details"),
@@ -92,6 +102,7 @@ urlpatterns = [
     path("api/metrics/", api_get_metrics, name="edi835_api_metrics"),
     path("api/checks/catalog/", api_checks_catalog, name="edi835_checks_catalog"),
     path("api/checks/held-releases/", api_held_release_history, name="edi835_held_release_history"),
+    path("api/checks/alert-emails/", api_claim_alert_email_history, name="edi835_claim_alert_email_history"),
     path("api/archive-files/", api_archive_files_list, name="edi835_archive_files"),
     path("api/download-zip/", api_download_archive_zip, name="edi835_api_download_zip"),
     path("api/sftp/get/", api_get_sftp_config, name="api_get_sftp_config"),

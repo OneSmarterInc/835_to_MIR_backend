@@ -1,4 +1,5 @@
 import uuid
+from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.utils import timezone
 
@@ -466,6 +467,7 @@ class EDI837Claim(models.Model):
             models.Index(fields=["client", "claim_control_number"], name="edi837_claim_control_idx"),
             models.Index(fields=["client", "highmark_claim_number"], name="edi837_highmark_idx"),
             models.Index(fields=["client", "internal_claim_number"], name="edi837_internal_idx"),
+            GinIndex(fields=["raw_claim"], name="edi837_raw_claim_trgm_idx", opclasses=["gin_trgm_ops"]),
         ]
 
 
@@ -711,6 +713,7 @@ class MPLNotice(models.Model):
     requested_claim_numbers = models.JSONField(default=list, blank=True)
     extracted_claim_numbers = models.JSONField(default=list, blank=True)
     source_matches = models.JSONField(default=list, blank=True)
+    claim_workflow_statuses = models.JSONField(default=dict, blank=True)
     ai_response = models.TextField(blank=True, default="")
     ai_response_source = models.CharField(max_length=80, blank=True, default="")
     ai_suggestions = models.JSONField(default=list, blank=True)
@@ -739,8 +742,43 @@ class MPLNotice(models.Model):
         ]
 
 
+class MPLIssueDefinition(models.Model):
+    """Governed descriptions and resolutions for MPL convention issue tags."""
+
+    MAPPING_STATUS_CHOICES = [
+        ("AUTHORITATIVE", "Authoritative convention rule"),
+        ("EMAIL_SUPPORTED", "Supported by MPL instructions"),
+        ("LOCAL_CATEGORY", "Portal operational category"),
+        ("REQUIRES_MAPPING", "Requires authoritative mapping"),
+    ]
+
+    code = models.CharField(max_length=50, unique=True)
+    title = models.CharField(max_length=160)
+    description = models.TextField()
+    resolution = models.TextField()
+    mapping_status = models.CharField(max_length=30, choices=MAPPING_STATUS_CHOICES)
+    source = models.CharField(max_length=255)
+    active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        db_table = "mpl_issue_definition"
+        ordering = ["code"]
+
+    def __str__(self):
+        return f"{self.code} — {self.title}"
+
+
 class MPLNoticeClaim(models.Model):
     """One 837 claim matched to a notice; ambiguous matches require confirmation."""
+
+    WORKFLOW_STATUS_CHOICES = [
+        ("YET_TO_START", "Yet to start"),
+        ("HOLD", "Hold"),
+        ("IN_PROGRESS", "In progress"),
+        ("RESOLVED", "Resolved"),
+    ]
 
     notice = models.ForeignKey(MPLNotice, on_delete=models.CASCADE, related_name="notice_claims")
     claim = models.ForeignKey(EDI837Claim, on_delete=models.CASCADE, related_name="mpl_notice_claims")
@@ -748,6 +786,7 @@ class MPLNoticeClaim(models.Model):
     matching_confidence = models.DecimalField(max_digits=5, decimal_places=4, default=0)
     confirmed_by_user = models.BooleanField(default=False)
     confirmed_at = models.DateTimeField(null=True, blank=True)
+    workflow_status = models.CharField(max_length=20, choices=WORKFLOW_STATUS_CHOICES, default="YET_TO_START", db_index=True)
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:

@@ -27,6 +27,10 @@ def _release_queryset(request):
     else:
         qs = qs.filter(client=getattr(request.user, "client", None))
 
+    requested_client_id = str(request.GET.get("client_id") or "").strip()
+    if requested_client_id:
+        qs = qs.filter(client_id=requested_client_id)
+
     return qs.order_by("-uploaded_at")[:200]
 
 

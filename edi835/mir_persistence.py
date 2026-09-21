@@ -105,8 +105,16 @@ def store_mir_file(
 
     current_claim = None
     current_claim_number = ""
+    current_chunk_sequence = 0
     global_service_number = 0
     claim_count = 0
+
+    def finalize_current_claim():
+        if current_claim is None:
+            return
+        if current_claim.service_count != global_service_number:
+            current_claim.service_count = global_service_number
+            current_claim.save(update_fields=["service_count"])
 
     for row_number, row, sequence, max_sequence, service_count in parsed_rows:
         header = row[:config.MIR_HEADER_LENGTH]
@@ -116,8 +124,12 @@ def store_mir_file(
         # match and prevents exact matching with reference MIR/RECON files.
         claim_number = header[2:25].strip()
         if sequence == 1:
+            # Persist the previous claim's final service count once, instead of
+            # issuing an UPDATE for every physical MIR row.
+            finalize_current_claim()
             claim_count += 1
             global_service_number = 0
+            current_chunk_sequence = 0
             header_data = _extract_fields(header, fields, {"Claim", "Physical record"})
             current_claim = MIRClaim.objects.create(
                 mir_file=mir_file,
@@ -137,7 +149,9 @@ def store_mir_file(
             current_claim_number = claim_number
         elif current_claim is None or claim_number != current_claim_number:
             raise ValueError(f"MIR row {row_number} is an orphan continuation record")
-        elif sequence != current_claim.chunks.count() + 1 or max_sequence != current_claim.chunk_count:
+        elif sequence != current_chunk_sequence + 1 or max_sequence != current_claim.chunk_count:
+            # Keep sequence validation in memory. Calling current_claim.chunks.count()
+            # here caused one extra SELECT for every continuation row.
             raise ValueError(f"MIR row {row_number} has an out-of-order continuation sequence")
 
         service_start = global_service_number + 1 if service_count else 0
@@ -152,6 +166,7 @@ def store_mir_file(
             raw_row=row,
             row_length=len(row),
         )
+        current_chunk_sequence = sequence
 
         service_models = []
         for chunk_position in range(1, service_count + 1):
@@ -182,9 +197,8 @@ def store_mir_file(
                 segment_data=segment_data,
             ))
         MIRServiceLine.objects.bulk_create(service_models, batch_size=1000)
-        current_claim.service_count = global_service_number
-        current_claim.save(update_fields=["service_count"])
 
+    finalize_current_claim()
     mir_file.claim_count = claim_count
     mir_file.save(update_fields=["claim_count"])
     return mir_file
@@ -194,11 +208,14 @@ def set_mir_push_status(mir_file: MIRFile, pushed: bool) -> None:
     mir_file.status = "PUSHED" if pushed else "PUSH_FAILED"
     mir_file.save(update_fields=["status", "updated_at"])
     if pushed:
-        # Successful SFTP delivery is the clock start for the four-day
-        # duplicate window. Keep this hook next to the authoritative PUSHED
-        # transition so manual, batch, and automatic sends all behave alike.
+        # Successful SFTP delivery is the authoritative point for both the
+        # duplicate window and resolution of older corrected non-duplicate holds.
+        # Keeping both hooks here makes manual, batch and automated sends agree.
         from .held_claims import note_mir_sent
+        from .long_hold_alerts import mark_nonduplicate_holds_resolved_by_push
+
         note_mir_sent(mir_file)
+        mark_nonduplicate_holds_resolved_by_push(mir_file)
 
         # Held-release emails are operational notifications only. Once SFTP has
         # succeeded, an SMTP problem must never turn the delivered MIR back into

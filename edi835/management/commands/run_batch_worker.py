@@ -7,7 +7,7 @@ from django.contrib.auth import get_user_model
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
-from edi835.batch_jobs import queued_jobs, recover_interrupted_jobs, write_job
+from edi835.batch_jobs import prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
 from edi835.sftp_automation import (
     enqueue_due_automations, finish_automation_run, mark_automation_running,
     recover_interrupted_automation_runs,
@@ -25,12 +25,17 @@ class Command(BaseCommand):
         recovered = recover_interrupted_jobs()
         if recovered:
             self.stderr.write(f"Marked {recovered} interrupted batch job(s) as failed.")
+        pruned = prune_finished_jobs()
+        if pruned:
+            self.stdout.write(f"Pruned {pruned} old completed batch job file(s).")
         recovered_automations = recover_interrupted_automation_runs()
         if recovered_automations:
             self.stderr.write(f"Marked {recovered_automations} interrupted automation run(s) as failed.")
         stopping = False
         last_held_release_scan = None
         last_long_hold_alert_scan = None
+        last_missing_reference_alert_scan = None
+        last_queue_prune = timezone.now()
 
         def stop(*_args):
             nonlocal stopping
@@ -47,6 +52,16 @@ class Command(BaseCommand):
                 continue
 
             now = timezone.now()
+            if (now - last_queue_prune).total_seconds() >= 3600:
+                try:
+                    pruned = prune_finished_jobs()
+                    if pruned:
+                        self.stdout.write(f"Pruned {pruned} old completed batch job file(s).")
+                except Exception as exc:
+                    self.stderr.write(f"Could not prune completed batch job files: {exc}")
+                finally:
+                    last_queue_prune = now
+
             if last_held_release_scan is None or (now - last_held_release_scan).total_seconds() >= 60:
                 try:
                     from edi835.held_claims import release_due_held_claims
@@ -59,6 +74,34 @@ class Command(BaseCommand):
                     self.stderr.write(f"Could not release due held claims: {exc}")
                 finally:
                     last_held_release_scan = now
+
+            # Begin the missing-reference digest at 5:30 PM Eastern. Re-scan
+            # every 15 minutes afterwards: the audit-table uniqueness guarantee
+            # prevents a second successful email for the same client/day, while
+            # failed SMTP sends can be retried after the same 15-minute cooldown.
+            try:
+                from edi835.missing_reference_alerts import EASTERN, SEND_AT, send_missing_reference_alerts
+                eastern_now = now.astimezone(EASTERN)
+                if (
+                    eastern_now.time().replace(tzinfo=None) >= SEND_AT
+                    and (
+                        last_missing_reference_alert_scan is None
+                        or (now - last_missing_reference_alert_scan).total_seconds() >= 900
+                    )
+                ):
+                    missing_result = send_missing_reference_alerts(now=now)
+                    if missing_result.get("emailed_claims"):
+                        self.stdout.write(
+                            f"Emailed {missing_result['emailed_claims']} claim(s) missing 837/RECON after 7 days."
+                        )
+                    if missing_result.get("email_failures"):
+                        self.stderr.write(
+                            f"{missing_result['email_failures']} missing 837/RECON alert email(s) failed and will retry."
+                        )
+                    last_missing_reference_alert_scan = now
+            except Exception as exc:
+                self.stderr.write(f"Could not send missing 837/RECON alerts: {exc}")
+                last_missing_reference_alert_scan = now
 
             # Seven-day non-duplicate hold alerts change slowly, so scan once an
             # hour instead of adding a full held-file scan to every worker poll.

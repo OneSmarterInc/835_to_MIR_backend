@@ -1,5 +1,8 @@
 from django.urls import path
-from .views import api_convert, api_validate, download_mir, api_get_file_content, api_download_archive_zip
+from .conversion_views import api_convert
+from .views import download_mir, api_get_file_content
+from .validation_views import api_validate
+from .offboarding_archive import api_download_archive_zip
 from .async_conversion import api_convert_async
 from edi835.views import api_sftp_connect
 from edi835.batch_test_837_v3 import api_start_batch_conversion_with_837

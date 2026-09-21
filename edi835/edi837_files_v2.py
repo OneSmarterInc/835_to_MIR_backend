@@ -1,13 +1,18 @@
 """837 file-list API with accurate inbound source and saved naming format."""
 
+import json
 import os
+import uuid
 
 from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import JsonResponse
+from django.utils import timezone
+from django.views.decorators.csrf import csrf_exempt
 
 from project835.decorators import authenticated_api_required, json_api_errors
 
+from .batch_jobs import active_job_for, write_job
 from .edi837_views import _client_for_request
 from .edi837_naming_views import get_saved_837_filename_format
 from .models import EDI837File
@@ -23,7 +28,7 @@ def _confirmed_remote_outbound(item):
     """Only an absolute remote SFTP path counts as a successful push.
 
     ingest_837 also creates a local 837_out working copy and stores that local
-    relative path in outbound_path.  That local copy must never be displayed as
+    relative path in outbound_path. That local copy must never be displayed as
     a successful SFTP delivery.
     """
     outbound = str(item.outbound_path or "").strip()
@@ -39,15 +44,103 @@ def _inbound_filename(item, sftp_inbound):
     return item.original_filename
 
 
+def _pending_outbound_files(client):
+    """Processed 837 files whose outbound_path is still local/not confirmed remotely."""
+    return EDI837File.objects.filter(client=client, status="PROCESSED").exclude(
+        outbound_path__startswith="/"
+    )
+
+
+def _queue_pending_outbound(request, client):
+    if str(client.stage or "").lower() == "offboarded":
+        return JsonResponse({
+            "success": False,
+            "code": "CLIENT_OFFBOARDED",
+            "offboarded": True,
+            "error": "This client has been permanently offboarded. 837 SFTP delivery is locked.",
+        }, status=409)
+
+    pending_count = _pending_outbound_files(client).count()
+    filename_format = get_saved_837_filename_format(client)
+    if pending_count == 0:
+        return JsonResponse({
+            "success": True,
+            "state": "COMPLETED",
+            "pending_count": 0,
+            "filename_format": filename_format,
+            "message": "All processed 837 files have already been pushed to SFTP.",
+        })
+
+    scope_key = f"{client.id}:837:OUTGOING"
+    existing = active_job_for(scope_key)
+    if existing:
+        return JsonResponse({
+            "success": True,
+            "job_id": existing["id"],
+            "state": existing["state"],
+            "pending_count": pending_count,
+            "filename_format": filename_format,
+            "message": "The remaining 837 SFTP push is already queued or running.",
+        }, status=202)
+
+    job_id = str(uuid.uuid4())
+    write_job({
+        "id": job_id,
+        "owner_user_id": str(request.user.id),
+        "client_id": str(client.id),
+        "automation_type": "837",
+        "automation_direction": "OUTGOING",
+        "scope_key": scope_key,
+        "state": "QUEUED",
+        "started_at": timezone.now().isoformat(),
+        "worker_started_at": None,
+        "finished_at": None,
+        "status_code": None,
+        "result": None,
+        "attempt_count": 0,
+        "retry_count": 0,
+        "retry_delay_minutes": 5,
+        "not_before": None,
+    })
+    return JsonResponse({
+        "success": True,
+        "job_id": job_id,
+        "state": "QUEUED",
+        "pending_count": pending_count,
+        "filename_format": filename_format,
+        "message": f"Queued {pending_count} remaining 837 file(s) for sequential SFTP delivery.",
+    }, status=202)
+
+
+@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def edi837_files(request):
-    if request.method != "GET":
-        return JsonResponse({"success": False, "error": "Only GET is allowed."}, status=405)
+    """List 837 files or queue pending outbound delivery.
 
-    client = _client_for_request(request, request.GET.get("client_id"))
+    POST is intentionally CSRF-exempt because this endpoint is an authenticated
+    JSON API used by both token-backed admin sessions and normal portal sessions.
+    Authentication and tenant authorization continue to be enforced by the
+    existing API decorators and ``_client_for_request``.
+    """
+    if request.method not in {"GET", "POST"}:
+        return JsonResponse({"success": False, "error": "Only GET and POST are allowed."}, status=405)
+
+    if request.method == "POST":
+        try:
+            body = json.loads(request.body.decode("utf-8")) if request.body else {}
+        except (TypeError, ValueError, UnicodeDecodeError):
+            return JsonResponse({"success": False, "error": "Invalid JSON request."}, status=400)
+        requested_client_id = body.get("client_id") or body.get("client")
+    else:
+        requested_client_id = request.GET.get("client_id")
+
+    client = _client_for_request(request, requested_client_id)
     if client is None:
         return JsonResponse({"success": False, "error": "Select an authorized client."}, status=400)
+
+    if request.method == "POST":
+        return _queue_pending_outbound(request, client)
 
     query = str(request.GET.get("q") or "").strip()
     files = EDI837File.objects.filter(client=client)
@@ -68,6 +161,10 @@ def edi837_files(request):
         if source_query == "SFTP":
             filters |= Q(remote_path__startswith="/")
         files = files.filter(filters)
+        if status_query == "NOT_PUSHED":
+            files = files.exclude(outbound_path__startswith="/")
+        elif status_query == "PUSHED":
+            files = files.filter(outbound_path__startswith="/")
 
     try:
         page_number = max(1, int(request.GET.get("page", "1")))
@@ -115,6 +212,7 @@ def edi837_files(request):
     return JsonResponse({
         "success": True,
         "filename_format": get_saved_837_filename_format(client),
+        "pending_outbound_count": _pending_outbound_files(client).count(),
         "results": rows,
         "count": paginator.count,
         "page": page.number,

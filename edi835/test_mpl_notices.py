@@ -1,22 +1,25 @@
 import json
 from datetime import date
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
 from django.test import TestCase, override_settings
 from django.utils import timezone
 
 from accounts.models import Client, User
-from edi835.models import (EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLNotice, RECONClaim, RECONFile)
+from edi835.models import (EDI835Claim, EDI835File, EDI837Claim, EDI837File, MIRClaim, MIRFile, MPLIssueDefinition, MPLNotice, RECONClaim, RECONFile)
 from edi835.mpl_views import _mpl_file_claim_rows
 from edi835.mpl_notices import (
     NoticeValidationError,
     approved_actions_for_claim,
     authoritative_rule_catalog,
+    build_claim_reports,
     conversion_findings_for_claim,
+    call_local_model,
     extract_claim_identifiers,
     extract_claim_issue_map,
     internal_claim_number_from_835,
+    internal_claim_number_from_837_claim,
     internal_claim_number_from_source,
     local_ai_enabled,
     parse_subject,
@@ -54,6 +57,79 @@ class MPLSubjectTests(TestCase):
         latest, history = split_latest_message("Please review this claim.\n\nFrom: Scott\nSent: Tuesday\nOlder email")
         self.assertEqual(latest, "Please review this claim.")
         self.assertIn("From: Scott", history)
+
+
+class MPL837InternalClaimNumberTests(TestCase):
+    def test_uses_ref_9c_from_the_exact_837_claim(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="QYD579",
+            reference_9c="QYD579",
+            raw_claim="CLM*86520262000982500*340~REF*9C*QYD579~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "QYD579",
+        )
+
+    def test_uses_clm01_suffix_when_ref_9c_is_absent(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500QYD579",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="QYD579",
+            reference_9c="",
+            raw_claim="CLM*86520262000982500QYD579*340~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "QYD579",
+        )
+
+    def test_rejects_internal_number_from_a_different_837_claim(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262000982500",
+            highmark_claim_number="86520262000982500",
+            internal_claim_number="BORROWED1",
+            reference_9c="BORROWED1",
+            raw_claim="CLM*86520262000982500*340~REF*9C*ACTUAL579~",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262000982500"),
+            "ACTUAL579",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "89020262161295900"),
+            "",
+        )
+
+
+    def test_uses_fixed_width_hi_suffix_when_ref_9c_is_absent(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262123595400",
+            highmark_claim_number="86520262123595400",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="HL*1*20*22~HI86520262123595400QYV596    OTHER DATA",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262123595400"),
+            "QYV596",
+        )
+
+
+    def test_uses_separated_fixed_width_internal_number(self):
+        claim = SimpleNamespace(
+            claim_control_number="86520262123595400",
+            highmark_claim_number="86520262123595400",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="HI86520262123595400  QYV596    OTHER DATA",
+        )
+        self.assertEqual(
+            internal_claim_number_from_837_claim(claim, "86520262123595400"),
+            "QYV596",
+        )
 
 
 class MPLClaimExtractionTests(TestCase):
@@ -227,13 +303,313 @@ class MPLClaimExtractionTests(TestCase):
         self.assertIn("UE999", joined)
         self.assertNotIn("Confirm that the correct client", joined)
 
+    def test_builds_structured_python_claim_report(self):
+        reports = build_claim_reports(
+            [{
+                "claim_number": "86520262000982500",
+                "reported_issues": [{
+                    "codes": ["MP011"],
+                    "category": "",
+                    "description": "Timely filing issue.",
+                }],
+                "sources": [{
+                    "type": "837",
+                    "filename": "claim.837",
+                    "date": "2026-09-09T10:00:00+00:00",
+                    "status": "PROCESSED",
+                    "internal_claim_number": "QYD579",
+                }],
+            }],
+            [],
+        )
+        self.assertEqual(reports[0]["internal_claim_numbers"], ["QYD579"])
+        self.assertEqual(reports[0]["issues"][0]["issue_id"], "MP011")
+        self.assertEqual(reports[0]["history"][0]["filename"], "claim.837")
+        self.assertFalse(reports[0]["duplicate"]["found"])
+        self.assertFalse(reports[0]["hold"]["found"])
+
+    def test_claim_report_merges_source_and_timeline_occurrence(self):
+        occurred_at = "2026-09-15T14:49:23+00:00"
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [{
+                "type": "837",
+                "filename": "IP7A260807I",
+                "date": occurred_at,
+                "status": "PROCESSED",
+                "internal_claim_number": "QYD579",
+            }],
+        }], [{
+            "claim_number": "86520262000982500",
+            "highmark_claim_number": "86520262000982500",
+            "internal_claim_number": "QYD579",
+            "analysis": {"timeline": [{
+                "date": occurred_at,
+                "file": "IP7A260807I",
+                "status": "PROCESSED",
+                "event": "837 processed",
+            }]},
+        }])[0]
+
+        self.assertEqual(len(report["history"]), 1)
+        self.assertEqual(report["history"][0]["file_type"], "837")
+        self.assertEqual(report["history"][0]["internal_claim_number"], "QYD579")
+        self.assertEqual(report["history"][0]["event"], "837 processed")
+
+    def test_claim_report_strips_highmark_from_internal_identity(self):
+        highmark = "89020262161295900"
+        internal = "QZG591"
+        report = build_claim_reports([{
+            "claim_number": highmark,
+            "reported_issues": [],
+            "sources": [{
+                "type": "837",
+                "filename": "claim.837",
+                "internal_claim_number": f"{highmark}{internal}",
+            }, {
+                "type": "835",
+                "filename": "payment.835",
+                "internal_claim_number": internal,
+            }],
+        }], [{
+            "claim_number": highmark,
+            "highmark_claim_number": highmark,
+            "internal_claim_number": f"{highmark}{internal}",
+            "analysis": {},
+        }])[0]
+
+        self.assertEqual(report["internal_claim_numbers"], [internal])
+        self.assertEqual(
+            {row["internal_claim_number"] for row in report["history"]},
+            {internal},
+        )
+
+    def test_claim_report_maps_python_findings_and_consolidates_no_prefix(self):
+        for code, title, description, resolution in (
+            (
+                "MIR_CLAIM_MISSING",
+                "Matching MIR claim not found",
+                "No matching MIR identity was found.",
+                "Verify the conversion batch and regenerate the MIR.",
+            ),
+            (
+                "CHARGE_MISMATCH",
+                "837 and reconciliation charge mismatch",
+                "The stored charges differ.",
+                "Compare the source charges and rerun reconciliation.",
+            ),
+            (
+                "NO_PREFIX_RETURN",
+                "No-prefix return",
+                "The expected prefix is absent.",
+                "Verify prefix configuration and regenerate the MIR.",
+            ),
+        ):
+            MPLIssueDefinition.objects.update_or_create(code=code, defaults={
+                "title": title,
+                "description": description,
+                "resolution": resolution,
+                "mapping_status": "LOCAL_CATEGORY",
+                "source": "Test approved mapping",
+                "active": True,
+            })
+
+        report = build_claim_reports([{
+            "claim_number": "89020262161295900",
+            "reported_issues": [{
+                "category": "NO_PREFIX_RETURN",
+                "codes": [],
+                "description": "Reported without a prefix.",
+            }],
+            "sources": [],
+        }], [{
+            "claim_number": "89020262161295900",
+            "highmark_claim_number": "89020262161295900",
+            "analysis": {"findings": [
+                {
+                    "code": "MIR_CLAIM_MISSING",
+                    "description": "No matching MIR claim was found for this 837 claim.",
+                    "evidence": "837/MIR comparison",
+                },
+                {
+                    "code": "CHARGE_MISMATCH",
+                    "description": "837 charge differs from reconciliation.",
+                    "evidence": "837/RECON comparison",
+                },
+                {
+                    "code": "REPORTED_NO_PREFIX_RETURN",
+                    "description": "Reported without a prefix.",
+                    "evidence": "MPL email",
+                },
+                {
+                    "code": "NO_PREFIX_NOTICE",
+                    "description": "The MPL email reports that the returned claim has no prefix.",
+                    "evidence": "MPL email",
+                },
+            ]},
+        }])[0]
+
+        issues = {item["issue_id"]: item for item in report["issues"]}
+        self.assertEqual(
+            set(issues),
+            {"MIR_CLAIM_MISSING", "CHARGE_MISMATCH", "NO_PREFIX_RETURN"},
+        )
+        self.assertEqual(issues["MIR_CLAIM_MISSING"]["title"], "Matching MIR claim not found")
+        self.assertEqual(
+            issues["CHARGE_MISMATCH"]["resolution"],
+            "Compare the source charges and rerun reconciliation.",
+        )
+        self.assertEqual(
+            issues["NO_PREFIX_RETURN"]["reported_description"],
+            "The MPL email reports that the returned claim has no prefix.",
+        )
+
+    def test_claim_report_uses_persisted_issue_definition_and_resolution(self):
+        MPLIssueDefinition.objects.update_or_create(code="UE036", defaults={
+            "title": "Room-rate acknowledgement",
+            "description": "Stored convention description.",
+            "resolution": "Stored approved resolution.",
+            "mapping_status": "EMAIL_SUPPORTED",
+            "source": "Test convention source",
+        })
+        issue = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [{"codes": ["UE036"], "description": "Raw email wording."}],
+            "sources": [],
+        }], [])[0]["issues"][0]
+        self.assertEqual(issue["description"], "Stored convention description.")
+        self.assertEqual(issue["resolution"], "Stored approved resolution.")
+        self.assertEqual(issue["reported_description"], "Raw email wording.")
+
+    def test_claim_report_splits_combined_codes_into_mapped_rows(self):
+        for code, description, resolution in (("MP001", "D1", "R1"), ("MP002", "D2", "R2")):
+            MPLIssueDefinition.objects.update_or_create(code=code, defaults={
+                "title": code, "description": description, "resolution": resolution,
+                "mapping_status": "EMAIL_SUPPORTED", "source": "Test",
+            })
+        issues = build_claim_reports([{
+            "claim_number": "44320262370555000",
+            "reported_issues": [{"codes": ["MP001", "MP002"], "description": "Combined instruction."}],
+            "sources": [],
+        }], [])[0]["issues"]
+        self.assertEqual([item["issue_id"] for item in issues], ["MP001", "MP002"])
+        self.assertEqual([item["resolution"] for item in issues], ["R1", "R2"])
+
+
+    def test_exact_highmark_and_internal_identity_is_duplicate_with_conversion_hold(self):
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYD579"},
+                {
+                    "type": "835", "filename": "payment.835", "internal_claim_number": "QYD579",
+                    "details": {"conversion_findings": [{
+                        "code": "DUPLICATE_ICN", "severity": "hold",
+                        "description": "Matching claim is held by conversion.",
+                    }]},
+                },
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "DUPLICATE")
+        self.assertEqual(report["duplicate"]["status"], "DUPLICATE_FOUND")
+        self.assertTrue(report["duplicate"]["found"])
+        self.assertTrue(report["hold"]["found"])
+        self.assertEqual(report["hold"]["details"][0]["filename"], "payment.835")
+        self.assertEqual(report["hold"]["details"][0]["code"], "DUPLICATE_ICN")
+        self.assertEqual(report["hold"]["details"][0]["description"], "Matching claim is held by conversion.")
+        self.assertEqual(
+            report["duplicate"]["details"][0]["conversion_findings"][0]["filename"],
+            "payment.835",
+        )
+
+    def test_claim_report_recognizes_conversion_status_hold(self):
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [{
+                "type": "835",
+                "filename": "payment.835",
+                "date": "2026-09-09T10:00:00+00:00",
+                "internal_claim_number": "QYD579",
+                "details": {"conversion_findings": [{
+                    "code": "MPL-011",
+                    "severity": "warning",
+                    "decision": "HOLD",
+                    "description": "Timely filing validation failed.",
+                }]},
+            }],
+        }], [])[0]
+        self.assertTrue(report["hold"]["found"])
+        self.assertEqual(report["hold"]["details"][0]["filename"], "payment.835")
+        self.assertEqual(report["hold"]["details"][0]["severity"], "HOLD")
+        self.assertEqual(
+            report["hold"]["details"][0]["description"],
+            "Timely filing validation failed.",
+        )
+
+    def test_matching_highmark_with_different_internal_identity_is_adjustment(self):
+        MPLIssueDefinition.objects.update_or_create(
+            code="ADJUSTMENT_PENDING",
+            defaults={
+                "title": "Adjustment",
+                "description": "Internal identities differ.",
+                "resolution": "Review the original claim and adjustment.",
+                "mapping_status": "LOCAL_CATEGORY",
+                "source": "Approved identity rule",
+            },
+        )
+        report = build_claim_reports([{
+            "claim_number": "86520262000982500",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYD579"},
+                {"type": "835", "filename": "payment.835", "internal_claim_number": "QYD580"},
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertEqual(report["duplicate"]["status"], "ADJUSTMENT")
+        self.assertFalse(report["duplicate"]["found"])
+        self.assertEqual(report["issues"][0]["issue_id"], "ADJUSTMENT_PENDING")
+
+
+    def test_internal_conflict_overrides_one_exact_pair_and_duplicate_finding(self):
+        report = build_claim_reports([{
+            "claim_number": "45520262120111800",
+            "reported_issues": [],
+            "sources": [
+                {"type": "837", "filename": "claim.837", "internal_claim_number": "QYW218"},
+                {
+                    "type": "835", "filename": "first.835", "internal_claim_number": "QYW218",
+                    "details": {"conversion_findings": [{
+                        "code": "DUPLICATE_ICN", "severity": "hold",
+                        "description": "Old duplicate finding.",
+                    }]},
+                },
+                {"type": "835", "filename": "adjustment.835", "internal_claim_number": "Q00841"},
+            ],
+        }], [])[0]
+        self.assertEqual(report["classification"], "ADJUSTMENT")
+        self.assertEqual(report["duplicate"]["status"], "ADJUSTMENT")
+        self.assertFalse(report["duplicate"]["found"])
+        self.assertEqual(
+            set(report["internal_claim_numbers"]),
+            {"Q00841", "QYW218"},
+        )
+
+
 
 class MPLAIEnablementTests(TestCase):
-    def test_local_ai_is_disabled_by_default(self):
+    def test_local_ai_is_enabled_by_default(self):
         with patch.dict("os.environ", {}, clear=True):
+            self.assertTrue(local_ai_enabled())
+
+    def test_local_ai_can_be_explicitly_disabled(self):
+        with patch.dict("os.environ", {"MPL_AI_ENABLED": "false"}, clear=True):
             self.assertFalse(local_ai_enabled())
 
-    def test_local_ai_requires_explicit_opt_in(self):
+    def test_local_ai_accepts_explicit_enablement(self):
         with patch.dict("os.environ", {"MPL_AI_ENABLED": "true"}, clear=True):
             self.assertTrue(local_ai_enabled())
 
@@ -288,7 +664,7 @@ class MPLNoticeAPITests(TestCase):
         self.assertEqual(response.status_code, 201)
         self.assertEqual(MPLNotice.objects.get().client, self.client_record)
 
-    def test_processes_exact_claim_with_deterministic_fallback(self):
+    def test_processes_exact_claim_with_python_rules(self):
         edi_file = EDI837File.objects.create(client=self.client_record, uploaded_by=self.user, original_filename="abc.837", stored_filename="abc.837", file_content="x", file_hash="a" * 64, status="PROCESSED", processed_at=timezone.now())
         claim = EDI837Claim.objects.create(edi_file=edi_file, client=self.client_record, claim_sequence=1, claim_control_number="CLM12345", service_count=1, total_charge_amount="100.00")
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Hi Everyone! MIR Results: claim CLM12345 returned with NO PREFIX. Please review.", reporting_year=2026, created_by=self.user)
@@ -299,7 +675,9 @@ class MPLNoticeAPITests(TestCase):
         codes = {item["code"] for item in link.analysis.findings}
         self.assertIn("MIR_CLAIM_MISSING", codes)
         self.assertIn("NO_PREFIX_NOTICE", codes)
-        self.assertEqual(link.analysis.model_id, "deterministic-fallback")
+        self.assertEqual(link.analysis.model_id, "python-rules-v1")
+        self.assertIn("Python evidence analysis completed", notice.ai_response)
+        self.assertEqual(notice.ai_response_source, "python-rules-v1")
 
     def test_unmatched_email_claims_remain_visible(self):
         notice = MPLNotice.objects.create(
@@ -320,6 +698,8 @@ class MPLNoticeAPITests(TestCase):
         )
         self.assertEqual([item["claim_number"] for item in notice.source_matches], notice.extracted_claim_numbers)
         self.assertTrue(all(not item["sources"] for item in notice.source_matches))
+        self.assertIn("Claim 33020262300027000", notice.ai_response)
+        self.assertIn("Claim 33020262091936200", notice.ai_response)
         self.assertNotIn("UE084", notice.extracted_claim_numbers)
 
     def test_source_search_finds_claim_across_all_archived_formats(self):
@@ -338,7 +718,9 @@ class MPLNoticeAPITests(TestCase):
         )
         EDI837Claim.objects.create(
             edi_file=edi837, client=self.client_record, claim_sequence=1,
-            claim_control_number="different", raw_claim=f"REF*F8*{claim_number}~",
+            claim_control_number=claim_number, highmark_claim_number=claim_number,
+            internal_claim_number="837INT9", reference_9c="837INT9",
+            raw_claim=f"CLM*{claim_number}*100~REF*9C*837INT9~",
         )
         edi835 = EDI835File.objects.create(
             client=self.client_record, original_filename="claim.835",
@@ -374,9 +756,268 @@ class MPLNoticeAPITests(TestCase):
             source["type"]: source["internal_claim_number"]
             for source in result[0]["sources"]
         }
+        self.assertEqual(internal_by_type["837"], "837INT9")
         self.assertEqual(internal_by_type["835"], "PAY835")
         self.assertEqual(internal_by_type["MIR"], "MIR123")
         self.assertEqual(internal_by_type["RECON"], "REC456")
+
+    def test_source_table_keeps_distinct_837_internal_numbers_from_one_file(self):
+        claim_number = "45520262120111800"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="multiple.837",
+            stored_filename="multiple.837",
+            file_content="x",
+            file_hash="9" * 64,
+            status="PROCESSED",
+        )
+        for sequence, internal in enumerate(("Q00841", "QYW218"), start=1):
+            EDI837Claim.objects.create(
+                edi_file=edi837,
+                client=self.client_record,
+                claim_sequence=sequence,
+                claim_control_number=(
+                    claim_number if sequence == 1 else f"HI{claim_number}{internal}"
+                ),
+                highmark_claim_number=(claim_number if sequence == 1 else ""),
+                internal_claim_number="",
+                reference_9c="",
+                raw_claim=f"HI{claim_number}{internal}    CLAIM DATA",
+            )
+
+        result = search_claim_sources(notice, [claim_number])
+        internals = {
+            source["internal_claim_number"]
+            for source in result[0]["sources"]
+            if source["type"] == "837"
+        }
+        self.assertEqual(internals, {"Q00841", "QYW218"})
+
+    def test_source_search_reverse_links_837_by_internal_number(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="legacy-internal.837",
+            stored_filename="legacy-internal.837",
+            file_content="x",
+            file_hash="7" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-ROW-INTERNAL",
+            highmark_claim_number="",
+            internal_claim_number=internal,
+            reference_9c=internal,
+            raw_claim=f"REF*9C*{internal}~",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "legacy-internal.837")
+        self.assertEqual(source_837["details"]["matched_by"], "Exact internal claim number")
+
+    def test_source_search_reverse_links_fixed_width_837_internal(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="fixed-width.837",
+            stored_filename="fixed-width.837",
+            file_content="x",
+            file_hash="6" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-FIXED-WIDTH",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim=f"PREFIX{internal}SUFFIX",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "fixed-width.837")
+
+    def test_source_search_uses_universal_search_837_identity_columns(self):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=highmark,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi835 = EDI835File.objects.create(
+            client=self.client_record,
+            original_filename="payment.835",
+            stored_filename="payment.835",
+            status="ARCHIVED",
+        )
+        EDI835Claim.objects.create(
+            edi_file=edi835,
+            claim_sequence=1,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="search-screen.837",
+            stored_filename="search-screen.837",
+            file_content="x",
+            file_hash="5" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number=f"LEGACY-{internal}-ROW",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim="",
+        )
+
+        sources = search_claim_sources(notice, [highmark])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], internal)
+        self.assertEqual(source_837["filename"], "search-screen.837")
+        self.assertEqual(source_837["details"]["matched_by"], "Exact internal claim number")
+
+    def test_source_search_finds_legacy_837_number_only_in_raw_claim(self):
+        claim_number = "37820262180001800"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            reporting_year=2026,
+            created_by=self.user,
+        )
+        edi837 = EDI837File.objects.create(
+            client=self.client_record,
+            uploaded_by=self.user,
+            original_filename="legacy.837",
+            stored_filename="legacy.837",
+            file_content="x",
+            file_hash="8" * 64,
+            status="PROCESSED",
+        )
+        EDI837Claim.objects.create(
+            edi_file=edi837,
+            client=self.client_record,
+            claim_sequence=1,
+            claim_control_number="LEGACY-ROW-1",
+            highmark_claim_number="",
+            internal_claim_number="",
+            reference_9c="",
+            raw_claim=f"HI{claim_number}QAB123    CLAIM DATA",
+        )
+
+        sources = search_claim_sources(notice, [claim_number])[0]["sources"]
+        source_837 = next(item for item in sources if item["type"] == "837")
+        self.assertEqual(source_837["internal_claim_number"], "QAB123")
+        self.assertEqual(source_837["filename"], "legacy.837")
+
+    def test_client_cannot_change_claim_workflow_status(self):
+        claim_number = "33020262300027000"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            extracted_claim_numbers=[claim_number],
+            created_by=self.user,
+        )
+        response = self.client.patch(
+            f"/edi835/api/mpl-notices/{notice.id}/claims/workflow-status/",
+            data=json.dumps({"claim_number": claim_number, "workflow_status": "HOLD"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 403)
+        notice.refresh_from_db()
+        self.assertEqual(notice.claim_workflow_statuses, {})
+
+    def test_admin_can_change_claim_workflow_status(self):
+        claim_number = "33020262300027000"
+        notice = MPLNotice.objects.create(
+            client=self.client_record,
+            subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC",
+            raw_email_body=claim_number,
+            extracted_claim_numbers=[claim_number],
+            created_by=self.user,
+        )
+        self.user.client = None
+        self.user.is_staff = True
+        self.user.is_superuser = True
+        self.user.save(update_fields=["client", "is_staff", "is_superuser"])
+        response = self.client.patch(
+            f"/edi835/api/mpl-notices/{notice.id}/claims/workflow-status/",
+            data=json.dumps({"claim_number": claim_number, "workflow_status": "HOLD"}),
+            content_type="application/json",
+        )
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertNotIn("notice", response.json())
+        notice.refresh_from_db()
+        self.assertEqual(notice.claim_workflow_statuses[claim_number], "HOLD")
 
     def test_no_claim_is_review_required_not_fabricated(self):
         notice = MPLNotice.objects.create(client=self.client_record, subject="MIR Back to the TPA File -- 9/2 thru 9/8 -- ABC", raw_email_body="Please review.", reporting_year=2026, created_by=self.user)
@@ -384,3 +1025,68 @@ class MPLNoticeAPITests(TestCase):
         notice.refresh_from_db()
         self.assertEqual(notice.status, "REVIEW_REQUIRED")
         self.assertFalse(notice.notice_claims.exists())
+
+
+class MPLClaimAIResponseTests(TestCase):
+    @patch.dict("os.environ", {
+        "MPL_AI_ENABLED": "true",
+        "MPL_AI_BASE_URL": "http://local-model",
+        "MPL_AI_MODEL": "test-model",
+    }, clear=False)
+    @patch("edi835.mpl_notices.urlopen")
+    def test_accepts_ai_response_with_separate_highmark_identifier(self, mocked_urlopen):
+        highmark = "86520262000982500"
+        internal = "QYD579"
+        combined = highmark + internal
+        model_result = {
+            "summary": (
+                "Claim identity: Highmark 86520262000982500; internal QYD579. "
+                "Issues and error codes: MIR_CLAIM_MISSING. History: claim.837 processed. "
+                "Duplicate and hold status: no evidence found. Root-cause analysis: MIR is absent. "
+                "Resolution steps: A1."
+            ),
+            "reported_issue": "MIR_CLAIM_MISSING",
+            "verified_evidence": ["claim.837"],
+            "missing_evidence": ["MIR"],
+            "unknown_codes": [],
+            "unclear_items": [],
+            "primary_issue_code": "MIR_CLAIM_MISSING",
+            "needs_response": True,
+            "recommended_actions": [{"action_id": "A1", "reason": "Locate MIR"}],
+            "confidence": 0.8,
+            "requires_human_review": True,
+        }
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps({
+            "choices": [{"message": {"content": json.dumps(model_result)}}],
+        }).encode()
+        mocked_urlopen.return_value = response
+
+        notice = SimpleNamespace(raw_email_body=combined, normalized_email={})
+        claim = SimpleNamespace(
+            claim_control_number=combined,
+            highmark_claim_number=highmark,
+            internal_claim_number=internal,
+            reference_9c=internal,
+            member_id="MEMBER1",
+            service_from_date=None,
+            service_to_date=None,
+            total_charge_amount=100,
+            service_count=1,
+        )
+        result = call_local_model(
+            notice,
+            claim,
+            [{"event": "837 processed", "date": "2026-09-09", "file": "claim.837", "status": "PROCESSED"}],
+            [{
+                "code": "MIR_CLAIM_MISSING",
+                "severity": "error",
+                "description": "No matching MIR claim.",
+                "evidence": "837/MIR comparison",
+            }],
+            ["Locate the approved MIR source for this claim."],
+        )
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["model_id"], "test-model")
+        self.assertIn(highmark, result["summary"])

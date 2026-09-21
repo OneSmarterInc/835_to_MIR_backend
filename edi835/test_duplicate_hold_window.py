@@ -4,6 +4,7 @@ from django.test import TestCase
 
 from accounts.models import Client
 from edi835.held_claims import (
+    DUPLICATE_HISTORY_LOOKBACK,
     DUPLICATE_HOLD_WINDOW,
     _candidate_rows,
     duplicate_eligible_send_at,
@@ -51,16 +52,18 @@ class DuplicateHoldWindowTests(TestCase):
         MIRClaim.objects.create(
             mir_file=mir_file,
             claim_sequence=1,
-            claim_control_number=f"{claim_number}REF001",
+            # Production MIR storage keeps CLP01/MIR100 as a fixed-width
+            # 17-character portion before the six-character cross-reference.
+            claim_control_number=f"{claim_number:<17}REF001",
             header_raw=" " * 334,
         )
         return mir_file
 
-    def test_fourth_day_is_eligible_at_530_pm_eastern(self):
+    def test_four_full_days_then_eligible_at_530_pm_eastern(self):
         sent_at = datetime(2026, 9, 1, 10, 0, tzinfo=dt_timezone.utc)
         self._sent_claim("CLAIM100", sent_at)
 
-        before_deadline = datetime(2026, 9, 4, 21, 29, tzinfo=dt_timezone.utc)
+        before_deadline = datetime(2026, 9, 5, 21, 29, tzinfo=dt_timezone.utc)
         history = recent_sent_claim_history(
             self.client,
             {"CLAIM100"},
@@ -69,28 +72,84 @@ class DuplicateHoldWindowTests(TestCase):
         self.assertIn("CLAIM100", history)
         self.assertEqual(
             history["CLAIM100"]["eligible_send_at"],
-            datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc),
+            datetime(2026, 9, 5, 21, 30, tzinfo=dt_timezone.utc),
         )
 
-        at_deadline = datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc)
+        at_deadline = datetime(2026, 9, 5, 21, 30, tzinfo=dt_timezone.utc)
         self.assertEqual(
             recent_sent_claim_history(self.client, {"CLAIM100"}, now=at_deadline),
             {},
         )
 
+    def test_user_example_releases_on_september_17_at_530_pm_eastern(self):
+        # 09/13/2026 04:23:55 AM EDT -> 09/17/2026 05:30:00 PM EDT.
+        sent_at = datetime(2026, 9, 13, 8, 23, 55, tzinfo=dt_timezone.utc)
+        self._sent_claim("EXACTCASE", sent_at)
+
+        before_deadline = datetime(2026, 9, 17, 21, 29, 59, tzinfo=dt_timezone.utc)
+        history = recent_sent_claim_history(
+            self.client,
+            {"EXACTCASE"},
+            now=before_deadline,
+        )
+        self.assertIn("EXACTCASE", history)
+        self.assertEqual(
+            history["EXACTCASE"]["eligible_send_at"],
+            datetime(2026, 9, 17, 21, 30, tzinfo=dt_timezone.utc),
+        )
+
+        at_deadline = datetime(2026, 9, 17, 21, 30, tzinfo=dt_timezone.utc)
+        self.assertEqual(
+            recent_sent_claim_history(self.client, {"EXACTCASE"}, now=at_deadline),
+            {},
+        )
+
+    def test_resolved_claim_reappearing_before_deadline_still_counts_as_duplicate(self):
+        resolved_source = EDI835File.objects.create(
+            client=self.client,
+            original_filename="BADCO001-original.835",
+            stored_filename="BADCO001-original.835",
+            status="ARCHIVED",
+            held_claims_count=0,
+            conversion_findings=[{
+                "rule_code": "CO_EXCEEDS_CHARGE",
+                "severity": "INFO",
+                "claim_index": "1",
+                "claim_number": "BADCO001",
+                "hold_resolution_status": "RESOLVED",
+                "hold_resolved_mir_filename": "BADCO001-corrected.MIR",
+            }],
+        )
+        self.assertIsNotNone(resolved_source.id)
+
+        sent_at = datetime(2026, 9, 13, 11, 0, tzinfo=dt_timezone.utc)
+        self._sent_claim("BADCO001", sent_at)
+
+        before_deadline = datetime(2026, 9, 14, 12, 0, tzinfo=dt_timezone.utc)
+        history = recent_sent_claim_history(
+            self.client,
+            {"BADCO001"},
+            now=before_deadline,
+        )
+
+        self.assertIn("BADCO001", history)
+        self.assertEqual(history["BADCO001"]["previous_sent_at"], sent_at)
+        self.assertGreater(history["BADCO001"]["eligible_send_at"], before_deadline)
+
     def test_530_pm_eastern_is_dst_aware(self):
         winter_sent_at = datetime(2026, 1, 1, 15, 0, tzinfo=dt_timezone.utc)
         self.assertEqual(
             duplicate_eligible_send_at(winter_sent_at),
-            datetime(2026, 1, 4, 22, 30, tzinfo=dt_timezone.utc),
+            datetime(2026, 1, 5, 22, 30, tzinfo=dt_timezone.utc),
         )
 
-    def test_fourth_calendar_day_uses_three_day_date_offset(self):
-        self.assertEqual(DUPLICATE_HOLD_WINDOW.total_seconds(), 72 * 60 * 60)
+    def test_four_day_date_offset_and_safe_history_lookback(self):
+        self.assertEqual(DUPLICATE_HOLD_WINDOW.total_seconds(), 96 * 60 * 60)
+        self.assertEqual(DUPLICATE_HISTORY_LOOKBACK.total_seconds(), 120 * 60 * 60)
 
     def test_release_filename_matches_requested_yyyymmddhhss_format(self):
-        release_time = datetime(2026, 9, 4, 21, 30, 42, tzinfo=dt_timezone.utc)
-        self.assertEqual(held_release_mir_filename(release_time), "202609041742.MIR")
+        release_time = datetime(2026, 9, 5, 21, 30, 42, tzinfo=dt_timezone.utc)
+        self.assertEqual(held_release_mir_filename(release_time), "202609051742.MIR")
 
     def test_legacy_stored_deadline_uses_new_530_pm_eastern_release_time(self):
         source = EDI835File.objects.create(
@@ -111,16 +170,16 @@ class DuplicateHoldWindowTests(TestCase):
             }],
         )
 
-        before_new_deadline = datetime(2026, 9, 4, 21, 29, tzinfo=dt_timezone.utc)
+        before_new_deadline = datetime(2026, 9, 5, 21, 29, tzinfo=dt_timezone.utc)
         self.assertEqual(_candidate_rows(before_new_deadline, 25), [])
 
-        at_new_deadline = datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc)
+        at_new_deadline = datetime(2026, 9, 5, 21, 30, tzinfo=dt_timezone.utc)
         candidates = _candidate_rows(at_new_deadline, 25)
         self.assertEqual(len(candidates), 1)
         self.assertEqual(candidates[0]["source_id"], str(source.id))
         self.assertEqual(
             candidates[0]["eligible_send_at"],
-            datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc),
+            datetime(2026, 9, 5, 21, 30, tzinfo=dt_timezone.utc),
         )
 
     def test_daily_release_selection_is_not_capped_at_25(self):
@@ -144,7 +203,7 @@ class DuplicateHoldWindowTests(TestCase):
                 }],
             )
 
-        at_deadline = datetime(2026, 9, 4, 21, 30, tzinfo=dt_timezone.utc)
+        at_deadline = datetime(2026, 9, 5, 21, 30, tzinfo=dt_timezone.utc)
         candidates = _candidate_rows(at_deadline, None)
         self.assertEqual(len(candidates), 30)
 

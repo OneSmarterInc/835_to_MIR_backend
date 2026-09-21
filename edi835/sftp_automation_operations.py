@@ -13,8 +13,9 @@ from django.utils import timezone
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .edi837_transfer import _normalize_folder, _open_sftp
 from .file_types import has_valid_file_extension
+from .mir_persistence import set_mir_push_status
 from .models import EDI835File, EDI837File, MIRFile
-from .services import process_multiple_edi835_files, validate_835_content
+from .services import process_edi835_file_content, validate_835_content
 from .storage import archive_inbound, client_storage_dirs, relative_media_path, remove_delivered_outbound, stage_inbound
 
 
@@ -35,6 +36,23 @@ def _serialize_validation_error(report):
         "findings": report.get("findings") or [],
     }
     return json.dumps(payload, ensure_ascii=False, default=str)
+
+
+def _append_hhss(filename, now=None):
+    """Append hour+seconds immediately before the extension for outbound names."""
+    stamp = timezone.localtime(now or timezone.now()).strftime("%H%S")
+    safe_name = os.path.basename(filename)
+    stem, extension = os.path.splitext(safe_name)
+    return f"{stem}_{stamp}{extension}"
+
+
+def _numbered_outbound_name(filename, sequence, total):
+    """Add a deterministic sequence when one push contains multiple 837 files."""
+    safe_name = os.path.basename(filename)
+    if total <= 1:
+        return safe_name
+    stem, extension = os.path.splitext(safe_name)
+    return f"{stem}_{sequence:03d}{extension or '.837'}"
 
 
 def ingest_835_incoming(client, actor):
@@ -68,7 +86,6 @@ def ingest_835_incoming(client, actor):
                         present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
                         error_message=detail, processing_completed_at=timezone.now(),
                     )
-                    # Delete the remote source only after archive + DB persistence succeed.
                     sftp.remove(remote_path)
                     errors.append(f"{name}: 835 validation failed")
                     continue
@@ -93,34 +110,61 @@ def ingest_835_incoming(client, actor):
 
 
 def process_staged_835(client):
-    records = list(EDI835File.objects.filter(client=client, status="UPLOADED").order_by("uploaded_at")[:500])
-    items = [{"filename": item.original_filename, "content": item.input_file_content} for item in records if item.input_file_content]
-    if not items:
+    """Process validated SFTP 835 records strictly one at a time.
+
+    A failed file does not prevent later files in a 30+ file batch from being
+    attempted, and each successful result is persisted before moving on.
+    """
+    records = list(
+        EDI835File.objects.filter(client=client, status="UPLOADED")
+        .exclude(input_file_content="")
+        .order_by("uploaded_at")[:500]
+    )
+    if not records:
         return {"success": True, "automation_type": "835", "direction": "PROCESSING", "files": [],
-                "processed_count": 0, "message": "No validated 835 files were waiting for processing."}
-    result = process_multiple_edi835_files(items, ingestion_source="SFTP", client=client, deliver_outbound=False)
-    if result.get("success"):
-        EDI835File.objects.filter(id__in=[item.id for item in records]).update(
-            status="ARCHIVED", processing_completed_at=timezone.now())
-    # Service-layer results include live Django objects for synchronous callers.
-    # Durable worker jobs are JSON, so expose identifiers and names instead of
-    # attempting to serialize a model instance (and omit the large MIR body).
-    generated_record = result.pop("db_record", None)
-    result.pop("mir_text", None)
-    if generated_record is not None:
-        result["edi835_file_id"] = str(generated_record.id)
-        mir_file = getattr(generated_record, "mir_file", None)
-        if mir_file is not None:
-            result["mir_file_id"] = str(mir_file.id)
-            result["mir_filename"] = mir_file.mir_filename or ""
-    if not result.get("mir_filename"):
-        result["mir_filename"] = result.get("combined_filename") or ""
-    result.update({"automation_type": "835", "direction": "PROCESSING", "files": [item.original_filename for item in records],
-                   "processed_count": len(records) if result.get("success") else 0})
-    return result
+                "processed_count": 0, "errors": [],
+                "message": "No validated 835 files were waiting for processing."}
+
+    processed, errors, outputs = [], [], []
+    for record in records:
+        try:
+            result = process_edi835_file_content(
+                record.input_file_content,
+                original_filename=record.original_filename or record.stored_filename or "file.835",
+                file_id=record.id,
+                ingestion_source="SFTP",
+                client=client,
+            )
+            result.pop("mir_text", None)
+            generated_record = result.pop("db_record", None)
+            if not result.get("success"):
+                errors.append(f"{record.original_filename}: {result.get('error') or 'conversion failed'}")
+                continue
+
+            record.refresh_from_db()
+            processed.append(record.original_filename)
+            mir_file = getattr(generated_record or record, "mir_file", None)
+            if mir_file is not None and mir_file.mir_filename:
+                outputs.append(mir_file.mir_filename)
+        except Exception as exc:
+            errors.append(f"{record.original_filename}: {exc}")
+
+    return {
+        "success": bool(processed) or not errors,
+        "automation_type": "835",
+        "direction": "PROCESSING",
+        "files": [record.original_filename for record in records],
+        "processed_files": processed,
+        "processed_count": len(processed),
+        "mir_filename": outputs[-1] if outputs else "",
+        "mir_filenames": outputs,
+        "errors": errors,
+        "message": f"Processed {len(processed)} of {len(records)} staged 835 file(s) one by one.",
+    }
 
 
 def push_local_outbound(client, kind):
+    """Send outbound files one at a time and verify each remote object."""
     kind = kind.lower()
     purpose = "837_OUT" if kind == "837" else "MIR_OUT"
     _config, credentials = _connected(client, purpose, outbound=True)
@@ -132,22 +176,50 @@ def push_local_outbound(client, kind):
         ssh, sftp = _open_sftp(paramiko, credentials)
         folder = _normalize_folder(sftp, credentials["remote_folder"])
         existing = set(sftp.listdir(folder))
-        for local_path in sorted(path for path in directory.iterdir() if path.is_file() and not path.name.startswith(".")):
-            target = posixpath.join(folder, local_path.name)
-            temporary = posixpath.join(folder, f".{local_path.name}.{uuid.uuid4().hex}.uploading")
-            if local_path.name in existing:
-                errors.append(f"{local_path.name}: already exists in outbound SFTP; local file retained")
+        local_files = sorted(
+            path for path in directory.iterdir()
+            if path.is_file() and not path.name.startswith(".")
+        )
+        batch_now = timezone.now()
+        configured_837_base = ""
+        if kind == "837" and local_files:
+            from .edi837_naming_views import get_saved_837_filename_format, resolve_837_filename_format
+            configured_837_base = resolve_837_filename_format(
+                get_saved_837_filename_format(client),
+                now=batch_now,
+            )
+
+        for sequence, local_path in enumerate(local_files, start=1):
+            if kind == "837":
+                configured_name = _numbered_outbound_name(
+                    configured_837_base,
+                    sequence,
+                    len(local_files),
+                )
+                remote_name = _append_hhss(configured_name, now=batch_now)
+            else:
+                remote_name = _append_hhss(local_path.name, now=batch_now)
+            target = posixpath.join(folder, remote_name)
+            temporary = posixpath.join(folder, f".{remote_name}.{uuid.uuid4().hex}.uploading")
+            if remote_name in existing:
+                errors.append(f"{remote_name}: already exists in outbound SFTP; local file retained")
                 continue
             try:
                 with local_path.open("rb") as source:
                     sftp.putfo(source, temporary, file_size=local_path.stat().st_size, confirm=True)
                 sftp.rename(temporary, target)
+                sftp.stat(target)
                 remove_delivered_outbound(client, kind, local_path)
-                sent.append(local_path.name)
+                sent.append(remote_name)
+                existing.add(remote_name)
                 if kind == "837":
-                    EDI837File.objects.filter(client=client, outbound_path__endswith=local_path.name).update(outbound_path=target)
+                    EDI837File.objects.filter(
+                        client=client, outbound_path__endswith=local_path.name
+                    ).update(outbound_path=target)
                 else:
-                    MIRFile.objects.filter(client=client, mir_filename=local_path.name).update(status="PUSHED", updated_at=timezone.now())
+                    mir_file = MIRFile.objects.filter(client=client, mir_filename=local_path.name).first()
+                    if mir_file is not None:
+                        set_mir_push_status(mir_file, True)
             except Exception as exc:
                 try: sftp.remove(temporary)
                 except Exception: pass
@@ -158,15 +230,16 @@ def push_local_outbound(client, kind):
     label = kind.upper()
     return {"success": not errors or bool(sent), "automation_type": label, "direction": "OUTGOING",
             "sent_files": sent, "processed_count": len(sent), "errors": errors,
-            "message": f"Sent {len(sent)} {label} outbound file(s)."}
+            "message": f"Sent {len(sent)} {label} outbound file(s) one by one."}
 
 
 def execute_directional_operation(client, actor, automation_type, direction):
     key = (automation_type.upper(), direction.upper())
 
-    # Manual Conversion -> Test uses automation_type=ALL. It is not a single
-    # directional scheduler operation; returning None tells the worker to run
-    # the existing complete batch pipeline instead.
+    if key == ("ALL", "FULL_PIPELINE"):
+        from .full_sftp_pipeline import run_full_sftp_pipeline
+        return run_full_sftp_pipeline(client, actor)
+
     if key[0] == "ALL":
         return None
 

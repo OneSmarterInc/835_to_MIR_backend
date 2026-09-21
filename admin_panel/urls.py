@@ -13,7 +13,6 @@ from .views import (
     api_admin_revoke_client_access_grant,
     api_admin_stats,
     api_admin_client_state,
-    api_admin_step_upload,
     api_admin_step_file,
     api_admin_step_notes,
     api_admin_delete_step_note,
@@ -50,6 +49,7 @@ from .views import (
     api_admin_offboarding_step_complete,
     api_admin_offboarding_step_redo,
 )
+from .step_upload_view import api_admin_step_upload
 from project835.drf_compat import admin_api
 
 # Every endpoint in this URL module is an administrator API.  Wrapping the
