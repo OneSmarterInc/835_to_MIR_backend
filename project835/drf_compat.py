@@ -61,6 +61,10 @@ def _json_response_as_drf(response):
     for header, value in response.items():
         if header.lower() not in {"content-type", "content-length"}:
             converted[header] = value
+    if getattr(response, "cookies", None):
+        converted.cookies = response.cookies
+    if getattr(response, "csrf_cookie_set", False):
+        converted.csrf_cookie_set = True
     return converted
 
 

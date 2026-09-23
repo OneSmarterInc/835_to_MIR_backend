@@ -3,7 +3,6 @@ import logging
 import os
 
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 
 from edi835.models import EDI835File
 from edi835.services import process_edi835_file_content, process_multiple_edi835_files
@@ -16,7 +15,7 @@ from .views import (
 )
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_convert(request):
     """Convert one or more validated 835 files while preserving the established response contract."""
     if request.method != 'POST':

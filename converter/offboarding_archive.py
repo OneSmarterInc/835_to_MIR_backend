@@ -4,7 +4,6 @@ import zipfile
 from pathlib import PurePath
 
 from django.http import HttpResponse, JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from edi835.models import EDI835File, EDI837File, MIRFile, RECONFile
@@ -35,7 +34,7 @@ def _inventory(request, client_id):
     }
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_download_archive_zip(request):
     """Return a live client archive manifest or ZIP built from persisted records."""
     if request.method != "GET":

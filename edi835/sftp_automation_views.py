@@ -8,8 +8,6 @@ from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.core.exceptions import ValidationError
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
-
 from project835.decorators import authenticated_api_required, json_api_errors
 
 from .models import SFTPAutomationRun, SFTPAutomationSchedule
@@ -103,9 +101,6 @@ def _run_data(run):
         "error_message": run.error_message,
         "result": run.result,
     }
-
-
-@csrf_exempt
 @json_api_errors
 @authenticated_api_required
 def sftp_automation(request):

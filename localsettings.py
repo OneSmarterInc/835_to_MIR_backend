@@ -196,6 +196,15 @@ else:
             "DATABASE_URL must use PostgreSQL; SQLite and other engines are disabled."
         )
 
+if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
+    try:
+        from django.contrib.postgres.operations import AddIndexConcurrently, RemoveIndexConcurrently
+        from django.db.migrations.operations.models import AddIndex, RemoveIndex
+        AddIndexConcurrently.database_forwards = AddIndex.database_forwards
+        RemoveIndexConcurrently.database_forwards = RemoveIndex.database_forwards
+    except Exception:
+        pass
+
 # ============================================================
 # CUSTOM USER MODEL
 # ============================================================
@@ -277,9 +286,11 @@ LOGOUT_REDIRECT_URL = "/accounts/login/"
 # SESSION & CORS SECURITY
 # ============================================================
 
+# 2026-09-23 - Yash: Updated CSRF security settings, cookie policy, and CORS header configuration
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG  # False in local dev (HTTP), True in production (HTTPS)
 CSRF_COOKIE_SECURE = not DEBUG     # False in local dev (HTTP), True in production (HTTPS)
+CSRF_COOKIE_HTTPONLY = False       # Ensure JavaScript can read the csrftoken cookie
 
 # For cross-origin requests between Vercel and AWS, cookie SameSite must be "None" if Secure is enabled
 # In local dev over HTTP, SameSite=None requires Secure=True which we don't set, so fall back to "Lax"
@@ -287,12 +298,18 @@ SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 
 CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://835-to-mir-frontend.vercel.app").split(",") if origin.strip()
+    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend.vercel.app").split(",") if origin.strip()
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend.vercel.app").split(",") if origin.strip()
+]
+
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-csrftoken",
     "x-file-name",
     "x-filename",
     "x-expiration-date",

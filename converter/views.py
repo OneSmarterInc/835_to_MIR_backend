@@ -3,7 +3,6 @@ import os
 import logging
 from django.shortcuts import render
 from django.http import JsonResponse, HttpResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.utils.html import escape
 
 logger = logging.getLogger("converter")
@@ -223,7 +222,7 @@ def _safe_mir_filename(value, fallback="output.mir"):
     return filename
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_convert(request):
     """
     API Endpoint: Convert EDI 835 text or uploaded file(s) to MIR format.
@@ -445,7 +444,7 @@ def api_convert(request):
     })
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def download_mir(request):
     """Download an MIR using the canonical filename persisted for the conversion record."""
     if request.method == 'POST':
@@ -514,7 +513,7 @@ def download_mir(request):
     return response
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_download_archive_zip(request):
     """
     Create a ZIP from database-backed content.

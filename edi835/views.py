@@ -18,7 +18,6 @@ from project835.field_crypto import (
     SFTPCredentialError,
 )
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
 from django.db.models import Sum
@@ -47,9 +46,6 @@ def _remove_sftp_file_with_retry(sftp, remote_path, attempts=3):
         if attempt + 1 < attempts:
             time.sleep(0.2 * (attempt + 1))
     return False, str(last_error or "Unknown SFTP deletion error")
-
-
-@csrf_exempt
 def api_process_tracked_file(request):
     """
     API Endpoint: Processes uploaded EDI 835 file through local/FTP directory structure
@@ -373,9 +369,6 @@ def api_archive_files_list(request):
         "files_count": len(files_info),
         "files": files_info
     })
-
-
-@csrf_exempt
 @authenticated_api_required
 def api_get_sftp_config(request):
     """
@@ -1014,9 +1007,6 @@ def test_sftp_connection(host, port, username, password=None, ssh_key=None, auth
             except Exception:
                 pass
         logger.info("Connection cleanup finished")
-
-
-@csrf_exempt
 @authenticated_api_required
 def api_sftp_connect(request):
     """
@@ -1089,9 +1079,6 @@ def api_sftp_connect(request):
     )
 
     return JsonResponse(res, status=200)
-
-
-@csrf_exempt
 @authenticated_api_required
 def api_save_sftp_config(request):
     """
@@ -1444,9 +1431,6 @@ def api_save_sftp_config(request):
         "discovered_folders": discovered_folders,
         "remote_files": test_res.get("remote_files", []),
     }, status=200)
-
-
-@csrf_exempt
 def api_verify_sftp_paths(request):
     """
     API Endpoint: POST /api/sftp/verify-paths/
@@ -1588,9 +1572,6 @@ def api_verify_sftp_paths(request):
         if ssh:
             try: ssh.close()
             except Exception: pass
-
-
-@csrf_exempt
 @authenticated_api_required
 def api_delete_sftp_config(request):
     """
@@ -1641,8 +1622,6 @@ def api_delete_sftp_config(request):
         }, status=400)
 
     return JsonResponse({"success": True})
-
-@csrf_exempt
 @authenticated_api_required
 def api_push_to_sftp(request):
     """
@@ -1771,9 +1750,6 @@ def get_cached_sftp_client(host, port, username, password=None, ssh_key=None, au
         "last_active": now
     }
     return ssh, sftp
-
-
-@csrf_exempt
 @authenticated_api_required
 def api_browse_sftp(request):
     """
@@ -2575,9 +2551,6 @@ def _execute_batch_conversion(request):
         "message": errors[-1] if batch_failed and errors else msg,
         "error": errors[-1] if batch_failed and errors else None,
     }, status=502 if batch_failed else 200)
-
-
-@csrf_exempt
 @json_api_errors
 @authenticated_api_required
 def api_start_batch_conversion(request):

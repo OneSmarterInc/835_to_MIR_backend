@@ -5,7 +5,6 @@ from urllib.parse import unquote
 from django.core.files.base import ContentFile
 from django.http import JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
 from validation import validate_step_upload
@@ -15,7 +14,7 @@ from .models import AuditLog, ClientDocument, ClientStepStatus, OnboardingStepDe
 from .views import _offboarded_workflow_lock, update_client_onboarding_stats
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_admin_step_upload(request, client_id, step_key):
     """Upload and validate an onboarding document for a client step.
 

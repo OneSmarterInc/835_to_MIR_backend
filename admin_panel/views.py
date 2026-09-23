@@ -15,7 +15,6 @@ from django.db import models, transaction
 from django.db.models import Count, Prefetch, Q
 from django.core.paginator import Paginator
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 from django.utils import timezone
 from django.utils.dateparse import parse_date
 from datetime import timedelta
@@ -96,10 +95,6 @@ def _offboarded_workflow_lock(request, client_id, action):
         "code": "CLIENT_OFFBOARDING_FINALIZED",
         "error": "This client has been permanently offboarded. Its onboarding and offboarding workflows are locked.",
     }, status=409)
-
-
-@csrf_exempt
-
 def _canonical_mir_filename(record):
     """Return the persisted admin-configured MIR filename for an EDI record."""
     if not record:
@@ -147,9 +142,6 @@ def api_admin_stats(request):
         "total_conversions": total_conversions,
         "system_status": "OPERATIONAL"
     })
-
-
-@csrf_exempt
 def api_admin_clients(request):
     """
     GET /admin-panel/api/clients/  -> List clients
@@ -272,9 +264,6 @@ def api_admin_clients(request):
         "active_clients": active_clients,
         "inactive_clients": inactive_clients,
     })
-
-
-@csrf_exempt
 def api_admin_create_client(request):
     """
     POST /admin-panel/api/clients/create/ or /admin-panel/api/clients/
@@ -422,9 +411,6 @@ def api_admin_create_client(request):
             }, status=201)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
-
-
-@csrf_exempt
 def api_admin_update_client(request, client_id):
     """
     POST /admin-panel/api/clients/<client_id>/update/
@@ -536,9 +522,6 @@ def api_admin_update_client(request, client_id):
             "updated_at": client_obj.updated_at.strftime("%Y-%m-%dT%H:%M:%SZ") if client_obj.updated_at else "",
         }
     })
-
-
-@csrf_exempt
 def api_admin_delete_client(request, client_id):
     """
     POST /admin-panel/api/clients/<client_id>/delete/
@@ -562,9 +545,6 @@ def api_admin_delete_client(request, client_id):
         return JsonResponse({"success": False, "error": str(exc)}, status=exc.status)
 
     return JsonResponse({"success": True, "message": f"Client '{name}' deleted successfully."})
-
-
-@csrf_exempt
 def api_admin_access_info(request):
     """
     GET /admin-panel/api/access/info/
@@ -644,9 +624,6 @@ def api_admin_access_info(request):
             "approved_by": grant.approved_by.name or grant.approved_by.email,
         } for grant in active_grants],
     })
-
-
-@csrf_exempt
 def api_admin_client_access_grants(request):
     if not request.user.is_superuser:
         return JsonResponse({"success": False, "error": "Only a Super Admin can approve sensitive client access."}, status=403)
@@ -689,9 +666,6 @@ def api_admin_client_access_grants(request):
     except Exception:
         logging.getLogger(__name__).exception("Could not send break-glass notification")
     return JsonResponse({"success": True, "grant_id": grant.id, "expires_at": grant.expires_at.isoformat()})
-
-
-@csrf_exempt
 def api_admin_revoke_client_access_grant(request, grant_id):
     if not request.user.is_superuser:
         return JsonResponse({"success": False, "error": "Only a Super Admin can revoke sensitive client access."}, status=403)
@@ -704,9 +678,6 @@ def api_admin_revoke_client_access_grant(request, grant_id):
     grant.save(update_fields=["revoked_at"])
     log_audit_event("ACCESS", "BREAK_GLASS_REVOKED", f"Sensitive access revoked for {grant.administrator.email}.", request.user.email, grant.client)
     return JsonResponse({"success": True})
-
-
-@csrf_exempt
 def api_admin_users(request):
     """
     GET /admin-panel/api/users/  -> List users
@@ -750,9 +721,6 @@ def api_admin_users(request):
         "users": users_data,
         "results": users_data,
     })
-
-
-@csrf_exempt
 def api_admin_create_user(request):
     """
     POST /admin-panel/api/users/create/ or /admin-panel/api/users/
@@ -836,9 +804,6 @@ def api_admin_create_user(request):
         "user": user_dict,
         "data": user_dict,
     })
-
-
-@csrf_exempt
 def api_admin_update_user(request, user_id):
     """
     POST /admin-panel/api/users/<user_id>/update/
@@ -932,9 +897,6 @@ def api_admin_update_user(request, user_id):
         "success": True,
         "message": f"User '{user_obj.email}' updated successfully."
     })
-
-
-@csrf_exempt
 def api_admin_delete_user(request, user_id):
     """
     POST /admin-panel/api/users/<user_id>/delete/
@@ -951,9 +913,6 @@ def api_admin_delete_user(request, user_id):
         return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
     except User.DoesNotExist:
         return JsonResponse({"success": False, "error": "User not found."}, status=404)
-
-
-@csrf_exempt
 def api_admin_client_state(request, client_id):
     """
     GET /admin-panel/api/clients/<client_id>/state/
@@ -1229,8 +1188,6 @@ def update_client_onboarding_stats(client_obj):
     client_obj.progress_pct = progress_pct
     client_obj.stage = stage
     client_obj.save()
-
-@csrf_exempt
 def api_admin_step_upload(request, client_id, step_key):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/upload/ """
     if request.method != "POST":
@@ -1362,10 +1319,6 @@ def api_admin_step_upload(request, client_id, step_key):
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
     return JsonResponse({"success": True, "message": "File uploaded and step completed.", "checks": []})
-
-
-
-@csrf_exempt
 def api_admin_template_download(request, client_id, step_key):
     """ GET /admin-panel/api/download/<client_id>/<step_key>/ """
     if request.method != "GET":
@@ -1435,9 +1388,6 @@ def api_admin_template_download(request, client_id, step_key):
         return JsonResponse({"success": False, "error": str(e)}, status=400)
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
-
-
-@csrf_exempt
 def api_admin_step_file(request, client_id, step_key):
     """ GET /admin-panel/api/clients/<client_id>/steps/<step_key>/file/ """
     try:
@@ -1460,9 +1410,6 @@ def api_admin_step_file(request, client_id, step_key):
         pass
 
     return JsonResponse({"success": False, "error": "File not found"}, status=404)
-
-
-@csrf_exempt
 def api_admin_step_notes(request, client_id, step_key):
     """ GET/POST /admin-panel/api/clients/<client_id>/steps/<step_key>/notes/ """
     from accounts.models import ClientStepComment
@@ -1544,9 +1491,6 @@ def _comment_step_number(step_key):
     if step_key.startswith('step_'):
         return int(parts[1])
     raise ValueError("Invalid step key")
-
-
-@csrf_exempt
 def api_admin_delete_step_note(request, client_id, step_key, note_id):
     from accounts.models import ClientStepComment
     if request.method != "POST":
@@ -1564,9 +1508,6 @@ def api_admin_delete_step_note(request, client_id, step_key, note_id):
     if not deleted:
         return JsonResponse({"success": False, "error": "Note not found."}, status=404)
     return JsonResponse({"success": True, "message": "Note deleted successfully."})
-
-
-@csrf_exempt
 def api_admin_delete_client_contact(request, client_id, contact_id):
     locked = _offboarded_workflow_lock(request, client_id, "onboarding contact deletion")
     if locked:
@@ -1578,9 +1519,6 @@ def api_admin_delete_client_contact(request, client_id, contact_id):
     if not deleted:
         return JsonResponse({"success": False, "error": "Contact not found."}, status=404)
     return JsonResponse({"success": True, "message": "Contact deleted successfully."})
-
-
-@csrf_exempt
 def api_admin_delete_client_user(request, client_id, user_id):
     locked = _offboarded_workflow_lock(request, client_id, "onboarding user deletion")
     if locked:
@@ -1593,9 +1531,6 @@ def api_admin_delete_client_user(request, client_id, user_id):
     email = user_obj.email
     user_obj.delete()
     return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
-
-
-@csrf_exempt
 def api_admin_step_redo(request, client_id, step_key):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/redo/ """
     if request.method != "POST":
@@ -1649,10 +1584,6 @@ def api_admin_step_redo(request, client_id, step_key):
     except Exception:
         pass
     return JsonResponse({"success": True, "message": "Step reset to IN_PROGRESS, subsequent steps locked"})
-
-
-
-@csrf_exempt
 def api_admin_step_validate_835(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/steps/step_7_835_val/validate-uploaded/ """
     if request.method != "POST":
@@ -1868,9 +1799,6 @@ def api_admin_step_validate_835(request, client_id):
         })
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
-
-
-@csrf_exempt
 def api_admin_step_action(request, client_id, step_key, action):
     """ POST /admin-panel/api/clients/<client_id>/steps/<step_key>/<action>/ """
     if request.method != "POST":
@@ -2066,10 +1994,6 @@ def api_admin_step_action(request, client_id, step_key, action):
         return JsonResponse({"success": False, "error": str(e)}, status=400)
 
     return JsonResponse({"success": True, "message": f"Action {action} on {step_key} completed successfully.", **response_data})
-
-
-
-@csrf_exempt
 def api_admin_client_smtp(request, client_id):
     """
     GET  /admin-panel/api/clients/<client_id>/smtp/  — load existing config (password never returned)
@@ -2150,8 +2074,6 @@ def api_admin_client_smtp(request, client_id):
             return JsonResponse({'success': False, 'error': str(e)}, status=400)
 
     return JsonResponse({'success': False, 'error': 'Method not allowed'}, status=405)
-
-@csrf_exempt
 @admin_api_required
 def api_admin_default_smtp(request):
     """
@@ -2427,8 +2349,6 @@ from django.http import HttpResponse
 from urllib.parse import unquote
 
 from admin_panel.document_registry import DOCUMENT_CATALOG, document_definition, record_document_sent
-
-@csrf_exempt
 def api_admin_client_documents(request, client_id):
     """ GET /admin-panel/api/clients/<client_id>/documents/ """
     if request.method != "GET":
@@ -2500,9 +2420,6 @@ def api_admin_client_documents(request, client_id):
             "validation_status": latest.validation_status if latest else None,
         })
     return JsonResponse({"success": True, "documents": doc_list})
-
-
-@csrf_exempt
 def api_admin_client_documents_upload(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/documents/upload/ """
     if request.method != "POST":
@@ -2573,9 +2490,6 @@ def api_admin_client_documents_upload(request, client_id):
         "version": version,
         "checks": val_res["checks"]
     })
-
-
-@csrf_exempt
 def api_admin_document_download(request, doc_id):
     """ GET /admin-panel/api/documents/<doc_id>/download/ """
     try:
@@ -2597,9 +2511,6 @@ def api_admin_document_download(request, doc_id):
         return response
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=500)
-
-
-@csrf_exempt
 def api_admin_document_delete(request, doc_id):
     """ DELETE /admin-panel/api/documents/<doc_id>/ """
     if request.method != "DELETE":
@@ -2631,8 +2542,6 @@ def api_admin_document_delete(request, doc_id):
 
 
 from edi835.models import EDI835File
-
-@csrf_exempt
 def api_admin_client_edi_files(request, client_id):
     """ GET /admin-panel/api/clients/<client_id>/edi-files/ """
     if request.method != "GET":
@@ -2665,7 +2574,6 @@ def api_admin_client_edi_files(request, client_id):
             "error_message": f.error_message
         })
     return JsonResponse({"success": True, "files": file_list})
-@csrf_exempt
 def api_admin_edi_file(request, client_id, file_id, file_type):
     """
     GET /admin-panel/api/clients/<client_id>/edi-files/<file_id>/<file_type>/
@@ -2784,8 +2692,6 @@ def api_admin_edi_file(request, client_id, file_id, file_type):
     return response
 
 from admin_panel.models import ClientTestEnvironment
-
-@csrf_exempt
 def api_admin_client_test_environment(request, client_id):
     """ GET/PUT /admin-panel/api/clients/<client_id>/test-environment/ """
     try:
@@ -2932,9 +2838,6 @@ def helper_get_golive_state(client_obj):
         },
         "steps": steps_data
     }
-
-
-@csrf_exempt
 def api_admin_golive_state(request, client_id):
     """ GET /admin-panel/api/clients/<client_id>/golive/state/ """
     if request.method != "GET":
@@ -2947,9 +2850,6 @@ def api_admin_golive_state(request, client_id):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_golive_step_upload(request, client_id, step_num):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/upload/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live file upload")
@@ -3025,9 +2925,6 @@ def api_admin_golive_step_upload(request, client_id, step_num):
         })
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
-
-
-@csrf_exempt
 def api_admin_golive_step_download(request, client_id, step_num):
     """ GET /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/download/ """
     from django.http import HttpResponse
@@ -3075,9 +2972,6 @@ def api_admin_golive_step_download(request, client_id, step_num):
     response['Content-Disposition'] = f'inline; filename="{filename}"'
     response['X-OneSmarter-Filename'] = filename
     return response
-
-
-@csrf_exempt
 def api_admin_golive_step3_sftp(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/3/sftp/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live SFTP completion")
@@ -3101,9 +2995,6 @@ def api_admin_golive_step3_sftp(request, client_id):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_golive_step4_schedule(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/4/schedule/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live schedule update")
@@ -3161,9 +3052,6 @@ def api_admin_golive_step4_schedule(request, client_id):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_golive_step5_comment(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/5/comment/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live comment completion")
@@ -3204,9 +3092,6 @@ def api_admin_golive_step5_comment(request, client_id):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_golive_step6_complete(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/6/complete/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live final completion")
@@ -3227,9 +3112,6 @@ def api_admin_golive_step6_complete(request, client_id):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_golive_step_redo(request, client_id, step_num):
     """ POST /admin-panel/api/clients/<client_id>/golive/steps/<step_number>/redo/ """
     locked = _offboarded_workflow_lock(request, client_id, "Go Live step redo")
@@ -3246,9 +3128,6 @@ def api_admin_golive_step_redo(request, client_id, step_num):
 
     state = helper_get_golive_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-
-@csrf_exempt
 def api_admin_test_environment(request, client_id):
     """ GET/POST /admin-panel/api/clients/<client_id>/test-environment/ """
     try:
@@ -3292,15 +3171,9 @@ def api_admin_test_environment(request, client_id):
         "test_status": test_env.test_status,
     }
     return JsonResponse({"success": True, "test_environment": env_data})
-
-
-@csrf_exempt
 def api_admin_test_environment_run(request, client_id):
     """ POST /admin-panel/api/clients/<client_id>/test-environment/run-test/ """
     return JsonResponse({"success": True, "message": "Sandbox test passed successfully."})
-
-
-@csrf_exempt
 def api_admin_employee_roles(request):
     """
     GET, POST /admin-panel/api/employee-roles/
@@ -3330,8 +3203,6 @@ def api_admin_employee_roles(request):
 
 from admin_panel.mir_mapper_logic.mapping_store import get_mappings, save_mappings, reset_mappings, validate_mappings
 from admin_panel.mir_mapper_logic.mapping_defaults import defaults
-
-@csrf_exempt
 def api_mappings_view(request):
     """
     GET /admin-panel/api/mappings/?client_id=<uuid>
@@ -3383,9 +3254,6 @@ def api_mappings_view(request):
             return JsonResponse({"success": False, "error": str(e)}, status=400)
 
     return JsonResponse({"success": False, "error": "Method not allowed"}, status=405)
-
-
-@csrf_exempt
 def api_mappings_check(request):
     """
     POST /admin-panel/api/mappings/check/
@@ -3401,9 +3269,6 @@ def api_mappings_check(request):
         return JsonResponse({"ok": not issues, "success": not issues, "issues": issues})
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
-
-
-@csrf_exempt
 def api_mappings_reset(request):
     """
     POST /admin-panel/api/mappings/reset/?client_id=<uuid>
@@ -3425,9 +3290,6 @@ def api_mappings_reset(request):
         "fields": fields,
         "note": "Mappings reset to the current converter baseline."
     })
-
-
-@csrf_exempt
 def api_admin_audit_logs(request):
     """
     GET /admin-panel/api/audit-logs/
@@ -3615,8 +3477,6 @@ def api_admin_offboarding_state(request, client_id):
 
     state = helper_get_offboarding_state(client_obj)
     return JsonResponse({"success": True, "state": state})
-
-@csrf_exempt
 @admin_api_required
 def api_admin_offboarding_step_complete(request, client_id, step_num):
     from django.http import JsonResponse
@@ -3775,8 +3635,6 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
         "revoked_sessions": revoked_session_count,
         "email_notifications": email_result,
     })
-
-@csrf_exempt
 def api_admin_offboarding_step_redo(request, client_id, step_num):
     from django.http import JsonResponse
     if request.method != "POST":

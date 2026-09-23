@@ -11,7 +11,6 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from accounts.models import Client
 from project835.decorators import authenticated_api_required, json_api_errors
@@ -198,7 +197,7 @@ def _safe_837_filename(value, fallback="837.837"):
     return safe[:120]
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @authenticated_api_required
 @json_api_errors
 def edi837_upload_process(request):
@@ -241,9 +240,6 @@ def edi837_upload_process(request):
         "failed_count": len(errors),
         "error": "No 837 files could be processed." if not results else "",
     }, status=200 if results else 400)
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def edi837_sftp_batch_rename(request):
@@ -906,9 +902,6 @@ def edi837_claim_export(request, claim_id):
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["X-OneSmarter-Filename"] = filename
     return response
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def edi837_claim_push_sftp(request, claim_id):
