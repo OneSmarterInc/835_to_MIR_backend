@@ -8,7 +8,6 @@ from django.core.paginator import Paginator
 from django.db.models import Q
 from django.http import JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from project835.decorators import authenticated_api_required, json_api_errors
 
@@ -112,7 +111,7 @@ def _queue_pending_outbound(request, client):
     }, status=202)
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @authenticated_api_required
 @json_api_errors
 def edi837_files(request):

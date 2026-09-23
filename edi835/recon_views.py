@@ -14,8 +14,6 @@ from django.http import HttpResponse, JsonResponse
 from django.utils.text import slugify
 from django.utils import timezone
 from django.utils.dateparse import parse_datetime
-from django.views.decorators.csrf import csrf_exempt
-
 from accounts.models import Client
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from project835.decorators import authenticated_api_required, json_api_errors
@@ -197,9 +195,6 @@ def _serialize_file(item):
         "processing_started_at": item.processing_started_at.isoformat() if item.processing_started_at else None,
         "processed_at": item.processed_at.isoformat() if item.processed_at else None,
     }
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_files(request):
@@ -222,9 +217,6 @@ def recon_files(request):
     else:
         queryset = queryset.none()
     return JsonResponse({"success": True, "files": [_serialize_file(item) for item in queryset[:500]]})
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_download(request, file_id):
@@ -238,9 +230,6 @@ def recon_download(request, file_id):
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
     response["Content-Length"] = len(response.content)
     return response
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_upload(request):
@@ -302,9 +291,6 @@ def recon_upload(request):
             "existing_file_id": str(existing.id) if existing else None,
         }, status=409)
     return JsonResponse({"success": True, "file": _serialize_file(recon)}, status=201)
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_process(request, file_id):
@@ -353,9 +339,6 @@ def recon_process(request, file_id):
         recon.save(update_fields=["status", "processing_error", "updated_at"])
         return JsonResponse({"success": False, "error": str(exc), "file": _serialize_file(recon)}, status=400)
     return JsonResponse({"success": True, "file": _serialize_file(recon), "background": True}, status=202)
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_detail(request, file_id):
@@ -390,9 +373,6 @@ def recon_detail(request, file_id):
         "raw_record": error.raw_record,
     } for error in recon.processing_errors.all()]
     return JsonResponse({"success": True, "file": _serialize_file(recon), "claims": claims, "errors": errors})
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_results(request):
@@ -442,9 +422,6 @@ def reconciliation_results(request):
         "waterfall_policy": reconciliation_policy(),
         "waterfall_summary": waterfall_counts,
     })
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_dashboard(request):
@@ -522,9 +499,6 @@ def reconciliation_dashboard(request):
     }
     cache.set(cache_key, payload, timeout=300)
     return JsonResponse(_paginated_dashboard_payload(payload, request, client))
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_review_action(request):
@@ -571,9 +545,6 @@ def _file_reconciliation_rows(request, file_id):
         source.client, files, mir_file_id=mir_file.id, include_match_history=False
     )
     return source, files, rows
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_file_dashboard(request, file_id):
@@ -658,9 +629,6 @@ def reconciliation_file_dashboard(request, file_id):
         "records": records,
         "message": "" if latest else "No processed RECON file is available for this client yet.",
     })
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_file_export(request, file_id):
@@ -678,9 +646,6 @@ def reconciliation_file_export(request, file_id):
     )
     response["Content-Disposition"] = f'attachment; filename="reconciliation-{source.id}.xlsx"'
     return response
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_export(request):
@@ -724,9 +689,6 @@ def reconciliation_export(request):
     client_part = slugify(getattr(client, "name", "global")) or "global"
     response["Content-Disposition"] = f'attachment; filename="onesmarter-reconciliation-{client_part}.xlsx"'
     return response
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def reconciliation_claim_detail(request, claim_id):
@@ -827,9 +789,6 @@ def _safe_837_path(config, filename):
     if not base:
         raise ValueError("The inbound 837 folder is not configured.")
     return posixpath.normpath(posixpath.join(base, name))
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def sftp_837_files(request):
@@ -867,9 +826,6 @@ def sftp_837_files(request):
     finally:
         if sftp: sftp.close()
         if ssh: ssh.close()
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def sftp_837_ingest(request):

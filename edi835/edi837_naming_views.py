@@ -8,7 +8,6 @@ import uuid
 
 from django.http import JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from project835.decorators import authenticated_api_required, json_api_errors
 
@@ -118,7 +117,7 @@ def _with_body(request, payload, callback, *args, **kwargs):
                 pass
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @authenticated_api_required
 @json_api_errors
 def edi837_sftp_transfer_named(request):
@@ -156,7 +155,7 @@ def edi837_sftp_transfer_named(request):
     return response
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @authenticated_api_required
 @json_api_errors
 def edi837_claim_push_sftp_named(request, claim_id):

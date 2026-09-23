@@ -191,7 +191,8 @@ def logout_view(request):
 
 
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
+from django.views.decorators.csrf import ensure_csrf_cookie
+from django.middleware.csrf import get_token
 import json
 
 def portal_role_name(user):
@@ -202,12 +203,18 @@ def portal_role_name(user):
     return user.get_client_role_display()
 
 
+# 2026-09-23 - Yash: Added ensure_csrf_cookie decorator and get_token to bootstrap csrftoken cookie on initial GET request
+@ensure_csrf_cookie
 def api_user_info(request):
+    csrf_token = get_token(request)
     if not request.user.is_authenticated:
-        return JsonResponse({
+        res = JsonResponse({
             "authenticated": False,
             "user": None
         })
+        if csrf_token:
+            res.set_cookie("csrftoken", csrf_token)
+        return res
 
     # TOTP is configured only when enrollment is enabled and this user has
     # their own authenticator secret. This sends incomplete/new users to the
@@ -231,7 +238,7 @@ def api_user_info(request):
     if _is_client_access_revoked(request.user):
         is_offboarded = True
 
-    return JsonResponse({
+    res = JsonResponse({
         "authenticated": True,
         "offboarded": is_offboarded,
         "offboarded_message": f"ACCESS DENIED: {client_str} has been offboarded. Contact the administrator for assistance." if is_offboarded else None,
@@ -250,8 +257,10 @@ def api_user_info(request):
             "admin_screens": screens_for_user(request.user),
         }
     })
+    if csrf_token:
+        res.set_cookie("csrftoken", csrf_token)
+    return res
 
-@csrf_exempt
 def api_login(request):
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed."}, status=405)
@@ -361,8 +370,6 @@ def api_login(request):
         "success": False,
         "error": errors[0] if errors else "Invalid login credentials."
     }, status=400)
-
-@csrf_exempt
 def api_signup(request):
     if request.method != "POST":
         return JsonResponse({"error": "Only POST allowed."}, status=405)
@@ -403,8 +410,6 @@ def api_signup(request):
         "errors": field_errors,
         "error": form.non_field_errors()[0] if form.non_field_errors() else "Registration failed. Please check inputs."
     }, status=400)
-
-@csrf_exempt
 @login_required
 def api_totp_setup(request):
     user = request.user
@@ -475,8 +480,6 @@ def api_totp_setup(request):
         "secret": secret,
         "verified": False,
     })
-
-@csrf_exempt
 @login_required
 def api_totp_verify(request):
     if request.method != "POST":
@@ -521,8 +524,6 @@ def api_totp_verify(request):
         })
 
     return JsonResponse({"success": False, "error": "Invalid authenticator code."}, status=400)
-
-@csrf_exempt
 def api_logout(request):
     user = request.user
     user_name = "System"
@@ -553,8 +554,6 @@ def api_logout(request):
 from .models import Client, User
 from edi835.models import EDI835File
 from django.db.models import Count
-
-@csrf_exempt
 def api_admin_clients(request):
     """
     GET /accounts/api/admin/clients/
@@ -604,9 +603,6 @@ def api_admin_clients(request):
         "inactive_clients": inactive_clients,
         "clients": clients_data
     })
-
-
-@csrf_exempt
 def api_admin_create_client(request):
     """
     POST /accounts/api/admin/clients/create/
@@ -677,9 +673,6 @@ def api_admin_create_client(request):
             "created_at": client_obj.created_at.isoformat(),
         }
     })
-
-
-@csrf_exempt
 def api_admin_update_client(request, client_id):
     """
     POST /accounts/api/admin/clients/<client_id>/update/
@@ -741,9 +734,6 @@ def api_admin_update_client(request, client_id):
             "updated_at": client_obj.updated_at.isoformat(),
         }
     })
-
-
-@csrf_exempt
 def api_admin_delete_client(request, client_id):
     """
     POST /accounts/api/admin/clients/<client_id>/delete/
@@ -767,9 +757,6 @@ def api_admin_delete_client(request, client_id):
     except ClientDeletionError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=exc.status)
     return JsonResponse({"success": True, "message": f"Client '{name}' deleted successfully."})
-
-
-@csrf_exempt
 def api_admin_stats(request):
     """
     GET /accounts/api/admin/stats/
@@ -796,8 +783,6 @@ def api_admin_stats(request):
 # ==========================================
 # ADMIN USER MANAGEMENT API ENDPOINTS
 # ==========================================
-
-@csrf_exempt
 def api_admin_users(request):
     """
     GET /accounts/api/admin/users/
@@ -834,9 +819,6 @@ def api_admin_users(request):
         "total_users": User.objects.count(),
         "users": users_data
     })
-
-
-@csrf_exempt
 def api_admin_create_user(request):
     """
     POST /accounts/api/admin/users/create/
@@ -902,9 +884,6 @@ def api_admin_create_user(request):
             "client_name": client_obj.name if client_obj else None,
         }
     })
-
-
-@csrf_exempt
 def api_admin_update_user(request, user_id):
     """
     POST /accounts/api/admin/users/<user_id>/update/
@@ -952,9 +931,6 @@ def api_admin_update_user(request, user_id):
         "success": True,
         "message": f"User '{user_obj.email}' updated successfully."
     })
-
-
-@csrf_exempt
 def api_admin_delete_user(request, user_id):
     """
     POST /accounts/api/admin/users/<user_id>/delete/
@@ -971,9 +947,6 @@ def api_admin_delete_user(request, user_id):
     except User.DoesNotExist:
         return JsonResponse({"success": False, "error": "User not found."}, status=404)
         return JsonResponse({"success": False, "error": "Client not found."}, status=404)
-
-
-@csrf_exempt
 def api_admin_stats(request):
     """
     GET /accounts/api/admin/stats/
@@ -999,8 +972,6 @@ def api_admin_stats(request):
 # ==========================================
 # ADMIN USER MANAGEMENT API ENDPOINTS
 # ==========================================
-
-@csrf_exempt
 def api_admin_users(request):
     """
     GET /accounts/api/admin/users/
@@ -1052,9 +1023,6 @@ def api_admin_users(request):
         "total_users": User.objects.count(),
         "users": users_data
     })
-
-
-@csrf_exempt
 def api_admin_create_user(request):
     """
     POST /accounts/api/admin/users/create/
@@ -1137,9 +1105,6 @@ def api_admin_create_user(request):
             "client_name": client_obj.name if client_obj else ("OneSmarter" if is_staff else None),
         }
     })
-
-
-@csrf_exempt
 def api_admin_update_user(request, user_id):
     """
     POST /accounts/api/admin/users/<user_id>/update/
@@ -1225,9 +1190,6 @@ def api_admin_update_user(request, user_id):
         "success": True,
         "message": f"User '{user_obj.email}' updated successfully."
     })
-
-
-@csrf_exempt
 def api_admin_delete_user(request, user_id):
     """
     POST /accounts/api/admin/users/<user_id>/delete/
@@ -1246,9 +1208,6 @@ def api_admin_delete_user(request, user_id):
         return JsonResponse({"success": True, "message": f"User '{email}' deleted successfully."})
     except User.DoesNotExist:
         return JsonResponse({"success": False, "error": "User not found."}, status=404)
-
-
-@csrf_exempt
 def api_client_contacts(request):
     """ GET /accounts/api/contacts/ """
     if not request.user.is_authenticated:
@@ -1265,9 +1224,6 @@ def api_client_contacts(request):
         return JsonResponse({"success": True, "contacts": list(contacts)})
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
-
-
-@csrf_exempt
 def api_change_password(request):
     if not request.user.is_authenticated:
         return JsonResponse({"success": False, "error": "Authentication required."}, status=401)
@@ -1291,9 +1247,6 @@ def api_change_password(request):
     update_session_auth_hash(request, user)
 
     return JsonResponse({"success": True, "message": "Password changed successfully."})
-
-
-@csrf_exempt
 def api_admin_reset_password(request, user_id):
     """
     POST /accounts/api/admin/users/<user_id>/reset-password/

@@ -3,15 +3,11 @@ from __future__ import annotations
 import json
 
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
-
 from admin_panel.models import log_audit_event
 from project835.decorators import admin_api_required
-
 from .models import User
 
-
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @admin_api_required
 def api_account_security(request, user_id):
     target = User.objects.select_related("client").filter(id=user_id).first()
