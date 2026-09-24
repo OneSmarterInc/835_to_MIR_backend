@@ -40,8 +40,8 @@ class HeldReleaseHistoryTests(TestCase):
             stored_filename="held_release_202609141710.835",
             ingestion_source="HELD_RELEASE",
             status="ARCHIVED",
-            delivered_claims_count=1,
-            services_count=2,
+            delivered_claims_count=0,
+            services_count=0,
             present_in_sftp=True,
         )
         mir = MIRFile.objects.create(
@@ -82,6 +82,7 @@ class HeldReleaseHistoryTests(TestCase):
         self.assertEqual(release["sftp_status"], "PUSHED")
         self.assertTrue(release["pushed"])
         self.assertEqual(release["claim_count"], 1)
+        self.assertEqual(release["service_count"], 2)
         self.assertEqual(release["claims"][0]["claim_number"], "12345678901234567")
         self.assertEqual(release["claims"][0]["held_from_mir"], "MIROUT_PREVIOUS.MIR")
         self.assertEqual(release["claims"][0]["source_835_filename"], "source.835")
