@@ -128,7 +128,7 @@ def api_held_release_history(request):
             "pushed": mir_status == "PUSHED",
             "present_in_sftp": bool(source.present_in_sftp),
             "claim_count": len(claims) if claims else int(source.delivered_claims_count or 0),
-            "service_count": int(source.services_count or 0),
+            "service_count": int(source.services_count if source.services_count is not None else (mir.service_count if mir is not None else 0)),
             "created_at": source.uploaded_at.isoformat() if source.uploaded_at else None,
             "completed_at": source.processing_completed_at.isoformat() if source.processing_completed_at else None,
             "error_message": source.error_message or "",
