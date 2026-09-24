@@ -160,31 +160,41 @@ ASGI_APPLICATION = "project835.asgi.application"
 # have lost all production data.
 # ============================================================
 
-DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
-if not DATABASE_URL:
-    raise ImproperlyConfigured(
-        "DATABASE_URL is required. This application must use PostgreSQL."
-    )
 
-DATABASES = {
-    "default": dj_database_url.parse(
-        DATABASE_URL,
-        conn_max_age=600,
-        conn_health_checks=True,
-    )
-}
+# Check if the SQLite bypass flag is turned on
+if os.getenv("USE_LOCAL_SQLITE", "False").lower() in ("true", "1", "t"):
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "db.sqlite3",
+        }
+    }
+else:
+    # Existing strict PostgreSQL configuration
+    DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+    if not DATABASE_URL:
+        raise ImproperlyConfigured(
+            "DATABASE_URL is required. This application must use PostgreSQL."
+        )
 
-if DATABASES["default"]["ENGINE"] not in {
-    "django.db.backends.postgresql",
-    "django.contrib.gis.db.backends.postgis",
-} and not (
-    os.getenv("ALLOW_SQLITE_FOR_TESTS") == "1"
-    and DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
-):
-    raise ImproperlyConfigured(
-        "DATABASE_URL must use PostgreSQL; SQLite and other engines are disabled."
-    )
+    DATABASES = {
+        "default": dj_database_url.parse(
+            DATABASE_URL,
+            conn_max_age=600,
+            conn_health_checks=True,
+        )
+    }
 
+    if DATABASES["default"]["ENGINE"] not in {
+        "django.db.backends.postgresql",
+        "django.contrib.gis.db.backends.postgis",
+    } and not (
+        os.getenv("ALLOW_SQLITE_FOR_TESTS") == "1"
+        and DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3"
+    ):
+        raise ImproperlyConfigured(
+            "DATABASE_URL must use PostgreSQL; SQLite and other engines are disabled."
+        )
 
 # ============================================================
 # CUSTOM USER MODEL

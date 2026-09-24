@@ -18,6 +18,9 @@ def require_postgresql():
         return
     if os.getenv("ALLOW_SQLITE_FOR_TESTS") == "1" and engine == "django.db.backends.sqlite3":
         return
+    # NEW: Allow bypassing the guard if the SQLite flag is set
+    if os.getenv("USE_LOCAL_SQLITE", "False").lower() in ("true", "1", "t") and engine == "django.db.backends.sqlite3":
+        return
     raise ImproperlyConfigured(
         "PostgreSQL is required. Set DATABASE_URL for the MIR production database; "
         "SQLite fallback is disabled."
