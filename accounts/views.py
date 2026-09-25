@@ -195,18 +195,14 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.middleware.csrf import get_token
 import json
 
-# 2026-09-23 - Yash: Added ensure_csrf_cookie decorator and get_token to bootstrap csrftoken cookie on initial GET request
+# 2026-09-25 - Yash: Task 6b - Clean api_user_info, rely on @ensure_csrf_cookie for CSRF cookie issuance
 @ensure_csrf_cookie
 def api_user_info(request):
-    csrf_token = get_token(request)
     if not request.user.is_authenticated:
-        res = JsonResponse({
+        return JsonResponse({
             "authenticated": False,
             "user": None
         })
-        if csrf_token:
-            res.set_cookie("csrftoken", csrf_token)
-        return res
 
     # TOTP is configured only when enrollment is enabled and this user has
     # their own authenticator secret. This sends incomplete/new users to the
@@ -235,7 +231,7 @@ def api_user_info(request):
     if _is_client_access_revoked(request.user):
         is_offboarded = True
 
-    res = JsonResponse({
+    return JsonResponse({
         "authenticated": True,
         "offboarded": is_offboarded,
         "offboarded_message": f"ACCESS DENIED: {client_str} has been offboarded. Contact the administrator for assistance." if is_offboarded else None,
@@ -252,9 +248,6 @@ def api_user_info(request):
             "admin_screens": screens_for_user(request.user),
         }
     })
-    if csrf_token:
-        res.set_cookie("csrftoken", csrf_token)
-    return res
 
 def api_login(request):
     if request.method != "POST":
