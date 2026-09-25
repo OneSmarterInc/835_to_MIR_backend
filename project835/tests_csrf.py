@@ -78,8 +78,12 @@ class CSRFProtectionTests(TestCase):
         self.assertEqual(response.status_code, 403)
 
     def test_all_state_changing_endpoints_reject_tokenless_post(self):
-        """Iterate all URL patterns and assert 403 for state-changing requests without CSRF token."""
+        """Iterate all URL patterns and assert zero offenders for tokenless state-changing requests."""
         self.client.force_login(self.admin_user)
+        session = self.client.session
+        session["totp_verified"] = True
+        session.save()
+
         EXEMPT_VIEW_NAMES = set()  # Documented exempt views if any
 
         urls = []
@@ -101,16 +105,13 @@ class CSRFProtectionTests(TestCase):
         resolver = get_resolver()
         collect_urls(resolver.url_patterns)
 
-        tested_count = 0
+        offenders = []
         for path, view_name in urls:
             if view_name in EXEMPT_VIEW_NAMES:
                 continue
+            for method in ("post", "put", "patch", "delete"):
+                response = getattr(self.client, method)(path, data="{}", content_type="application/json")
+                if response.status_code not in (403, 404, 405, 301, 302):
+                    offenders.append((method.upper(), path, response.status_code))
 
-            if "/api/" in path or path.startswith("/admin-panel/") or path.startswith("/edi835/"):
-                response = self.client.post(path, data={}, content_type="application/json")
-                if response.status_code in [403]:
-                    tested_count += 1
-                elif response.status_code in [404, 405]:
-                    continue
-
-        self.assertTrue(tested_count > 0, "At least one state-changing endpoint was tested for 403 enforcement.")
+        self.assertEqual(offenders, [], f"Endpoints accepting tokenless requests: {offenders}")
