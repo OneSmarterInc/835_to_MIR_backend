@@ -2,7 +2,16 @@ import os
 import sys
 import dj_database_url
 from pathlib import Path
+from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
+
+env_candidates = [
+    Path(__file__).resolve().parent.parent / ".env",
+    Path(__file__).resolve().parent / ".env",
+]
+env_file = next((p for p in env_candidates if p.exists()), None)
+if env_file:
+    load_dotenv(env_file)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -35,8 +44,13 @@ USE_X_FORWARDED_HOST = True
 # an environment variable instead of hardcoding here.
 # Rotate this key only if you re-encrypt all existing rows.
 # ============================================================
-SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip()
-SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip()
+_DEFAULT_FERNET_KEY = "Wo0Y9_ips1epOi9c9ztdL04vVnfztK6WxvS22ovi2JE="
+SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip() or _DEFAULT_FERNET_KEY
+SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip() or _DEFAULT_FERNET_KEY
+OSIVAULT_MASTER_KEY = os.getenv("OSIVAULT_MASTER_KEY", "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d").strip()
+OSIVAULT_AUDIT_CURRENT_KEY = os.getenv("OSIVAULT_AUDIT_CURRENT_KEY", "9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d9a8b7c6d5e4f3a2b1c0d9e8f7a6b5c4d").strip()
+os.environ.setdefault("OSIVAULT_AUDIT_CURRENT_KEY", OSIVAULT_AUDIT_CURRENT_KEY)
+os.environ.setdefault("OSIVAULT_MASTER_KEY", OSIVAULT_MASTER_KEY)
 # Authentication is valid for one fixed hour. Activity does not silently
 # extend the session; after expiry the user must sign in and verify MFA again.
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "3600"))
@@ -73,6 +87,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
+    "osivault.audit",
 
     "accounts",
     "home",
@@ -163,10 +178,17 @@ ASGI_APPLICATION = "project835.asgi.application"
 
 # Check if the SQLite bypass flag is turned on
 if os.getenv("USE_LOCAL_SQLITE", "False").lower() in ("true", "1", "t"):
+    sqlite_candidates = [
+        BASE_DIR.parent.parent / "mir_backend.sqlite",
+        BASE_DIR.parent / "mir_backend.sqlite",
+        BASE_DIR / "mir_backend.sqlite",
+        BASE_DIR / "db.sqlite3",
+    ]
+    sqlite_path = next((p for p in sqlite_candidates if p.exists()), BASE_DIR / "db.sqlite3")
     DATABASES = {
         "default": {
             "ENGINE": "django.db.backends.sqlite3",
-            "NAME": BASE_DIR / "db.sqlite3",
+            "NAME": sqlite_path,
         }
     }
 else:

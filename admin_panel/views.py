@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-from django.db import models, transaction
+from django.db import connection, models, transaction
 from django.db.models import Count, Prefetch, Q
 from django.core.paginator import Paginator
 from django.http import JsonResponse
@@ -852,14 +852,16 @@ def api_admin_update_user(request, user_id):
         user_obj.name = data["name"].strip()
 
     if "mobile" in data and data["mobile"].strip():
-        try:
-            mobile = normalize_phone_number(data["mobile"], data.get("country_code"))
-        except ValueError as exc:
-            return JsonResponse({"success": False, "error": str(exc)}, status=400)
-        if mobile != user_obj.mobile:
-            if User.objects.filter(mobile=mobile).exists():
-                return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)
-            user_obj.mobile = mobile
+        raw_mobile = data["mobile"].strip()
+        if raw_mobile != user_obj.mobile:
+            try:
+                mobile = normalize_phone_number(raw_mobile, data.get("country_code"))
+            except ValueError as exc:
+                return JsonResponse({"success": False, "error": str(exc)}, status=400)
+            if mobile != user_obj.mobile:
+                if User.objects.filter(mobile=mobile).exists():
+                    return JsonResponse({"success": False, "error": f"Mobile '{mobile}' is already registered in the system."}, status=400)
+                user_obj.mobile = mobile
 
     if "password" in data and data["password"].strip():
         user_obj.set_password(data["password"].strip())
@@ -3346,34 +3348,43 @@ def api_admin_audit_logs(request):
     if actor_filter:
         qs = qs.filter(performed_by=actor_filter)
     if search:
-        def formatted_timestamp(timezone_name, format_mask):
-            localized = models.Func(
-                models.Value(timezone_name), models.F("timestamp"),
-                function="timezone", output_field=models.DateTimeField(),
-            )
-            return models.Func(
-                localized, models.Value(format_mask), function="to_char",
-                output_field=models.CharField(),
-            )
+        if connection.vendor == "postgresql":
+            def formatted_timestamp(timezone_name, format_mask):
+                localized = models.Func(
+                    models.Value(timezone_name), models.F("timestamp"),
+                    function="timezone", output_field=models.DateTimeField(),
+                )
+                return models.Func(
+                    localized, models.Value(format_mask), function="to_char",
+                    output_field=models.CharField(),
+                )
 
-        qs = qs.annotate(
-            audit_timestamp_iso=models.Func(
-                models.F("timestamp"), models.Value('YYYY-MM-DD"T"HH24:MI:SS'),
-                function="to_char", output_field=models.CharField(),
-            ),
-            audit_timestamp_eastern=formatted_timestamp("America/New_York", "MM/DD/YYYY HH12:MI:SS AM"),
-            audit_timestamp_eastern_24=formatted_timestamp("America/New_York", "MM/DD/YYYY HH24:MI:SS"),
-        )
-        qs = qs.filter(
-            Q(module__icontains=search) |
-            Q(action__icontains=search) |
-            Q(details__icontains=search) |
-            Q(performed_by__icontains=search) |
-            Q(client__name__icontains=search) |
-            Q(audit_timestamp_iso__icontains=search) |
-            Q(audit_timestamp_eastern__icontains=search) |
-            Q(audit_timestamp_eastern_24__icontains=search)
-        )
+            qs = qs.annotate(
+                audit_timestamp_iso=models.Func(
+                    models.F("timestamp"), models.Value('YYYY-MM-DD"T"HH24:MI:SS'),
+                    function="to_char", output_field=models.CharField(),
+                ),
+                audit_timestamp_eastern=formatted_timestamp("America/New_York", "MM/DD/YYYY HH12:MI:SS AM"),
+                audit_timestamp_eastern_24=formatted_timestamp("America/New_York", "MM/DD/YYYY HH24:MI:SS"),
+            )
+            qs = qs.filter(
+                Q(module__icontains=search) |
+                Q(action__icontains=search) |
+                Q(details__icontains=search) |
+                Q(performed_by__icontains=search) |
+                Q(client__name__icontains=search) |
+                Q(audit_timestamp_iso__icontains=search) |
+                Q(audit_timestamp_eastern__icontains=search) |
+                Q(audit_timestamp_eastern_24__icontains=search)
+            )
+        else:
+            qs = qs.filter(
+                Q(module__icontains=search) |
+                Q(action__icontains=search) |
+                Q(details__icontains=search) |
+                Q(performed_by__icontains=search) |
+                Q(client__name__icontains=search)
+            )
 
     date_from = parse_date(date_from_raw) if date_from_raw else None
     date_to = parse_date(date_to_raw) if date_to_raw else None

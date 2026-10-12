@@ -20,6 +20,8 @@ def extract_text_from_file_bytes(file_bytes, filename="document.pdf"):
 
     # Attempt PDF extraction
     if ext == "pdf" or file_bytes.startswith(b"%PDF"):
+        if not file_bytes.startswith(b"%PDF"):
+            return ""
         # Try PyPDF / pypdf if available
         try:
             import io

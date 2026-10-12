@@ -152,6 +152,13 @@ class TemporaryAdminClientAccessTestCase(TestCase):
 
 class Onboarding835ValidationTestCase(TestCase):
     def setUp(self):
+        self.admin = User.objects.create_superuser(
+            email="validation835-admin@example.com",
+            name="835 Validator Admin",
+            mobile="+1555019909",
+            password="test-password",
+        )
+        self.client.force_login(self.admin)
         self.client_record = Client.objects.create(
             name="835 Validation Health",
             client_code="VALIDATE-835",
@@ -446,7 +453,7 @@ class AdministrativeRoleTransitionTestCase(TestCase):
     def test_access_matrix_keeps_staff_separate_from_offboarded_clients(self):
         offboarded = Client.objects.create(
             name="Former Tenant",
-            code="FORMER-TENANT",
+            client_code="FORMER-TENANT",
             stage="offboarded",
         )
         User.objects.filter(pk=self.admin.pk).update(client=offboarded)
@@ -553,7 +560,7 @@ class OnboardingSequenceTestCase(TestCase):
         url = f"/admin-panel/api/clients/{self.client_record.id}/steps/step_4_contacts/save/"
         payload = {
             "role_name": "Technical Contact", "employee_name": "Jane Doe",
-            "email": "jane@example.com", "phone": "+15550102020",
+            "email": "jane@example.com", "phone": "+14155550120",
         }
         first = self.client.post(url, data=json.dumps(payload), content_type="application/json")
         duplicate = self.client.post(url, data=json.dumps(payload), content_type="application/json")
