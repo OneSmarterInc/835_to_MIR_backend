@@ -12,7 +12,7 @@ from pathlib import Path
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from django.db import connection, models, transaction
-from django.db.models import Count, Prefetch, Q
+from django.db.models import Count, Prefetch, Q, F, Value
 from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.utils import timezone
@@ -27,7 +27,11 @@ from accounts.admin_screens import (
     normalize_admin_screens, screens_for_user,
 )
 from edi835.models import EDI835File
-from .models import OnboardingStepDefinition, ClientStepStatus, GoLiveStepDefinition, ClientGoLiveStatus, ClientTestEnvironment, AuditLog, AdminClientAccessGrant, ClientSmtpConfig, ClientDocument, log_audit_event
+from .models import (
+    OnboardingStepDefinition, ClientStepStatus, GoLiveStepDefinition,
+    ClientGoLiveStatus, ClientTestEnvironment, AuditLog, MIRMasterAuditLog,
+    AdminClientAccessGrant, ClientSmtpConfig, ClientDocument, log_audit_event
+)
 from project835.field_crypto import (
     encrypt_smtp_password,
     decrypt_smtp_password,
@@ -80,16 +84,13 @@ def _offboarded_workflow_lock(request, client_id, action):
         return JsonResponse({"success": False, "error": "Client not found."}, status=404)
     if str(client_obj.stage or "").lower() != "offboarded":
         return None
-    try:
-        AuditLog.objects.create(
-            module="OFFBOARDING",
-            action="LOCKED_WORKFLOW_ATTEMPT",
-            details=f"Blocked {action} because client '{client_obj.name}' is permanently offboarded.",
-            performed_by=getattr(request.user, "name", "") or getattr(request.user, "email", "") or "Administrator",
-            client=client_obj,
-        )
-    except Exception:
-        logging.getLogger(__name__).exception("Failed to audit a blocked offboarded-client workflow request")
+    log_audit_event(
+        module="OFFBOARDING",
+        action="LOCKED_WORKFLOW_ATTEMPT",
+        details=f"Blocked {action} because client '{client_obj.name}' is permanently offboarded.",
+        performed_by=getattr(request.user, "name", "") or getattr(request.user, "email", "") or "Administrator",
+        client=client_obj,
+    )
     return JsonResponse({
         "success": False,
         "code": "CLIENT_OFFBOARDING_FINALIZED",
@@ -374,12 +375,12 @@ def api_admin_create_client(request):
             elif request.user and hasattr(request.user, "email") and request.user.email:
                 current_admin = request.user.email
 
-            AuditLog.objects.create(
+            log_audit_event(
                 module="CLIENTS",
                 action="CLIENT_CREATED",
                 details=f"Created new tenant '{client_obj.name}'.",
                 performed_by=current_admin,
-                client=client_obj
+                client=client_obj,
             )
 
             client_dict = {
@@ -485,21 +486,18 @@ def api_admin_update_client(request, client_id):
     client_obj.save()
 
     # Audit log for client update
-    try:
-        actor = "System"
-        if request.user and hasattr(request.user, "name") and request.user.name:
-            actor = request.user.name
-        elif request.user and hasattr(request.user, "email") and request.user.email:
-            actor = request.user.email
-        AuditLog.objects.create(
-            module="CLIENTS",
-            action="CLIENT_UPDATED",
-            details=f"Client '{client_obj.name}' profile updated.",
-            performed_by=actor,
-            client=client_obj
-        )
-    except Exception:
-        pass
+    actor = "System"
+    if request.user and hasattr(request.user, "name") and request.user.name:
+        actor = request.user.name
+    elif request.user and hasattr(request.user, "email") and request.user.email:
+        actor = request.user.email
+    log_audit_event(
+        module="CLIENTS",
+        action="CLIENT_UPDATED",
+        details=f"Client '{client_obj.name}' profile updated.",
+        performed_by=actor,
+        client=client_obj,
+    )
 
     return JsonResponse({
         "success": True,
@@ -1286,21 +1284,18 @@ def api_admin_step_upload(request, client_id, step_key):
             update_client_onboarding_stats(client_obj)
 
             # Audit log for step upload
-            try:
-                actor = "System"
-                if request.user and hasattr(request.user, "name") and request.user.name:
-                    actor = request.user.name
-                elif request.user and hasattr(request.user, "email") and request.user.email:
-                    actor = request.user.email
-                AuditLog.objects.create(
-                    module="ONBOARDING",
-                    action="STEP_UPLOAD",
-                    details=f"Step {step_num} ('{step_def.title}') document uploaded for client '{client_obj.name}'. File: {filename}.",
-                    performed_by=actor,
-                    client=client_obj
-                )
-            except Exception:
-                pass
+            actor = "System"
+            if request.user and hasattr(request.user, "name") and request.user.name:
+                actor = request.user.name
+            elif request.user and hasattr(request.user, "email") and request.user.email:
+                actor = request.user.email
+            log_audit_event(
+                module="ONBOARDING",
+                action="STEP_UPLOAD",
+                details=f"Step {step_num} ('{step_def.title}') document uploaded for client '{client_obj.name}'. File: {filename}.",
+                performed_by=actor,
+                client=client_obj,
+            )
 
             # Send success email
             try:
@@ -1567,21 +1562,18 @@ def api_admin_step_redo(request, client_id, step_key):
                 update_client_onboarding_stats(client_obj)
 
             # Audit log for step redo
-            try:
-                actor = "System"
-                if request.user and hasattr(request.user, "name") and request.user.name:
-                    actor = request.user.name
-                elif request.user and hasattr(request.user, "email") and request.user.email:
-                    actor = request.user.email
-                AuditLog.objects.create(
-                    module="ONBOARDING",
-                    action="STEP_REDO",
-                    details=f"Step {step_num} redone for client '{client_obj.name}'. Subsequent steps reset to PENDING.",
-                    performed_by=actor,
-                    client=client_obj
-                )
-            except Exception:
-                pass
+            actor = "System"
+            if request.user and hasattr(request.user, "name") and request.user.name:
+                actor = request.user.name
+            elif request.user and hasattr(request.user, "email") and request.user.email:
+                actor = request.user.email
+            log_audit_event(
+                module="ONBOARDING",
+                action="STEP_REDO",
+                details=f"Step {step_num} redone for client '{client_obj.name}'. Subsequent steps reset to PENDING.",
+                performed_by=actor,
+                client=client_obj,
+            )
 
     except Exception:
         pass
@@ -1976,21 +1968,18 @@ def api_admin_step_action(request, client_id, step_key, action):
             update_client_onboarding_stats(client_obj)
 
             # Audit log for step action
-            try:
-                actor = "System"
-                if request.user and hasattr(request.user, "name") and request.user.name:
-                    actor = request.user.name
-                elif request.user and hasattr(request.user, "email") and request.user.email:
-                    actor = request.user.email
-                AuditLog.objects.create(
-                    module="ONBOARDING",
-                    action=f"STEP_{action.upper().replace('-', '_')}",
-                    details=f"Step {step_num} ('{step_def.title}') action '{action}' completed for client '{client_obj.name}'.",
-                    performed_by=actor,
-                    client=client_obj
-                )
-            except Exception:
-                pass
+            actor = "System"
+            if request.user and hasattr(request.user, "name") and request.user.name:
+                actor = request.user.name
+            elif request.user and hasattr(request.user, "email") and request.user.email:
+                actor = request.user.email
+            log_audit_event(
+                module="ONBOARDING",
+                action=f"STEP_{action.upper().replace('-', '_')}",
+                details=f"Step {step_num} ('{step_def.title}') action '{action}' completed for client '{client_obj.name}'.",
+                performed_by=actor,
+                client=client_obj,
+            )
 
     except Exception as e:
         return JsonResponse({"success": False, "error": str(e)}, status=400)
@@ -2477,12 +2466,12 @@ def api_admin_client_documents_upload(request, client_id):
     actor = "Admin User"
     if request.user and request.user.is_authenticated:
         actor = request.user.name or request.user.email
-    AuditLog.objects.create(
+    log_audit_event(
         module="DOCUMENTS",
         action="DOCUMENT_UPLOADED",
         details=f"Uploaded document '{doc_name}' ({filename}) for client '{client_obj.name}'.",
         performed_by=actor,
-        client=client_obj
+        client=client_obj,
     )
 
     return JsonResponse({
@@ -2528,12 +2517,12 @@ def api_admin_document_delete(request, doc_id):
         actor = "Admin User"
         if request.user and request.user.is_authenticated:
             actor = request.user.name or request.user.email
-        AuditLog.objects.create(
+        log_audit_event(
             module="DOCUMENTS",
             action="DOCUMENT_DELETED",
             details=f"Deleted document '{doc.document_name}' ({doc.original_filename}) for client '{doc.client.name}'.",
             performed_by=actor,
-            client=doc.client
+            client=doc.client,
         )
 
         doc.delete()
@@ -3295,7 +3284,8 @@ def api_mappings_reset(request):
 def api_admin_audit_logs(request):
     """
     GET /admin-panel/api/audit-logs/
-    Returns filtered, sorted, paginated audit log entries.
+    Returns filtered, sorted, paginated audit log entries from both the OSIVault
+    HMAC master ledger (MIRMasterAuditLog) and the historic legacy ledger (AuditLog).
     Filters are applied to the complete audit trail before pagination.
     """
     if request.method != "GET":
@@ -3323,99 +3313,124 @@ def api_admin_audit_logs(request):
         "timestamp": "timestamp",
         "module": "module",
         "action": "action",
-        "client": "client__name",
+        "client": "client_name",
         "performed_by": "performed_by",
     }
     sort_field = ordering_map.get(request.GET.get("sort", "timestamp"), "timestamp")
     sort_direction = "" if request.GET.get("direction", "desc") == "asc" else "-"
 
-    qs = AuditLog.objects.select_related("client")
     visible_client_ids = active_client_grant_ids(request.user)
-    if visible_client_ids is not None:
-        qs = qs.filter(client_id__in=visible_client_ids)
-
-    if client_id:
-        try:
-            qs = qs.filter(client_id=UUID(client_id))
-        except (TypeError, ValueError, AttributeError):
-            return JsonResponse({"success": False, "error": "Invalid client identifier."}, status=400)
-
-    if module_filter and module_filter != "ALL":
-        qs = qs.filter(module=module_filter)
-
-    if action_filter:
-        qs = qs.filter(action=action_filter)
-    if actor_filter:
-        qs = qs.filter(performed_by=actor_filter)
-    if search:
-        if connection.vendor == "postgresql":
-            def formatted_timestamp(timezone_name, format_mask):
-                localized = models.Func(
-                    models.Value(timezone_name), models.F("timestamp"),
-                    function="timezone", output_field=models.DateTimeField(),
-                )
-                return models.Func(
-                    localized, models.Value(format_mask), function="to_char",
-                    output_field=models.CharField(),
-                )
-
-            qs = qs.annotate(
-                audit_timestamp_iso=models.Func(
-                    models.F("timestamp"), models.Value('YYYY-MM-DD"T"HH24:MI:SS'),
-                    function="to_char", output_field=models.CharField(),
-                ),
-                audit_timestamp_eastern=formatted_timestamp("America/New_York", "MM/DD/YYYY HH12:MI:SS AM"),
-                audit_timestamp_eastern_24=formatted_timestamp("America/New_York", "MM/DD/YYYY HH24:MI:SS"),
-            )
-            qs = qs.filter(
-                Q(module__icontains=search) |
-                Q(action__icontains=search) |
-                Q(details__icontains=search) |
-                Q(performed_by__icontains=search) |
-                Q(client__name__icontains=search) |
-                Q(audit_timestamp_iso__icontains=search) |
-                Q(audit_timestamp_eastern__icontains=search) |
-                Q(audit_timestamp_eastern_24__icontains=search)
-            )
-        else:
-            qs = qs.filter(
-                Q(module__icontains=search) |
-                Q(action__icontains=search) |
-                Q(details__icontains=search) |
-                Q(performed_by__icontains=search) |
-                Q(client__name__icontains=search)
-            )
-
     date_from = parse_date(date_from_raw) if date_from_raw else None
     date_to = parse_date(date_to_raw) if date_to_raw else None
     if date_from_raw and not date_from:
         return JsonResponse({"success": False, "error": "Invalid start date."}, status=400)
     if date_to_raw and not date_to:
         return JsonResponse({"success": False, "error": "Invalid end date."}, status=400)
-    if date_from:
-        qs = qs.filter(timestamp__date__gte=date_from)
-    if date_to:
-        qs = qs.filter(timestamp__date__lte=date_to)
 
-    qs = qs.order_by(f"{sort_direction}{sort_field}", "-id")
+    parsed_client_uuid = None
+    if client_id:
+        try:
+            parsed_client_uuid = UUID(client_id)
+        except (TypeError, ValueError, AttributeError):
+            return JsonResponse({"success": False, "error": "Invalid client identifier."}, status=400)
+
+    def filter_ledger(model_class, actor_field):
+        q = model_class.objects.all()
+        if visible_client_ids is not None:
+            q = q.filter(client_id__in=visible_client_ids)
+        if parsed_client_uuid:
+            q = q.filter(client_id=parsed_client_uuid)
+        if module_filter and module_filter != "ALL":
+            q = q.filter(module=module_filter)
+        if action_filter:
+            q = q.filter(action=action_filter)
+        if actor_filter:
+            q = q.filter(**{actor_field: actor_filter})
+        if search:
+            actor_q = Q(**{f"{actor_field}__icontains": search})
+            if connection.vendor == "postgresql":
+                def formatted_timestamp(timezone_name, format_mask):
+                    localized = models.Func(
+                        models.Value(timezone_name), models.F("timestamp"),
+                        function="timezone", output_field=models.DateTimeField(),
+                    )
+                    return models.Func(
+                        localized, models.Value(format_mask), function="to_char",
+                        output_field=models.CharField(),
+                    )
+
+                q = q.annotate(
+                    audit_timestamp_iso=models.Func(
+                        models.F("timestamp"), models.Value('YYYY-MM-DD"T"HH24:MI:SS'),
+                        function="to_char", output_field=models.CharField(),
+                    ),
+                    audit_timestamp_eastern=formatted_timestamp("America/New_York", "MM/DD/YYYY HH12:MI:SS AM"),
+                    audit_timestamp_eastern_24=formatted_timestamp("America/New_York", "MM/DD/YYYY HH24:MI:SS"),
+                )
+                q = q.filter(
+                    Q(module__icontains=search) |
+                    Q(action__icontains=search) |
+                    Q(details__icontains=search) |
+                    actor_q |
+                    Q(client__name__icontains=search) |
+                    Q(audit_timestamp_iso__icontains=search) |
+                    Q(audit_timestamp_eastern__icontains=search) |
+                    Q(audit_timestamp_eastern_24__icontains=search)
+                )
+            else:
+                q = q.filter(
+                    Q(module__icontains=search) |
+                    Q(action__icontains=search) |
+                    Q(details__icontains=search) |
+                    actor_q |
+                    Q(client__name__icontains=search)
+                )
+        if date_from:
+            q = q.filter(timestamp__date__gte=date_from)
+        if date_to:
+            q = q.filter(timestamp__date__lte=date_to)
+        return q
+
+    qs_legacy = filter_ledger(AuditLog, "performed_by")
+    qs_master = filter_ledger(MIRMasterAuditLog, "actor")
+
+    v_legacy = qs_legacy.annotate(
+        client_name=F("client__name"),
+        ledger=Value("legacy", output_field=models.CharField()),
+    ).values("id", "timestamp", "module", "action", "details", "performed_by", "client_id", "client_name", "ledger")
+
+    v_master = qs_master.annotate(
+        performed_by=F("actor"),
+        client_name=F("client__name"),
+        ledger=Value("master", output_field=models.CharField()),
+    ).values("id", "timestamp", "module", "action", "details", "performed_by", "client_id", "client_name", "ledger")
+
+    qs = v_master.union(v_legacy).order_by(f"{sort_direction}{sort_field}", "-id")
     paginator = Paginator(qs, page_size)
     page_obj = paginator.get_page(page)
 
     logs = []
     for log in page_obj.object_list:
         logs.append({
-            "id": log.id,
-            "module": log.module,
-            "action": log.action,
-            "details": log.details,
-            "performed_by": log.performed_by,
-            "timestamp": log.timestamp.strftime("%Y-%m-%dT%H:%M:%SZ") if log.timestamp else "",
-            "client": log.client.name if log.client else None,
-            "client_id": str(log.client.id) if log.client else None,
-            "client_name": log.client.name if log.client else "System",
+            "id": log["id"],
+            "module": log["module"],
+            "action": log["action"],
+            "details": log["details"],
+            "performed_by": log["performed_by"],
+            "timestamp": log["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ") if log["timestamp"] else "",
+            "client": log["client_name"],
+            "client_id": str(log["client_id"]) if log["client_id"] else None,
+            "client_name": log["client_name"] or "System",
+            "ledger": log.get("ledger", "master"),
         })
 
-    all_logs = AuditLog.objects.all()
+    modules_set = set(AuditLog.objects.exclude(module="").values_list("module", flat=True).distinct()) | \
+                  set(MIRMasterAuditLog.objects.exclude(module="").values_list("module", flat=True).distinct())
+    actions_set = set(AuditLog.objects.exclude(action="").values_list("action", flat=True).distinct()) | \
+                  set(MIRMasterAuditLog.objects.exclude(action="").values_list("action", flat=True).distinct())
+    actors_set = set(AuditLog.objects.exclude(performed_by="").values_list("performed_by", flat=True).distinct()) | \
+                 set(MIRMasterAuditLog.objects.exclude(actor="").values_list("actor", flat=True).distinct())
+
     return JsonResponse({
         "success": True,
         "logs": logs,
@@ -3429,9 +3444,9 @@ def api_admin_audit_logs(request):
             "has_next": page_obj.has_next(),
         },
         "filter_options": {
-            "modules": list(all_logs.exclude(module="").order_by("module").values_list("module", flat=True).distinct()),
-            "actions": list(all_logs.exclude(action="").order_by("action").values_list("action", flat=True).distinct()),
-            "performed_by": list(all_logs.exclude(performed_by="").order_by("performed_by").values_list("performed_by", flat=True).distinct()),
+            "modules": sorted(modules_set),
+            "actions": sorted(actions_set),
+            "performed_by": sorted(actors_set),
         },
     })
 
@@ -3607,22 +3622,17 @@ def api_admin_offboarding_step_complete(request, client_id, step_num):
                     "Client was offboarded but stale-session cleanup failed"
                 )
 
-            try:
-                AuditLog.objects.create(
-                    module="OFFBOARDING",
-                    action="CLIENT_OFFBOARDED",
-                    details=(
-                        f"Client '{client_obj.name}' was offboarded; "
-                        f"{revoked_user_count} active user account(s) and "
-                        f"{revoked_session_count} session(s) were revoked."
-                    ),
-                    performed_by=getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator',
-                    client=client_obj,
-                )
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Client was offboarded but audit logging failed"
-                )
+            log_audit_event(
+                module="OFFBOARDING",
+                action="CLIENT_OFFBOARDED",
+                details=(
+                    f"Client '{client_obj.name}' was offboarded; "
+                    f"{revoked_user_count} active user account(s) and "
+                    f"{revoked_session_count} session(s) were revoked."
+                ),
+                performed_by=getattr(request.user, 'name', '') or getattr(request.user, 'email', '') or 'Administrator',
+                client=client_obj,
+            )
 
             try:
                 from admin_panel.email_service import send_client_offboarding_notice
