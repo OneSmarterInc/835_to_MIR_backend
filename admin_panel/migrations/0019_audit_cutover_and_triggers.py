@@ -37,14 +37,6 @@ def install_postgres_guards(apps, schema_editor):
         CREATE OR REPLACE FUNCTION freeze_legacy_admin_panel_auditlog()
         RETURNS TRIGGER AS $$
         BEGIN
-            IF TG_OP = 'UPDATE'
-               AND OLD.client_id IS NOT NULL AND NEW.client_id IS NULL
-               AND OLD.module = NEW.module AND OLD.action = NEW.action
-               AND OLD.details = NEW.details AND OLD.performed_by = NEW.performed_by
-               AND OLD.timestamp = NEW.timestamp AND OLD.previous_hash = NEW.previous_hash
-               AND OLD.entry_hash = NEW.entry_hash THEN
-                RETURN NEW;
-            END IF;
             RAISE EXCEPTION 'Historic AuditLog entries are permanently frozen and immutable.';
         END;
         $$ LANGUAGE plpgsql;
@@ -75,37 +67,43 @@ def perform_cutover(apps, schema_editor):
     AuditLog = apps.get_model("admin_panel", "AuditLog")
     from admin_panel.models import MIRMasterAuditLog as ConcreteMasterLog
     import osivault.audit
+    import hashlib
 
-    if not ConcreteMasterLog.objects.exists():
-        last_legacy = AuditLog.objects.order_by("-id").first()
-        legacy_digest = last_legacy.entry_hash if last_legacy else ""
+    assert not ConcreteMasterLog.objects.exists(), (
+        "mir_master_audit_log must be empty before cutover migration."
+    )
 
-        osivault.audit.append(
-            model_class=ConcreteMasterLog,
-            actor="SYSTEM_MIGRATION",
-            tenant="SYSTEM",
-            resource_type="GOVERNANCE",
-            resource_id="CUTOVER",
-            action="AUDIT_LEDGER_CUTOVER",
-            old_values={
-                "legacy_table": "admin_panel_auditlog",
-                "legacy_records": AuditLog.objects.count(),
-            },
-            new_values={
-                "legacy_digest": legacy_digest,
-                "details": "Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
-            },
-            module="GOVERNANCE",
-            details="Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
-        )
-        osivault.audit.checkpoint(ConcreteMasterLog)
+    hasher = hashlib.sha256()
+    for entry_hash in AuditLog.objects.order_by("id").values_list("entry_hash", flat=True):
+        hasher.update((entry_hash or "").encode("utf-8"))
+    legacy_digest = hasher.hexdigest()
+
+    osivault.audit.append(
+        model_class=ConcreteMasterLog,
+        actor="SYSTEM_MIGRATION",
+        tenant="SYSTEM",
+        resource_type="GOVERNANCE",
+        resource_id="CUTOVER",
+        action="AUDIT_LEDGER_CUTOVER",
+        old_values={
+            "legacy_table": "admin_panel_auditlog",
+            "legacy_records": AuditLog.objects.count(),
+        },
+        new_values={
+            "legacy_digest": legacy_digest,
+            "details": "Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
+        },
+        module="GOVERNANCE",
+        details="Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
+    )
+    osivault.audit.checkpoint(ConcreteMasterLog)
 
 
 class Migration(migrations.Migration):
 
     dependencies = [
         ('admin_panel', '0018_alter_mirmasterauditlog_client'),
-        ('audit', '0002_alter_osivaultauditcheckpoint_previous_checkpoint_hash_and_more'),
+        ('audit', '0001_initial'),
     ]
 
     operations = [
