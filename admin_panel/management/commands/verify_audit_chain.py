@@ -10,13 +10,13 @@ from admin_panel.models import AuditLog, MIRMasterAuditLog
 
 
 class Command(BaseCommand):
-    help = "Verify cryptographic Merkle hash chain integrity of MIR Portal audit logs (HIPAA § 164.312(b))."
+    help = "Verify cryptographic HMAC hash chain integrity and signed checkpoints of MIR Portal audit logs (HIPAA § 164.312(b))."
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.MIGRATE_HEADING("=== OSIVAULT CRYPTOGRAPHIC AUDIT VERIFICATION ==="))
 
-        # 1. Verify OSIVault Master Audit Ledger
-        self.stdout.write("\n[1/2] Verifying OSIVault Master Cryptographic Audit Ledger (mir_master_audit_log)...")
+        # 1. Verify OSIVault Master Audit Ledger (mir_master_audit_log)
+        self.stdout.write("\n[1/3] Verifying OSIVault Master Cryptographic Audit Ledger (mir_master_audit_log)...")
         master_count = MIRMasterAuditLog.objects.count()
         if master_count == 0:
             self.stdout.write(self.style.WARNING("  Master audit ledger is currently empty (new events will append automatically)."))
@@ -27,7 +27,7 @@ class Command(BaseCommand):
                 if report.is_intact:
                     self.stdout.write(
                         self.style.SUCCESS(
-                            f"  [PASS] Master Ledger Intact: {report.total_count} records verified across Merkle chain."
+                            f"  [PASS] Master Ledger Intact: {report.total_count} records verified across HMAC hash chain."
                         )
                     )
                 else:
@@ -39,8 +39,39 @@ class Command(BaseCommand):
             except Exception as e:
                 self.stdout.write(self.style.ERROR(f"  [ERROR] Master Ledger verification error: {e}"))
 
-        # 2. Verify Legacy AuditLog Ledger
-        self.stdout.write("\n[2/2] Verifying Historic Audit Ledger (admin_panel_auditlog)...")
+        # 2. Verify OSIVault Signed Periodic Checkpoints
+        self.stdout.write("\n[2/3] Verifying OSIVault Signed Periodic Checkpoints (osivault_audit_checkpoint)...")
+        try:
+            from osivault.audit.models import OSIVaultAuditCheckpoint
+            from osivault.audit import verify_checkpoint
+
+            checkpoints = OSIVaultAuditCheckpoint.objects.filter(
+                table_name=MIRMasterAuditLog._meta.db_table
+            ).order_by("-pk")
+            cp_count = checkpoints.count()
+
+            if cp_count == 0:
+                self.stdout.write(self.style.WARNING("  No checkpoints recorded for master ledger yet."))
+            else:
+                latest_cp = checkpoints.first()
+                cp_report = verify_checkpoint(latest_cp, MIRMasterAuditLog)
+                if cp_report.is_valid:
+                    self.stdout.write(
+                        self.style.SUCCESS(
+                            f"  [PASS] Checkpoint Verified: Latest checkpoint (PK {latest_cp.pk}, rows: {latest_cp.row_count}) MAC and state intact."
+                        )
+                    )
+                else:
+                    self.stdout.write(
+                        self.style.ERROR(
+                            f"  [FAIL] Checkpoint verification failed: {cp_report.reason}"
+                        )
+                    )
+        except Exception as e:
+            self.stdout.write(self.style.ERROR(f"  [ERROR] Checkpoint verification error: {e}"))
+
+        # 3. Verify Legacy AuditLog Ledger (admin_panel_auditlog)
+        self.stdout.write("\n[3/3] Verifying Historic Audit Ledger (admin_panel_auditlog)...")
         legacy_count = AuditLog.objects.count()
         if legacy_count == 0:
             self.stdout.write(self.style.WARNING("  Historic audit log is empty."))

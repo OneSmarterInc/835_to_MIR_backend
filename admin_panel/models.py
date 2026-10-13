@@ -150,31 +150,7 @@ class AuditLog(models.Model):
             self.previous_hash = previous.entry_hash if previous else ""
             payload = "|".join((self.previous_hash, self.module, self.action, self.details, self.performed_by))
             self.entry_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
-            res = super().save(*args, **kwargs)
-
-            # Auto-mirror direct AuditLog creates to OSIVault Master Cryptographic Ledger
-            if not getattr(self, "_osivault_mirrored", False):
-                try:
-                    import osivault.audit
-                    tenant_str = "SYSTEM"
-                    if self.client:
-                        tenant_str = str(getattr(self.client, "client_code", None) or getattr(self.client, "name", "SYSTEM"))
-                    osivault.audit.append(
-                        model_class=MIRMasterAuditLog,
-                        actor=str(self.performed_by or "System"),
-                        tenant=tenant_str,
-                        resource_type=str(self.module or "SYSTEM").upper(),
-                        resource_id=str(getattr(self.client, "id", None) or "SYSTEM"),
-                        action=str(self.action).upper(),
-                        old_values={},
-                        new_values={},
-                        module=str(self.module).upper(),
-                        details=str(self.details or ""),
-                        client=self.client,
-                    )
-                except Exception:
-                    pass
-            return res
+            return super().save(*args, **kwargs)
 
     def delete(self, *args, **kwargs):
         raise PermissionError("Audit log entries cannot be deleted.")
@@ -342,7 +318,7 @@ class ClientSmtpConfig(models.Model):
 def log_audit_event(
     module,
     action,
-    details,
+    details="",
     performed_by="System",
     client=None,
     resource_type=None,
@@ -351,48 +327,35 @@ def log_audit_event(
     new_values=None,
 ):
     """
-    Unified Audit Logger: Simultaneously writes to OSIVault Master Audit Ledger
-    (with HMAC-SHA-256 Merkle chain & envelope) and keeps backward-compatible AuditLog.
+    Authoritative audit event logger for OneSmarter MIR Portal.
+    Appends directly to MIRMasterAuditLog via osivault.audit.append under HMAC-SHA-256 hash chaining.
+    Fail-closed: Does not swallow exceptions.
+    Details text is included in new_values to ensure full HMAC MAC coverage.
     """
-    # 1. Write to legacy AuditLog for existing frontend/test compatibility
-    try:
-        legacy_entry = AuditLog(
-            module=str(module).upper(),
-            action=str(action).upper(),
-            details=str(details),
-            performed_by=str(performed_by or "System"),
-            client=client,
-        )
-        legacy_entry._osivault_mirrored = True
-        legacy_entry.save()
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to log legacy audit event: {e}")
+    import osivault.audit
 
-    # 2. Append to OSIVault Master Audit Ledger
-    try:
-        import osivault.audit
-        tenant_str = "SYSTEM"
-        if client:
-            tenant_str = str(getattr(client, "client_code", None) or getattr(client, "name", "SYSTEM"))
+    tenant_str = "SYSTEM"
+    if client:
+        tenant_str = str(getattr(client, "client_code", None) or getattr(client, "name", "SYSTEM"))
 
-        res_type = str(resource_type or module).upper()
-        res_id = str(resource_id or (getattr(client, "id", None) or "SYSTEM"))
+    res_type = str(resource_type or module).upper()
+    res_id = str(resource_id or (getattr(client, "id", None) or "SYSTEM"))
 
-        osivault.audit.append(
-            model_class=MIRMasterAuditLog,
-            actor=str(performed_by or "System"),
-            tenant=tenant_str,
-            resource_type=res_type,
-            resource_id=res_id,
-            action=str(action).upper(),
-            old_values=old_values or {},
-            new_values=new_values or {},
-            module=str(module).upper(),
-            details=str(details),
-            client=client,
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to append to OSIVault Master Audit Log: {e}")
+    vals_new = dict(new_values or {})
+    if details:
+        vals_new["details"] = str(details)
+
+    return osivault.audit.append(
+        model_class=MIRMasterAuditLog,
+        actor=str(performed_by or "System"),
+        tenant=tenant_str,
+        resource_type=res_type,
+        resource_id=res_id,
+        action=str(action).upper(),
+        old_values=old_values or {},
+        new_values=vals_new,
+        module=str(module).upper(),
+        details=str(details or ""),
+        client=client,
+    )
 
