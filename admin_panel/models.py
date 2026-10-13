@@ -160,7 +160,7 @@ class MIRMasterAuditLog(OSIVaultAuditLog):
     """
     OSIVault Master Cryptographic Audit Ledger for OneSmarter MIR Portal.
     Implements:
-    - HMAC-SHA-256 Merkle hash chain
+    - HMAC-SHA-256 hash chain
     - Structured JSON field diffs (old_values, new_values)
     - Envelope metadata (RFC algorithm, key_id, version)
     - Immutable database trigger locks & periodic signed checkpoints
@@ -170,8 +170,7 @@ class MIRMasterAuditLog(OSIVaultAuditLog):
     details = models.TextField(blank=True, default="")
     client = models.ForeignKey(
         Client,
-        on_delete=models.DO_NOTHING,
-        db_constraint=False,
+        on_delete=models.SET_NULL,
         null=True,
         blank=True,
         related_name="master_audit_logs",
@@ -334,9 +333,7 @@ def log_audit_event(
     """
     import osivault.audit
 
-    tenant_str = "SYSTEM"
-    if client:
-        tenant_str = str(getattr(client, "client_code", None) or getattr(client, "name", "SYSTEM"))
+    tenant_str = str(client.pk) if client else "SYSTEM"
 
     res_type = str(resource_type or module).upper()
     res_id = str(resource_id or (getattr(client, "id", None) or "SYSTEM"))

@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo
 
 from accounts.models import Client, ClientContact, User
 from admin_panel.models import AuditLog, AdminClientAccessGrant, ClientSmtpConfig
+from admin_panel.test_audit import OSIVaultAuditIntegrationTestCase
 from edi835.models import EDI835File
 
 

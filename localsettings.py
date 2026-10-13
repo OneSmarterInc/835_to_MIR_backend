@@ -49,20 +49,21 @@ SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip() o
 SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip() or _DEFAULT_FERNET_KEY
 OSIVAULT_AUDIT_CURRENT_KEY = os.getenv("OSIVAULT_AUDIT_CURRENT_KEY", "").strip()
 OSIVAULT_AUDIT_PREVIOUS_KEY = os.getenv("OSIVAULT_AUDIT_PREVIOUS_KEY", "").strip()
-OSIVAULT_MASTER_KEY = os.getenv("OSIVAULT_MASTER_KEY", "").strip() or OSIVAULT_AUDIT_CURRENT_KEY
 
-_is_running_tests = any("test" in arg for arg in sys.argv)
-if not OSIVAULT_AUDIT_CURRENT_KEY and not _is_running_tests:
+if not DEBUG and not OSIVAULT_AUDIT_CURRENT_KEY:
     raise ImproperlyConfigured(
         "OSIVAULT_AUDIT_CURRENT_KEY environment variable is required and must not be empty (fail-closed policy)."
     )
 
 if OSIVAULT_AUDIT_CURRENT_KEY:
     os.environ["OSIVAULT_AUDIT_CURRENT_KEY"] = OSIVAULT_AUDIT_CURRENT_KEY
+elif DEBUG:
+    _DEV_AUDIT_KEY = "dev_audit_key_32bytes_minimum_secret_debug!"
+    OSIVAULT_AUDIT_CURRENT_KEY = _DEV_AUDIT_KEY
+    os.environ["OSIVAULT_AUDIT_CURRENT_KEY"] = _DEV_AUDIT_KEY
+
 if OSIVAULT_AUDIT_PREVIOUS_KEY:
     os.environ["OSIVAULT_AUDIT_PREVIOUS_KEY"] = OSIVAULT_AUDIT_PREVIOUS_KEY
-if OSIVAULT_MASTER_KEY:
-    os.environ["OSIVAULT_MASTER_KEY"] = OSIVAULT_MASTER_KEY
 # Authentication is valid for one fixed hour. Activity does not silently
 # extend the session; after expiry the user must sign in and verify MFA again.
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "3600"))
