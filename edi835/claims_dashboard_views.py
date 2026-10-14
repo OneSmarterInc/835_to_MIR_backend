@@ -43,7 +43,7 @@ def _file_data(kind, item):
     else:
         name, count, held = item.original_filename, item.claim_count, item.held_record_count
     return {"id": str(item.id), "name": name, "claim_count": count, "held_count": held,
-            "status": item.status, "type": kind}
+            "status": item.status, "type": kind,\n            "source_835_id": str(item.source_835_id) if kind == "MIR" else None}
 
 
 @authenticated_api_required
