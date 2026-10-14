@@ -112,6 +112,7 @@ def detail(request, claim_id):
     contractual = [amount(a["amount"]) for a in all_adjustments if a["group"] == "CO"]
     allowed = str(claim.total_charge_amount - sum(contractual)) if contractual else None
     payment = file_payment_header(source_file.input_file_content)
+    mir = getattr(source_file, "mir_file", None)
     return JsonResponse({
         "success": True,
         "claim": {
@@ -121,6 +122,7 @@ def detail(request, claim_id):
             "file_name": source_file.original_filename,
             "file_id": str(source_file.pk),
             "received_at": source_file.uploaded_at.isoformat(),
+            "mir_status": mir.status if mir else "NOT_GENERATED",
             "patient_name": patient,
             "payer": payment["payer"],
             "check_number": payment["check_number"],
