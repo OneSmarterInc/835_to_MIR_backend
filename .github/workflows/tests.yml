@@ -1,0 +1,40 @@
+name: tests
+
+on: [push, pull_request]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mir_test_db
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready --health-interval 5s
+          --health-timeout 5s --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        env:
+          OSIVAULT_RO_TOKEN: ${{ secrets.OSIVAULT_RO_TOKEN }}
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r req.txt
+
+      - name: Run test suite
+        env:
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mir_test_db
+          SECRET_KEY: ci-test-secret-key-not-for-production-use-minimum-50-chars
+          DEBUG: "1"
+          OSIVAULT_AUDIT_CURRENT_KEY: "ci_throwaway_audit_key_32bytes_minimum_secret!"
+        run: |
+          python manage.py test admin_panel.test_audit
