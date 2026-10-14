@@ -5,7 +5,7 @@ from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
-from .models import EDI835Claim, EDI835File, MIRFile
+from .models import EDI835Claim, EDI835File, MIRFile, ClientPortalAction
 
 
 def only_client_user(request):
@@ -86,6 +86,13 @@ def overview(request):
                        "days": max(0, (today - timezone.localtime(file.uploaded_at).date()).days)})
     issues.sort(key=lambda i: -i["days"])
     claims.sort(key=lambda c: -c["days"])
+    issue_file_ids = {item["id"] for item in issues}
+    latest_hidden = {}
+    for event in ClientPortalAction.objects.filter(
+        client=client, file_id__in=issue_file_ids,
+        kind__in=("IGNORE_FILE", "REOPEN_FILE"),
+    ).order_by("created_at", "pk").values("file_id", "kind"):
+        latest_hidden[str(event["file_id"])] = event["kind"] == "IGNORE_FILE"
     history = [{"id": str(m.pk), "filename": m.mir_filename,
                 "date": m.converted_at.isoformat(), "count": m.claim_count, "status": m.status}
                for m in MIRFile.objects.filter(client=client).order_by("-converted_at")[:30]]
@@ -102,5 +109,6 @@ def overview(request):
             "decisions": len(issues),
         },
         "claims": claims, "claims_limited": len(claims) >= 200,
-        "issues": issues, "history": history,
+        "issues": issues, "ignored_files": [key for key, value in latest_hidden.items() if value],
+        "history": history,
     })
