@@ -66,17 +66,15 @@ def remove_postgres_guards(apps, schema_editor):
 def perform_cutover(apps, schema_editor):
     AuditLog = apps.get_model("admin_panel", "AuditLog")
     from admin_panel.models import MIRMasterAuditLog as ConcreteMasterLog
+    from admin_panel.audit_digest import compute_legacy_chain_digest
     import osivault.audit
-    import hashlib
 
     assert not ConcreteMasterLog.objects.exists(), (
         "mir_master_audit_log must be empty before cutover migration."
     )
 
-    hasher = hashlib.sha256()
-    for entry_hash in AuditLog.objects.order_by("id").values_list("entry_hash", flat=True):
-        hasher.update((entry_hash or "").encode("utf-8"))
-    legacy_digest = hasher.hexdigest()
+    entry_hashes = AuditLog.objects.order_by("id").values_list("entry_hash", flat=True)
+    digest, count, last = compute_legacy_chain_digest(entry_hashes)
 
     osivault.audit.append(
         model_class=ConcreteMasterLog,
@@ -87,11 +85,13 @@ def perform_cutover(apps, schema_editor):
         action="AUDIT_LEDGER_CUTOVER",
         old_values={
             "legacy_table": "admin_panel_auditlog",
-            "legacy_records": AuditLog.objects.count(),
+            "legacy_records": count,
         },
         new_values={
-            "legacy_digest": legacy_digest,
             "details": "Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
+            "legacy_chain_digest": digest,
+            "legacy_row_count": count,
+            "legacy_last_entry_hash": last,
         },
         module="GOVERNANCE",
         details="Cutover from legacy audit log to OSIVault HMAC-SHA-256 master ledger",
