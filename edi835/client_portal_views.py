@@ -100,8 +100,9 @@ def overview(request):
     ).order_by("created_at", "pk").values("file_id", "kind"):
         latest_hidden[str(event["file_id"])] = event["kind"] == "IGNORE_FILE"
     history = [{"id": str(m.pk), "filename": m.mir_filename,
-                "date": m.converted_at.isoformat(), "count": m.claim_count, "status": m.status}
-               for m in MIRFile.objects.filter(client=client).order_by("-converted_at")[:30]]
+                "date": m.converted_at.isoformat(), "count": m.claim_count, "status": m.status,
+                "source_filename": m.source_835.original_filename}
+               for m in MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at")[:30]]
     return JsonResponse({
         "success": True, "client": client.name, "date": selected.isoformat(),
         "metrics": {
