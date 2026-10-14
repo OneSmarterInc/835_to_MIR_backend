@@ -82,7 +82,7 @@ def overview(request):
         client=client, uploaded_at__gte=cutoff, status="ERROR"
     ).order_by("-uploaded_at")[:50]:
         issues.append({"id": str(file.pk), "kind": "error", "filename": file.original_filename,
-                       "count": 0, "reason": file.error_message or "File processing failed",
+                       "count": 0, "reason": "File processing failed; ask your Client Admin to review the source file.",
                        "days": max(0, (today - timezone.localtime(file.uploaded_at).date()).days)})
     issues.sort(key=lambda i: -i["days"])
     claims.sort(key=lambda c: -c["days"])
