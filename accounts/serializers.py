@@ -28,7 +28,7 @@ class UserSerializer(serializers.ModelSerializer):
         model = User
         fields = (
             "id", "email", "name", "mobile", "client_id", "client_name",
-            "is_active", "is_staff", "first_login", "totp_enabled",
+            "is_active", "is_staff", "client_role", "first_login", "totp_enabled",
             "admin_screens",
             "last_login", "created_at", "updated_at",
         )
