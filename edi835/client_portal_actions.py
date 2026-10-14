@@ -41,7 +41,7 @@ def serialize(action):
         "file_id": str(action.file_id),
         "file_name": action.file.original_filename,
         "claim_id": action.claim_id,
-        "by": action.created_by.name,
+        "by": action.created_by_label or (action.created_by.name if action.created_by else "Former user"),
         "at": action.created_at.isoformat(),
         "reviewed_at": action.reviewed_at.isoformat() if action.reviewed_at else None,
     }
@@ -101,7 +101,7 @@ def actions(request):
             })
     record = ClientPortalAction.objects.create(
         client=client, file=file, claim=claim, created_by=request.user,
-        kind=kind, message=message,
+        kind=kind, message=message, created_by_label=request.user.name or request.user.email,
     )
     if kind.startswith("REQUEST_"):
         # A request is a durable internal workflow record. Notify only the
