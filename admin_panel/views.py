@@ -737,7 +737,7 @@ def api_admin_users(request):
             "is_active": u.is_active,
             "is_staff": u.is_staff,
             "is_superuser": u.is_superuser,
-            "role": "Super Admin" if u.is_superuser else ("Admin" if u.is_staff else "User"),
+            "role": "Super Admin" if u.is_superuser else ("Admin" if u.is_staff else ("Client User" if u.client_role == "CLIENT_USER" else "Client Admin")),
             "totp_enabled": u.totp_enabled,
             "client_id": str(u.client.id) if u.client else None,
             "client_name": "OneSmarter" if u.is_staff else (u.client.name if u.client else None),
@@ -772,9 +772,12 @@ def api_admin_create_user(request):
     email = (data.get("email") or "").strip().lower()
     mobile = (data.get("mobile") or "").strip()
     password = data.get("password") or "Password@123"
-    role = (data.get("role") or "").strip().lower()
-    is_staff = bool(data.get("is_staff", False) or role in ["admin", "staff", "super admin"])
+    role = (data.get("role") or "Client Admin").strip().lower()
+    if role not in {"user", "client admin", "client user", "admin", "staff", "super admin"}:
+        return JsonResponse({"success": False, "error": "Invalid account role."}, status=400)
+    is_staff = role in {"admin", "staff", "super admin"}
     is_superuser = role == "super admin"
+    client_role = "CLIENT_USER" if role == "client user" else "CLIENT_ADMIN"
     client_id = data.get("client_id")
     client_ids = data.get("clients") or []
 
@@ -815,7 +818,8 @@ def api_admin_create_user(request):
         password=password,
         is_staff=is_staff,
         is_superuser=is_superuser,
-        client=client_obj
+        client=client_obj,
+        client_role=client_role,
     )
     if user.is_staff and not user.is_superuser:
         user.admin_screens = list(DEFAULT_ADMIN_SCREENS)
@@ -828,7 +832,9 @@ def api_admin_create_user(request):
         "mobile": user.mobile,
         "is_staff": user.is_staff,
         "is_superuser": user.is_superuser,
-        "role": "Super Admin" if user.is_superuser else ("Admin" if user.is_staff else "User"),
+        "role": "Super Admin" if user.is_superuser else ("Admin" if user.is_staff else ("Client User" if user.client_role == "CLIENT_USER" else "Client Admin")),
+        "client_role": user.client_role if not user.is_staff else None,
+        "client_id": str(user.client_id) if user.client_id else None,
         "client_name": "OneSmarter" if user.is_staff else (client_obj.name if client_obj else None),
     }
 
@@ -859,7 +865,7 @@ def api_admin_update_user(request, user_id):
         data = request.POST
 
     requested_role = (data.get("role") or "").strip()
-    if requested_role and requested_role not in {"User", "Admin", "Super Admin"}:
+    if requested_role and requested_role not in {"User", "Client Admin", "Client User", "Admin", "Super Admin"}:
         return JsonResponse({"success": False, "error": "Invalid role."}, status=400)
 
     if requested_role:
@@ -911,6 +917,8 @@ def api_admin_update_user(request, user_id):
         user_obj.admin_screens = normalize_admin_screens(data["admin_screens"])
     user_obj.is_staff = requested_is_staff
     user_obj.is_superuser = requested_is_superuser
+    if requested_role:
+        user_obj.client_role = "CLIENT_USER" if requested_role == "Client User" else "CLIENT_ADMIN"
     if user_obj.is_staff:
         user_obj.client = None
         if not user_obj.is_superuser and user_obj.admin_screens is None:
