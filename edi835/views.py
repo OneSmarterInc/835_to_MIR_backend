@@ -1048,8 +1048,11 @@ def api_sftp_connect(request):
                 "success": False,
                 "error": "SFTP configuration was not found for your client.",
             }, status=404)
+    direction = str(body.get("direction") or "inbound").lower()
+    if direction not in ("inbound", "outbound"):
+        return JsonResponse({"success": False, "error": "Invalid SFTP direction"}, status=400)
     try:
-        saved = get_sftp_runtime_credentials(config, outbound=False) if config else {}
+        saved = get_sftp_runtime_credentials(config, outbound=direction == "outbound") if config else {}
     except SFTPCredentialError as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=500)
 
@@ -1085,7 +1088,7 @@ def api_sftp_connect(request):
         ssh_key=ssh_key,
         auth_method=auth_method,
         trust_unknown_key=trust_unknown_key,
-        remote_folder=body.get("inbound_835_folder") or saved.get("remote_folder") or "/"
+        remote_folder=(body.get("outbound_mir_folder") if direction == "outbound" else body.get("inbound_835_folder")) or (config.outbound_mir_folder if config and direction == "outbound" else config.inbound_835_folder if config else "") or saved.get("remote_folder") or "/"
     )
 
     return JsonResponse(res, status=200)
