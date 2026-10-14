@@ -194,6 +194,14 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 import json
 
+def portal_role_name(user):
+    if user.is_superuser:
+        return "Super Admin"
+    if user.is_staff:
+        return "Admin"
+    return "Client User" if user.client_role == "CLIENT_USER" else "Client Admin"
+
+
 def api_user_info(request):
     if not request.user.is_authenticated:
         return JsonResponse({
@@ -214,12 +222,7 @@ def api_user_info(request):
     user_name = getattr(request.user, "name", request.user.email)
     user_email = request.user.email
 
-    if request.user.is_superuser:
-        role_str = "Super Admin"
-    elif request.user.is_staff:
-        role_str = "Admin"
-    else:
-        role_str = "User"
+    role_str = portal_role_name(request.user)
 
     client_str = request.user.client.name if (request.user.client and not request.user.is_staff and not request.user.is_superuser) else "OneSmarter"
 
@@ -238,6 +241,8 @@ def api_user_info(request):
             "is_staff": request.user.is_staff,
             "is_superuser": request.user.is_superuser,
             "role": role_str,
+            "client_role": request.user.client_role if not request.user.is_staff else None,
+            "client_id": str(request.user.client_id) if request.user.client_id else None,
             "client": client_str,
             "totp_enabled": totp_enabled,
             "totp_verified": totp_verified,
@@ -310,12 +315,7 @@ def api_login(request):
             request.session["totp_setup_required"] = True
             next_step = "totp_setup"
 
-        if user.is_superuser:
-            role_str = "Super Admin"
-        elif user.is_staff:
-            role_str = "Admin"
-        else:
-            role_str = "User"
+        role_str = portal_role_name(user)
 
         client_str = user.client.name if (user.client and not user.is_staff and not user.is_superuser) else "OneSmarter"
 
@@ -340,6 +340,8 @@ def api_login(request):
                 "is_staff": user.is_staff,
                 "is_superuser": user.is_superuser,
                 "role": role_str,
+                "client_role": user.client_role if not user.is_staff else None,
+                "client_id": str(user.client_id) if user.client_id else None,
                 "client": client_str,
                 "admin_screens": screens_for_user(user),
             }
@@ -1032,7 +1034,7 @@ def api_admin_users(request):
             "is_active": u.is_active,
             "is_staff": u.is_staff,
             "is_superuser": u.is_superuser,
-            "role": "Super Admin" if u.is_superuser else ("Admin" if u.is_staff else "User"),
+            "role": portal_role_name(u),
             "totp_enabled": u.totp_enabled,
             "client_id": str(u.client.id) if u.client else None,
             "client_name": client_name,
@@ -1071,9 +1073,12 @@ def api_admin_create_user(request):
     mobile = (data.get("mobile") or "").strip()
     password = data.get("password") or "Password@123"
     
-    role = data.get("role", "User")
-    is_staff = bool(data.get("is_staff", False) or role in ["Admin", "Super Admin"])
-    is_superuser = bool(data.get("is_superuser", False) or role == "Super Admin")
+    role = data.get("role", "Client Admin")
+    if role not in ("User", "Client Admin", "Client User", "Admin", "Super Admin"):
+        return JsonResponse({"success": False, "error": "Invalid user role."}, status=400)
+    is_staff = role in ("Admin", "Super Admin")
+    is_superuser = role == "Super Admin"
+    client_role = "CLIENT_USER" if role == "Client User" else "CLIENT_ADMIN"
     client_id = data.get("client_id")
 
     if not name:
@@ -1114,7 +1119,8 @@ def api_admin_create_user(request):
         password=password,
         is_staff=is_staff,
         is_superuser=is_superuser,
-        client=client_obj
+        client=client_obj,
+        client_role=client_role,
     )
 
     return JsonResponse({
@@ -1127,7 +1133,7 @@ def api_admin_create_user(request):
             "mobile": user.mobile,
             "is_staff": user.is_staff,
             "is_superuser": user.is_superuser,
-            "role": "Super Admin" if user.is_superuser else ("Admin" if user.is_staff else "User"),
+            "role": portal_role_name(user),
             "client_name": client_obj.name if client_obj else ("OneSmarter" if is_staff else None),
         }
     })
@@ -1157,6 +1163,8 @@ def api_admin_update_user(request, user_id):
         return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can update Admin or Super Admin accounts."}, status=403)
 
     role = data.get("role")
+    if role is not None and role not in ("User", "Client Admin", "Client User", "Admin", "Super Admin"):
+        return JsonResponse({"success": False, "error": "Invalid user role."}, status=400)
     new_is_staff = user_obj.is_staff
     new_is_superuser = user_obj.is_superuser
 
@@ -1194,6 +1202,8 @@ def api_admin_update_user(request, user_id):
     
     user_obj.is_staff = new_is_staff
     user_obj.is_superuser = new_is_superuser
+    if role is not None:
+        user_obj.client_role = "CLIENT_USER" if role == "Client User" else "CLIENT_ADMIN"
 
     if user_obj.is_staff:
         user_obj.client = None
