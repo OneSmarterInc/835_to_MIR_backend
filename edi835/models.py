@@ -831,3 +831,39 @@ class MPLClaimAnalysis(models.Model):
 
     class Meta:
         db_table = "mpl_claim_analysis"
+
+
+class ClientPortalAction(models.Model):
+    """Auditable client-originated claim/file workflow requests and notes."""
+
+    KIND_CHOICES = [
+        ("NOTE", "Add note"),
+        ("REQUEST_RESEND", "Request source file resend"),
+        ("REQUEST_PLAN_ID", "Request missing plan ID correction"),
+        ("REQUEST_DICTIONARY", "Request code dictionary correction"),
+        ("REQUEST_RELEASE", "Request exception review / release"),
+        ("IGNORE_FILE", "Hide file issue"),
+        ("REOPEN_FILE", "Reopen file issue"),
+    ]
+    STATUS_CHOICES = [("OPEN", "Open"), ("REVIEWED", "Reviewed")]
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="portal_actions")
+    file = models.ForeignKey(EDI835File, on_delete=models.CASCADE, related_name="portal_actions")
+    claim = models.ForeignKey(EDI835Claim, on_delete=models.CASCADE, blank=True, null=True, related_name="portal_actions")
+    created_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="portal_actions")
+    kind = models.CharField(max_length=32, choices=KIND_CHOICES)
+    message = models.TextField(blank=True, default="")
+    status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="OPEN")
+    created_at = models.DateTimeField(auto_now_add=True)
+    reviewed_at = models.DateTimeField(null=True, blank=True)
+    reviewed_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, blank=True, null=True,
+        related_name="reviewed_portal_actions",
+    )
+
+    class Meta:
+        db_table = "client_portal_action"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["client", "-created_at"], name="client_portal_activity_idx"),
+            models.Index(fields=["client", "status"], name="client_portal_status_idx"),
+        ]
