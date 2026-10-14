@@ -35,9 +35,14 @@ def finding_for(claim, findings):
     for f in findings:
         number = str(f.get("claim_number") or f.get("claim_control_number") or "")
         index = str(f.get("claim_index") or "")
-        if (number and number in (claim.highmark_claim_number, claim.internal_claim_number)) or (
-            index and index == str(claim.claim_sequence)
-        ):
+        external = str(claim.highmark_claim_number or "").strip()
+        internal = str(claim.internal_claim_number or "").strip()
+        exact = bool(number and number in {external, internal})
+        # Some MIR findings concatenate CLP01 and CLP07. Only use that
+        # fallback for sufficiently specific CLP01 identifiers.
+        full_control = bool(external and len(external) >= 6 and number.startswith(external)
+                            and len(number) > len(external))
+        if (index and index == str(claim.claim_sequence)) or exact or full_control:
             return f
     return None
 
