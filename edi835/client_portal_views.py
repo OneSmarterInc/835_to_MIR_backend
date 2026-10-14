@@ -1,6 +1,7 @@
 """Read-only work queue for the assigned Client User tenant."""
 from datetime import timedelta
 from django.db.models import Sum
+from django.core.paginator import Paginator
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
@@ -116,4 +117,35 @@ def overview(request):
         "claims": claims, "claims_limited": len(claims) >= 200,
         "issues": issues, "ignored_files": [key for key, value in latest_hidden.items() if value],
         "history": history,
+    })
+
+
+@authenticated_api_required
+@require_GET
+def history(request):
+    """Complete paginated conversion history, always limited to this tenant."""
+    client, denied = only_client_user(request)
+    if denied:
+        return denied
+    try:
+        number = max(1, int(request.GET.get("page", "1")))
+    except (TypeError, ValueError):
+        return JsonResponse({"success": False, "error": "Invalid page"}, status=400)
+    pages = Paginator(
+        MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at"),
+        40,
+    )
+    page = pages.get_page(number)
+    return JsonResponse({
+        "success": True, "page": page.number, "pages": pages.num_pages,
+        "count": pages.count, "files": [
+            {
+                "id": str(item.pk),
+                "filename": item.mir_filename,
+                "source_filename": item.source_835.original_filename,
+                "date": item.converted_at.isoformat(),
+                "count": item.claim_count, "status": item.status,
+            }
+            for item in page.object_list
+        ],
     })
