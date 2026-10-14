@@ -3391,8 +3391,8 @@ def api_admin_audit_logs(request):
             q = q.filter(timestamp__date__lte=date_to)
         return q
 
-    qs_legacy = filter_ledger(AuditLog, "performed_by")
-    qs_master = filter_ledger(MIRMasterAuditLog, "actor")
+    qs_legacy = filter_ledger(AuditLog, "performed_by").order_by()
+    qs_master = filter_ledger(MIRMasterAuditLog, "actor").order_by()
 
     v_legacy = qs_legacy.annotate(
         client_name=F("client__name"),
@@ -3411,13 +3411,15 @@ def api_admin_audit_logs(request):
 
     logs = []
     for log in page_obj.object_list:
+        ts = log["timestamp"]
+        ts_str = ts.strftime("%Y-%m-%dT%H:%M:%SZ") if hasattr(ts, "strftime") else str(ts or "")
         logs.append({
             "id": log["id"],
             "module": log["module"],
             "action": log["action"],
             "details": log["details"],
             "performed_by": log["performed_by"],
-            "timestamp": log["timestamp"].strftime("%Y-%m-%dT%H:%M:%SZ") if log["timestamp"] else "",
+            "timestamp": ts_str,
             "client": log["client_name"],
             "client_id": str(log["client_id"]) if log["client_id"] else None,
             "client_name": log["client_name"] or "System",
