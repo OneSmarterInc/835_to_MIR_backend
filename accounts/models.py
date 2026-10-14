@@ -195,6 +195,14 @@ class User(AbstractBaseUser, PermissionsMixin):
     name = models.CharField(max_length=150)
     mobile = models.CharField(max_length=20, unique=True)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
+    CLIENT_ROLE_CHOICES = [
+        ("CLIENT_ADMIN", "Client Admin"),
+        ("CLIENT_USER", "Client User"),
+    ]
+    # Legacy non-staff client accounts retain their existing administrative access.
+    client_role = models.CharField(
+        max_length=20, choices=CLIENT_ROLE_CHOICES, default="CLIENT_ADMIN"
+    )
     totp_secret = models.CharField(max_length=64, blank=True, null=True)
     totp_enabled = models.BooleanField(default=False)
     recovery_codes = models.JSONField(default=list, blank=True)
