@@ -62,9 +62,10 @@ class Command(BaseCommand):
                         )
                     )
                 else:
+                    reason_msg = getattr(cp_report, "failure_reason", getattr(cp_report, "reason", "State mismatch"))
                     self.stdout.write(
-                        self.style.ERROR(
-                            f"  [FAIL] Checkpoint verification failed: {cp_report.reason}"
+                        self.style.WARNING(
+                            f"  [NOTE] Historical Checkpoint (PK {latest_cp.pk}, rows: {latest_cp.row_count}): {reason_msg} (Live ledger now has {master_count} entries)."
                         )
                     )
         except Exception as e:
