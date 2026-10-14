@@ -96,6 +96,13 @@ class AdminAccessMiddleware:
             permitted = (
                 (normalized_path.startswith("/edi835/api/client-portal/")
                  and request.method == "GET")
+                or (
+                    normalized_path in {
+                        "/edi835/api/client-portal/actions/",
+                        "/edi835/api/client-portal/convert/",
+                    }
+                    and request.method == "POST"
+                )
                 or normalized_path in public_auth
                 or any(normalized_path.startswith(p) for p in auth_prefixes)
             )
