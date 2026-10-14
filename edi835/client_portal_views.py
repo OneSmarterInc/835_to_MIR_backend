@@ -7,6 +7,7 @@ from django.utils import timezone
 from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
 from .models import EDI835Claim, EDI835File, MIRFile, ClientPortalAction
+from .client_portal_activity import attach_claim_activity
 
 
 def only_client_user(request):
@@ -23,6 +24,7 @@ def as_claim(claim, reason="", days=0):
         "internal_number": claim.internal_claim_number,
         "billed": str(claim.total_charge_amount), "paid": str(claim.paid_amount),
         "patient_owes": str(claim.patient_responsibility),
+        "responsibility_amount": str(claim.patient_responsibility),
         "payer_status": ("Denied" if claim.claim_status == "4"
                          else "Paid in full" if claim.paid_amount >= claim.total_charge_amount
                          else "Paid less than billed" if claim.paid_amount > 0
@@ -92,6 +94,7 @@ def overview(request):
                        "days": max(0, (today - timezone.localtime(file.uploaded_at).date()).days)})
     issues.sort(key=lambda i: -i["days"])
     claims.sort(key=lambda c: -c["days"])
+    attach_claim_activity(client, claims)
     issue_file_ids = {item["id"] for item in issues}
     latest_hidden = {}
     for event in ClientPortalAction.objects.filter(
@@ -130,15 +133,16 @@ def history(request):
         return denied
     try:
         number = max(1, int(request.GET.get("page", "1")))
+        page_size = min(50, max(1, int(request.GET.get("page_size", "10"))))
     except (TypeError, ValueError):
         return JsonResponse({"success": False, "error": "Invalid page"}, status=400)
     pages = Paginator(
-        MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at"),
-        40,
+        MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at", "-pk"),
+        page_size,
     )
     page = pages.get_page(number)
     return JsonResponse({
-        "success": True, "page": page.number, "pages": pages.num_pages,
+        "success": True, "page": page.number, "pages": pages.num_pages, "page_size": page_size,
         "count": pages.count, "files": [
             {
                 "id": str(item.pk),

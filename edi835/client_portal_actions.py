@@ -7,6 +7,7 @@ import json
 import uuid
 
 from django.http import JsonResponse
+from django.core.paginator import Paginator
 from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt
 
@@ -41,6 +42,9 @@ def serialize(action):
         "file_id": str(action.file_id),
         "file_name": action.file.original_filename,
         "claim_id": action.claim_id,
+        # Internal linkage, distinct from a payer claim identifier. The demo
+        # masking layer transforms fields named claim_id, but not record_id.
+        "record_id": action.claim_id,
         "by": action.created_by_label or (action.created_by.name if action.created_by else "Former user"),
         "at": action.created_at.isoformat(),
         "reviewed_at": action.reviewed_at.isoformat() if action.reviewed_at else None,
@@ -56,7 +60,27 @@ def actions(request):
     if request.method == "GET":
         qs = ClientPortalAction.objects.select_related("file", "created_by").filter(
             client=client
-        ).order_by("-created_at")[:200]
+        ).only(
+            "id", "kind", "status", "message", "file_id", "claim_id",
+            "created_by_id", "created_by_label", "created_at", "reviewed_at",
+            "file__original_filename", "created_by__name",
+        ).order_by("-created_at", "-pk")
+        if "claim_id" in request.GET:
+            try:
+                claim_id = int(request.GET["claim_id"])
+                page_number = max(1, int(request.GET.get("page", "1")))
+                page_size = min(50, max(1, int(request.GET.get("page_size", "10"))))
+            except (TypeError, ValueError):
+                return JsonResponse({"success": False, "error": "Invalid claim or pagination"}, status=400)
+            if not EDI835Claim.objects.filter(pk=claim_id, edi_file__client=client).exists():
+                return JsonResponse({"success": False, "error": "Claim not found"}, status=404)
+            page = Paginator(qs.filter(claim_id=claim_id), page_size).get_page(page_number)
+            return JsonResponse({
+                "success": True, "actions": [serialize(row) for row in page],
+                "page": page.number, "pages": page.paginator.num_pages,
+                "count": page.paginator.count,
+            })
+        qs = qs[:200]
         return JsonResponse({"success": True, "actions": [serialize(row) for row in qs]})
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "GET or POST only"}, status=405)
