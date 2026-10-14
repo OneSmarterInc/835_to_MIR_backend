@@ -27,6 +27,7 @@ def as_claim(claim, reason="", days=0):
                          else "Paid less than billed" if claim.paid_amount > 0
                          else "No payment"),
         "reason": reason, "days": days,
+        "file_id": str(claim.edi_file_id),
     }
 
 
