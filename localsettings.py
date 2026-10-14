@@ -11,7 +11,7 @@ env_candidates = [
 ]
 env_file = next((p for p in env_candidates if p.exists()), None)
 if env_file:
-    load_dotenv(env_file)
+    load_dotenv(env_file, override=True)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
