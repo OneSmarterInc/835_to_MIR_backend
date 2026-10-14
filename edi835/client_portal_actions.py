@@ -90,10 +90,42 @@ def actions(request):
         claim = EDI835Claim.objects.filter(pk=claim_id, edi_file=file).first()
         if claim is None:
             return JsonResponse({"success": False, "error": "Claim not in source file"}, status=404)
+    if kind.startswith("REQUEST_"):
+        pending = ClientPortalAction.objects.select_related("file", "created_by").filter(
+            client=client, file=file, claim=claim, kind=kind, status="OPEN"
+        ).order_by("-created_at").first()
+        if pending:
+            return JsonResponse({
+                "success": True, "action": serialize(pending),
+                "message": "This request is already queued for Client Admin review.",
+            })
     record = ClientPortalAction.objects.create(
         client=client, file=file, claim=claim, created_by=request.user,
         kind=kind, message=message,
     )
+    if kind.startswith("REQUEST_"):
+        # A request is a durable internal workflow record. Notify only the
+        # same-tenant Client Admin accounts without emailing claim-level PHI.
+        try:
+            from accounts.models import User
+            from admin_panel.email_service import send_client_email
+            admins = list(User.objects.filter(
+                client=client, client_role="CLIENT_ADMIN", is_staff=False,
+                is_active=True,
+            ).values_list("email", flat=True))
+            if admins:
+                send_client_email(
+                    client,
+                    "FileX: Client review request #" + str(record.pk),
+                    "<p>A new client review request is waiting in FileX.</p>"
+                    "<p>Request #" + str(record.pk) + " — " + KIND_LABELS[kind] +
+                    ". Open <strong>Client review requests</strong> in the portal to act.</p>",
+                    to_emails=admins,
+                )
+        except Exception:
+            # SMTP problems must never erase an authenticated user's decision.
+            import logging
+            logging.getLogger(__name__).exception("Unable to notify Client Admin of review request")
     return JsonResponse({
         "success": True, "action": serialize(record),
         "message": "Request recorded for Client Admin review." if kind.startswith("REQUEST_")
