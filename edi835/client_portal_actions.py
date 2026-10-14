@@ -4,6 +4,7 @@ Requests are internal workflow items, not claims-system transmissions or
 automatic changes to 835/MIR business rules.
 """
 import json
+import uuid
 
 from django.http import JsonResponse
 from django.utils import timezone
@@ -73,12 +74,20 @@ def actions(request):
         return JsonResponse({"success": False, "error": "Note cannot exceed 2000 characters"}, status=400)
     if kind == "NOTE" and not message:
         return JsonResponse({"success": False, "error": "Enter a note"}, status=400)
-    file = EDI835File.objects.filter(id=data.get("file_id"), client=client).first() if data.get("file_id") else None
+    try:
+        file_id = uuid.UUID(str(data.get("file_id")))
+    except (ValueError, TypeError, AttributeError):
+        return JsonResponse({"success": False, "error": "Valid source file ID required"}, status=400)
+    file = EDI835File.objects.filter(id=file_id, client=client).first()
     if file is None:
         return JsonResponse({"success": False, "error": "Source file not found"}, status=404)
     claim = None
     if data.get("claim_id") is not None:
-        claim = EDI835Claim.objects.filter(pk=data["claim_id"], edi_file=file).first()
+        try:
+            claim_id = int(data["claim_id"])
+        except (TypeError, ValueError):
+            return JsonResponse({"success": False, "error": "Invalid claim ID"}, status=400)
+        claim = EDI835Claim.objects.filter(pk=claim_id, edi_file=file).first()
         if claim is None:
             return JsonResponse({"success": False, "error": "Claim not in source file"}, status=404)
     record = ClientPortalAction.objects.create(
