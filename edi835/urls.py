@@ -1,4 +1,5 @@
 from django.urls import path
+from .claims_dashboard_views import dashboard_files, dashboard_file_claims
 from .views import (
     api_process_tracked_file,
     api_get_metrics,
@@ -96,6 +97,8 @@ urlpatterns = [
     path("api/mpl-notices/<uuid:notice_id>/claims/<int:claim_id>/workflow-status/", mpl_claim_workflow_status, name="mpl_claim_workflow_status"),
     path("api/mpl-notices/<uuid:notice_id>/claims/workflow-status/", mpl_claim_workflow_status, name="mpl_notice_claim_workflow_status"),
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
+    path("api/claims-dashboard/", dashboard_files, name="claims_dashboard"),
+    path("api/claims-dashboard/<str:kind>/<uuid:file_id>/", dashboard_file_claims, name="claims_dashboard_file"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
     path("api/tracked-files/<uuid:file_id>/details/", tracked_file_details, name="edi835_tracked_file_details"),
     path("api/checks/conversion-holds/", conversion_hold_files, name="edi835_conversion_hold_files"),
