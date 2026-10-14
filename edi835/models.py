@@ -849,7 +849,11 @@ class ClientPortalAction(models.Model):
     client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="portal_actions")
     file = models.ForeignKey(EDI835File, on_delete=models.CASCADE, related_name="portal_actions")
     claim = models.ForeignKey(EDI835Claim, on_delete=models.CASCADE, blank=True, null=True, related_name="portal_actions")
-    created_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="portal_actions")
+    created_by = models.ForeignKey(
+        "accounts.User", on_delete=models.SET_NULL, null=True, blank=True,
+        related_name="portal_actions",
+    )
+    created_by_label = models.CharField(max_length=150, blank=True, default="")
     kind = models.CharField(max_length=32, choices=KIND_CHOICES)
     message = models.TextField(blank=True, default="")
     status = models.CharField(max_length=16, choices=STATUS_CHOICES, default="OPEN")
