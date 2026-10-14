@@ -81,6 +81,35 @@ class AdminAccessMiddleware:
     def __call__(self, request):
         path = request.path.lower()
         normalized_path = path if path.endswith('/') else f'{path}/'
+        # Client Users have a narrow read-only API surface. Enforce this on
+        # every backend request, not merely in the React navigation.
+        user = getattr(request, "user", None)
+        if (user and user.is_authenticated and not user.is_staff
+                and getattr(user, "client_role", "CLIENT_ADMIN") == "CLIENT_USER"):
+            public_auth = (
+                "/accounts/api/user/", "/accounts/api/login/",
+                "/accounts/api/logout/", "/accounts/api/user/change-password/",
+            )
+            auth_prefixes = (
+                "/accounts/api/totp/", "/accounts/api/webauthn/",
+            )
+            permitted = (
+                (normalized_path.startswith("/edi835/api/client-portal/")
+                 and request.method == "GET")
+                or normalized_path in public_auth
+                or any(normalized_path.startswith(p) for p in auth_prefixes)
+            )
+            protected = normalized_path.startswith((
+                "/api/", "/accounts/", "/edi835/", "/converter/",
+                "/admin-panel/", "/administrator", "/adminstrator", "/mapping",
+            ))
+            if protected and not permitted:
+                if "/api/" in normalized_path:
+                    return JsonResponse({"success": False,
+                                         "error": "Client User role cannot access this operation."},
+                                        status=403)
+                return HttpResponseForbidden("Client User role cannot access this operation.")
+
 
         if settings.MFA_ENFORCEMENT_ENABLED and request.user.is_authenticated and "/api/" in normalized_path and normalized_path not in MFA_EXEMPT_PATHS:
             enrolled = bool(getattr(request.user, "totp_enabled", False) and getattr(request.user, "totp_secret", None))
