@@ -81,28 +81,41 @@ class AdminAccessMiddleware:
     def __call__(self, request):
         path = request.path.lower()
         normalized_path = path if path.endswith('/') else f'{path}/'
-        # Client Users have a narrow read-only API surface. Enforce this on
-        # every backend request, not merely in the React navigation.
+        # Client Users use a narrow allowlist; shared conversion controls must
+        # never permit cross-tenant source IDs, unconfirmed transmission, or
+        # an ALL/837/RECON batch.
         user = getattr(request, "user", None)
         if (user and user.is_authenticated and not user.is_staff
                 and getattr(user, "client_role", "CLIENT_ADMIN") == "CLIENT_USER"):
-            public_auth = (
+            public_auth = {
                 "/accounts/api/user/", "/accounts/api/login/",
                 "/accounts/api/logout/", "/accounts/api/user/change-password/",
-            )
-            auth_prefixes = (
-                "/accounts/api/totp/", "/accounts/api/webauthn/",
-            )
+            }
+            auth_prefixes = ("/accounts/api/totp/", "/accounts/api/webauthn/")
+            read_paths = {
+                "/edi835/api/tracked-files/",
+                "/api/download/",
+                "/api/start-batch-conversion/",
+            }
+            write_paths = {
+                "/api/validate/", "/api/convert/", "/api/start-batch-conversion/",
+                "/edi835/api/sftp/push/",
+            }
+            client_workspace = normalized_path.startswith("/edi835/api/client-portal/")
+            file_preview = bool(re.fullmatch(
+                r"/api/file-content/[0-9a-f-]+/", normalized_path
+            ))
             permitted = (
-                (normalized_path.startswith("/edi835/api/client-portal/")
-                 and request.method == "GET")
+                (client_workspace and request.method == "GET")
                 or (
                     normalized_path in {
                         "/edi835/api/client-portal/actions/",
                         "/edi835/api/client-portal/convert/",
-                    }
-                    and request.method == "POST"
+                    } and request.method == "POST"
                 )
+                or (normalized_path in read_paths and request.method == "GET")
+                or (file_preview and request.method == "GET")
+                or (normalized_path in write_paths and request.method == "POST")
                 or normalized_path in public_auth
                 or any(normalized_path.startswith(p) for p in auth_prefixes)
             )
@@ -111,11 +124,62 @@ class AdminAccessMiddleware:
                 "/admin-panel/", "/administrator", "/adminstrator", "/mapping",
             ))
             if protected and not permitted:
-                if "/api/" in normalized_path:
-                    return JsonResponse({"success": False,
-                                         "error": "Client User role cannot access this operation."},
-                                        status=403)
-                return HttpResponseForbidden("Client User role cannot access this operation.")
+                return JsonResponse({
+                    "success": False,
+                    "error": "Client User role cannot access this operation.",
+                }, status=403) if "/api/" in normalized_path else HttpResponseForbidden(
+                    "Client User role cannot access this operation."
+                )
+
+            if (normalized_path in read_paths | write_paths or file_preview):
+                client_id = str(user.client_id or "")
+                if not client_id:
+                    return JsonResponse({"success": False, "error": "Client assignment required"}, status=403)
+                if request.method == "POST" and normalized_path in write_paths:
+                    try:
+                        posted = json.loads(request.body.decode("utf-8")) if request.content_type == "application/json" and request.body else {}
+                    except (ValueError, TypeError, UnicodeDecodeError):
+                        posted = {}
+                else:
+                    posted = {}
+                selected_client = (posted.get("client_id") or posted.get("client")
+                    or request.GET.get("client_id") or request.GET.get("client"))
+                if selected_client and str(selected_client) != client_id:
+                    return JsonResponse({"success": False, "error": "Client scope mismatch"}, status=403)
+                file_id = (
+                    posted.get("file_id") or request.GET.get("file_id")
+                )
+                if file_preview:
+                    file_id = normalized_path.split("/")[3]
+                if normalized_path == "/api/download/" and (
+                    not file_id or request.GET.get("mir_content")
+                ):
+                    return JsonResponse({"success": False, "error": "A source file ID is required for this download"}, status=400)
+                if normalized_path == "/edi835/api/sftp/push/":
+                    file_id = posted.get("file_id")
+                    if posted.get("force") is True:
+                        return JsonResponse({"success": False, "error": "Force resend requires Client Admin"}, status=403)
+                if file_id:
+                    from edi835.models import EDI835File
+                    try:
+                        is_own_file = EDI835File.objects.filter(
+                            id=file_id, client_id=user.client_id
+                        ).exists()
+                    except (ValueError, TypeError):
+                        is_own_file = False
+                    if not is_own_file:
+                        return JsonResponse({"success": False, "error": "File not found for client"}, status=404)
+                if normalized_path == "/api/start-batch-conversion/" and request.method == "POST":
+                    if str(posted.get("automation_type") or "").upper() != "835":
+                        return JsonResponse({"success": False, "error": "Only 835 batch is allowed for Client User"}, status=403)
+                if request.method == "POST" and normalized_path in {
+                    "/api/convert/", "/api/start-batch-conversion/",
+                    "/edi835/api/sftp/push/",
+                } and request.headers.get("X-FileX-Confirm-Send") != "yes":
+                    return JsonResponse({
+                        "success": False,
+                        "error": "Confirm outbound MIR delivery before running this operation.",
+                    }, status=400)
 
 
         if settings.MFA_ENFORCEMENT_ENABLED and request.user.is_authenticated and "/api/" in normalized_path and normalized_path not in MFA_EXEMPT_PATHS:
