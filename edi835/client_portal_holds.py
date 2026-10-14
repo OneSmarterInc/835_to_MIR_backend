@@ -32,27 +32,43 @@ def held_file_claims(request, file_id):
     matched = []
     matched_indices = set()
     for claim in EDI835Claim.objects.filter(edi_file=source).order_by("claim_sequence").iterator(chunk_size=500):
-        finding = finding_for(claim, findings)
-        if finding is None:
+        related = [
+            (position, finding)
+            for position, finding in enumerate(findings)
+            if finding_for(claim, [finding]) is not None
+        ]
+        if not related:
             continue
-        matched.append(as_claim(
-            claim, str(finding.get("reason") or finding.get("detail") or
-                       finding.get("rule_code") or "Conversion hold")
-        ))
-        matched_indices.add(id(finding))
-    # A hold may originate in the generator before normalized claim rows
-    # exist. Preserve the recorded finding rather than fabricate a claim id.
-    for finding in findings:
-        if id(finding) in matched_indices:
+        matched_indices.update(position for position, _ in related)
+        explanations = list(dict.fromkeys(str(
+            f.get("reason") or f.get("detail") or f.get("rule_code") or "Conversion hold"
+        ) for _, f in related))
+        matched.append(as_claim(claim, "; ".join(explanations)))
+
+    # Some conversion findings have no normalized CLP row yet. Group by
+    # actual claim number or source sequence to avoid showing one claim
+    # multiple times when it has multiple failed checks.
+    unresolved = {}
+    for position, finding in enumerate(findings):
+        if position in matched_indices:
             continue
-        matched.append({
-            "id": None,
-            "number": finding.get("claim_number") or finding.get("claim_control_number") or "",
-            "internal_number": "",
-            "billed": None, "paid": None, "patient_owes": None,
-            "payer_status": "Conversion hold",
-            "reason": finding.get("reason") or finding.get("detail") or finding.get("rule_code") or "Review required",
-        })
+        claim_number = str(finding.get("claim_number") or finding.get("claim_control_number") or "")
+        claim_index = str(finding.get("claim_index") or "")
+        group_key = (claim_number, claim_index) if claim_number else ("index", claim_index)
+        if not group_key[1] and not claim_number:
+            group_key = ("finding", str(position))
+        reason = str(finding.get("reason") or finding.get("detail") or
+                     finding.get("rule_code") or "Review required")
+        if group_key not in unresolved:
+            unresolved[group_key] = {
+                "id": None, "number": claim_number, "internal_number": "",
+                "billed": None, "paid": None, "patient_owes": None,
+                "payer_status": "Conversion hold",
+                "reason": reason,
+            }
+        elif reason not in unresolved[group_key]["reason"]:
+            unresolved[group_key]["reason"] += "; " + reason
+    matched.extend(unresolved.values())
     pagination = Paginator(matched, page_size)
     current = pagination.get_page(page_number)
     return JsonResponse({
