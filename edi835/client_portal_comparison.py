@@ -28,6 +28,7 @@ SORTABLE = {
     "claim", "date", "billed_835", "billed_mir", "paid_mir",
     "recon_amount", "mismatch_amount", "status",
     "waiting_days", "internal_number", "payer_status", "hold_reason", "action_status", "latest_note",
+    "issue_label", "latest_note_action",
 }
 
 
@@ -38,6 +39,7 @@ def compare_row(key):
         "id": None, "waiting_days": None,
         "waiting_basis": None, "is_held": False,
         "internal_number": "", "hold_reason": "", "action_status": "",
+        "issue_label": "", "issue_detail": "", "issue_tone": "neutral", "latest_note_action": "",
         "latest_note": "", "latest_note_at": None, "review_activity": [],
         "billed_835": None, "billed_mir": None, "paid_mir": None,
         "recon_amount": None, "mismatch_amount": None,
@@ -96,6 +98,47 @@ def classify(row):
             row["payer_status"] = "Paid less than billed"
         else:
             row["payer_status"] = "No payment"
+    return row
+
+
+def summarize_issue(row):
+    """Human-readable, compact label; retain full supporting facts on hover.
+
+    This is a comparison of independent records, *not* a claim adjudication
+    or assertion that a whole file is absent.
+    """
+    reasons = []
+    if any(row[name] > 1 for name in ("_835_occ", "_mir_occ", "_recon_occ")):
+        reasons.append("Repeated claim ID")
+    if not row["_835"]:
+        reasons.append("835 record missing")
+    if not row["_mir"]:
+        reasons.append("MIR amounts missing" if row["_mir_unpriced"] else "MIR record missing")
+    if not row["_recon"]:
+        reasons.append("Recon record missing")
+    if row["_835"] and row["_mir"] and row["billed_835"] != row["billed_mir"]:
+        reasons.append("Billed amounts differ")
+    if row["_mir"] and row["_recon"] and row["paid_mir"] != row["recon_amount"]:
+        reasons.append("Paid amounts differ")
+    if row["is_held"]:
+        reasons.append("Claim on hold")
+
+    if reasons:
+        row["issue_label"] = " · ".join(reasons[:2]) + (
+            f" +{len(reasons) - 2}" if len(reasons) > 2 else ""
+        )
+        row["issue_tone"] = (
+            "error" if row["status"] == "Mismatch"
+            else "warning"
+        )
+    else:
+        row["issue_label"] = "Amounts match"
+        row["issue_tone"] = "clear"
+
+    details = [row["reason"]] if row["status"] == "Mismatch" else []
+    if row["hold_reason"]:
+        details.append("Conversion hold: " + row["hold_reason"])
+    row["issue_detail"] = " | ".join(details) if details else "Amounts agree for available 835, MIR and Recon records"
     return row
 
 
@@ -265,7 +308,7 @@ def period_rows(client, period):
                 0, (period["today"] - timezone.localtime(row["_dt"], zone).date()).days
             )
             row["waiting_basis"] = "latest available file activity"
-    return [classify(row) for row in rows.values()]
+    return [summarize_issue(classify(row)) for row in rows.values()]
 
 
 def enrich_activity(client, rows):
@@ -294,6 +337,11 @@ def enrich_activity(client, rows):
             if event["kind"] == "NOTE" and not row["latest_note"]:
                 row["latest_note"] = event["message"]
                 row["latest_note_at"] = event["created_at"].isoformat()
+    for row in rows:
+        # The same single-line value powers table sorting and CSV export.
+        action = row["action_status"]
+        note = row["latest_note"]
+        row["latest_note_action"] = (action + ": " + note if action and note else action or note)
 
 
 def sorted_rows(rows, sort, direction):
@@ -305,7 +353,7 @@ def sorted_rows(rows, sort, direction):
             return row["_dt"]
         if sort == "status":
             return row["status"].casefold()
-        if sort in {"internal_number", "payer_status", "hold_reason", "action_status", "latest_note"}:
+        if sort in {"internal_number", "payer_status", "hold_reason", "action_status", "latest_note", "issue_label", "latest_note_action"}:
             return (row.get(sort) or "").casefold()
         return row[sort]
     # Unknown amounts are last in both ascending and descending views.
@@ -324,12 +372,9 @@ CSV_COLUMNS = (
     ("paid_mir", "Paid MIR"),
     ("recon_amount", "Amount in Recon"),
     ("mismatch_amount", "Mismatch amount"),
+    ("issue_label", "Issue / reason"),
+    ("latest_note_action", "Latest note / action"),
     ("payer_status", "Payer status"),
-    ("hold_reason", "Why waiting"),
-    ("action_status", "Action status"),
-    ("latest_note", "Latest note"),
-    ("status", "Status"),
-    ("reason", "Mismatch reason"),
 )
 
 
@@ -365,12 +410,9 @@ def export_csv(rows, period, payer, sort, direction):
                 "internal_number": csv_safe_text(row["internal_number"]),
                 "waiting_days": row["waiting_days"] if row["waiting_days"] is not None else "",
                 "payer_status": csv_safe_text(row["payer_status"]),
-                "hold_reason": csv_safe_text(row["hold_reason"]),
-                "action_status": csv_safe_text(row["action_status"]),
-                "latest_note": csv_safe_text(row["latest_note"]),
+                "issue_label": csv_safe_text(row["issue_label"]),
+                "latest_note_action": csv_safe_text(row["latest_note_action"]),
                 "date": date,
-                "status": row["status"],
-                "reason": csv_safe_text(row["reason"] if row["status"] == "Mismatch" else ""),
             }
             for key in ("billed_835", "billed_mir", "paid_mir", "recon_amount", "mismatch_amount"):
                 amount_value = row[key]
@@ -457,6 +499,9 @@ def comparison(request):
             "payer_status": row["payer_status"],
             "action_status": row["action_status"],
             "latest_note": row["latest_note"], "latest_note_at": row["latest_note_at"],
+            "latest_note_action": row["latest_note_action"],
+            "issue_label": row["issue_label"], "issue_detail": row["issue_detail"],
+            "issue_tone": row["issue_tone"],
             "file_id": row["file_id"],
             "date": timezone.localtime(row["_dt"]).isoformat() if row["_dt"] else None,
             **{field: format(row[field], ".2f") if row[field] is not None else None
