@@ -321,9 +321,26 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(rows[0]["Status"], "Mismatch")
         self.assertEqual(rows[0]["Why waiting"], "")
         self.assertEqual(rows[0]["Latest note"], "")
-        self.assertEqual(rows[-1]["Billed MIR"], "")
+        self.assertNotIn("Billed MIR", rows[0])
+        self.assertNotIn("Latest activity", rows[0])
+        self.assertEqual(rows[0]["Status"], "Mismatch")
         self.assertEqual(rows[-1]["Amount in Recon"], "")
         self.assertIn("custom_20261012-20261015", response["Content-Disposition"])
+
+    def test_csv_columns_match_simplified_visible_table(self):
+        rows, response = self.csv_download(period="all", sort="waiting_days", direction="desc")
+        self.assertTrue(rows)
+        self.assertEqual(
+            list(rows[0]),
+            [
+                "Days waiting", "Claim", "Internal claim", "Billed in 835",
+                "Paid MIR", "Amount in Recon", "Mismatch amount", "Payer status",
+                "Why waiting", "Action status", "Latest note", "Status",
+                "Mismatch reason",
+            ],
+        )
+        self.assertNotIn("Latest activity", rows[0])
+        self.assertNotIn("Billed MIR", rows[0])
 
     def test_csv_respects_payer_category_and_tenant(self):
         rows, response = self.csv_download(
