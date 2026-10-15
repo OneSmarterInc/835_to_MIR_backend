@@ -1,5 +1,5 @@
 """Read-only work queue for the assigned Client User tenant."""
-from datetime import timedelta
+from zoneinfo import ZoneInfo
 from django.db.models import Sum
 from django.core.paginator import Paginator
 from django.http import JsonResponse
@@ -8,6 +8,7 @@ from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
 from .models import EDI835Claim, EDI835File, MIRFile, ClientPortalAction
 from .client_portal_activity import attach_claim_activity
+from .client_portal_period import InvalidPeriod, resolve_period, apply_period, period_payload
 
 
 def only_client_user(request):
@@ -53,74 +54,116 @@ def finding_for(claim, findings):
 @authenticated_api_required
 @require_GET
 def overview(request):
+    """Date-consistent client dashboard: all metrics and previews share one period."""
     client, denied = only_client_user(request)
     if denied:
         return denied
-    today = timezone.localdate()
     try:
-        from datetime import date
-        selected = date.fromisoformat(request.GET.get("date", today.isoformat()))
-    except ValueError:
-        return JsonResponse({"success": False, "error": "Invalid date"}, status=400)
-    incoming = EDI835File.objects.filter(client=client, uploaded_at__date=selected)
-    converted = MIRFile.objects.filter(client=client, converted_at__date=selected)
-    sent = MIRFile.objects.filter(client=client, status="PUSHED", updated_at__date=selected)
-    cutoff = timezone.now() - timedelta(days=90)
-    waiting_files = list(EDI835File.objects.filter(
-        client=client, uploaded_at__gte=cutoff, held_claims_count__gt=0
-    ).order_by("-uploaded_at")[:150])
+        period = resolve_period(request.GET, client)
+    except InvalidPeriod as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+
+    zone = ZoneInfo(period["timezone"])
+    today = period["today"]
+    inbound = apply_period(
+        EDI835File.objects.filter(client=client), "uploaded_at", period
+    )
+    converted = apply_period(
+        MIRFile.objects.filter(client=client), "converted_at", period
+    )
+    sent = apply_period(
+        MIRFile.objects.filter(client=client, status="PUSHED"), "updated_at", period
+    )
+    # The same 835 arrival period determines the held work queue and money
+    # totals. This intentionally does not mix historical holds into Daily.
+    held_qs = inbound.filter(held_claims_count__gt=0)
+    errors_qs = inbound.filter(status="ERROR", held_claims_count=0)
+    held_total = held_qs.aggregate(total=Sum("held_claims_count"))["total"] or 0
+    held_file_total = held_qs.count()
+    error_file_total = errors_qs.count()
+    oldest = held_qs.order_by("uploaded_at").values_list("uploaded_at", flat=True).first()
+
+    # Totals use every matching source file. Preview rows are intentionally
+    # bounded; the separate Needs Attention endpoint pages all matched holds.
+    file_preview = list(held_qs.order_by("uploaded_at", "pk")[:150])
+    error_preview = list(errors_qs.order_by("uploaded_at", "pk")[:50])
     issues, claims = [], []
-    for file in waiting_files:
-        days = max(0, (today - timezone.localtime(file.uploaded_at).date()).days)
-        findings = [f for f in file.conversion_findings or []
-                    if isinstance(f, dict) and str(f.get("severity", "")).upper() in ("HOLD", "REFUSE")]
-        first = findings[0] if findings else {}
-        reason = first.get("reason") or first.get("detail") or first.get("rule_code") or "Conversion hold"
-        issues.append({"id": str(file.pk), "kind": "hold", "filename": file.original_filename,
-                       "count": file.held_claims_count, "reason": reason, "days": days})
-        if len(claims) < 200 and findings:
-            for claim in EDI835Claim.objects.filter(edi_file=file).order_by("claim_sequence")[:500]:
-                match = finding_for(claim, findings)
-                if match:
-                    why = match.get("reason") or match.get("detail") or match.get("rule_code") or "Conversion hold"
-                    claims.append(as_claim(claim, why, days))
-                if len(claims) >= 200:
-                    break
-    for file in EDI835File.objects.filter(
-        client=client, uploaded_at__gte=cutoff, status="ERROR"
-    ).order_by("-uploaded_at")[:50]:
-        issues.append({"id": str(file.pk), "kind": "error", "filename": file.original_filename,
-                       "count": 0, "reason": "File processing failed; ask your Client Admin to review the source file.",
-                       "days": max(0, (today - timezone.localtime(file.uploaded_at).date()).days)})
-    issues.sort(key=lambda i: -i["days"])
-    claims.sort(key=lambda c: -c["days"])
+    for source in file_preview:
+        days = max(0, (today - timezone.localtime(source.uploaded_at, zone).date()).days)
+        findings = [f for f in (source.conversion_findings or [])
+                    if isinstance(f, dict) and str(f.get("severity") or "").upper() in ("HOLD", "REFUSE")]
+        first_finding = findings[0] if findings else {}
+        why = first_finding.get("reason") or first_finding.get("detail") or first_finding.get("rule_code") or "Conversion hold"
+        issues.append({
+            "id": str(source.pk), "kind": "hold", "filename": source.original_filename,
+            "count": source.held_claims_count, "reason": why, "days": days,
+        })
+        if len(claims) >= 200 or not findings:
+            continue
+        for claim in EDI835Claim.objects.filter(edi_file=source).order_by("claim_sequence")[:500]:
+            finding = finding_for(claim, findings)
+            if finding:
+                reason = finding.get("reason") or finding.get("detail") or finding.get("rule_code") or "Conversion hold"
+                claims.append(as_claim(claim, reason, days))
+            if len(claims) >= 200:
+                break
+    for source in error_preview:
+        issues.append({
+            "id": str(source.pk), "kind": "error", "filename": source.original_filename,
+            "count": 0,
+            "reason": "File processing failed; ask your Client Admin to review the source file.",
+            "days": max(0, (today - timezone.localtime(source.uploaded_at, zone).date()).days),
+        })
+    issues.sort(key=lambda row: (-row["days"], row["id"]))
+    claims.sort(key=lambda row: (-row["days"], row["file_id"], str(row["id"])))
     attach_claim_activity(client, claims)
-    issue_file_ids = {item["id"] for item in issues}
+
+    visible_ids = {row["id"] for row in issues}
     latest_hidden = {}
-    for event in ClientPortalAction.objects.filter(
-        client=client, file_id__in=issue_file_ids,
+    for action in ClientPortalAction.objects.filter(
+        client=client, file_id__in=visible_ids,
         kind__in=("IGNORE_FILE", "REOPEN_FILE"),
     ).order_by("created_at", "pk").values("file_id", "kind"):
-        latest_hidden[str(event["file_id"])] = event["kind"] == "IGNORE_FILE"
-    history = [{"id": str(m.pk), "filename": m.mir_filename,
-                "date": m.converted_at.isoformat(), "count": m.claim_count, "status": m.status,
-                "source_filename": m.source_835.original_filename}
-               for m in MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at")[:30]]
+        latest_hidden[str(action["file_id"])] = action["kind"] == "IGNORE_FILE"
+
+    period_claims = apply_period(
+        EDI835Claim.objects.filter(edi_file__client=client),
+        "edi_file__uploaded_at", period
+    )
+    money = period_claims.aggregate(
+        billed=Sum("total_charge_amount"),
+        paid=Sum("paid_amount"),
+        patient=Sum("patient_responsibility"),
+    )
+    preview_history = [
+        {"id": str(m.pk), "filename": m.mir_filename,
+         "date": m.converted_at.isoformat(), "count": m.claim_count,
+         "status": m.status, "source_filename": m.source_835.original_filename}
+        for m in converted.select_related("source_835").order_by("-converted_at", "-pk")[:5]
+    ]
+    oldest_days = max(0, (today - timezone.localtime(oldest, zone).date()).days) if oldest else 0
     return JsonResponse({
-        "success": True, "client": client.name, "date": selected.isoformat(),
+        "success": True, "client": client.name,
+        "date": period["from"].isoformat() if period["from"] else None,
+        "period": period_payload(period),
         "metrics": {
-            "received_files": incoming.count(),
-            "received_claims": incoming.aggregate(n=Sum("claims_count"))["n"] or 0,
+            "received_files": inbound.count(),
+            "received_claims": inbound.aggregate(n=Sum("claims_count"))["n"] or 0,
             "converted_claims": converted.aggregate(n=Sum("claim_count"))["n"] or 0,
             "sent_files": sent.count(),
             "sent_claims": sent.aggregate(n=Sum("claim_count"))["n"] or 0,
-            "waiting_claims": sum(i["count"] for i in issues if i["kind"] == "hold"),
-            "oldest_days": max((i["days"] for i in issues if i["kind"] == "hold"), default=0),
-            "decisions": len(issues),
+            "waiting_claims": held_total, "oldest_days": oldest_days,
+            "decisions": held_file_total + error_file_total,
+            "billed_amount": str(money["billed"] or 0),
+            "paid_amount": str(money["paid"] or 0),
+            "patient_amount": str(money["patient"] or 0),
+            "normalized_claims": period_claims.count(),
         },
-        "claims": claims, "claims_limited": len(claims) >= 200,
-        "issues": issues, "ignored_files": [key for key, value in latest_hidden.items() if value],
-        "history": history,
+        "claims": claims, "claims_limited": int(held_total) > len(claims),
+        "issues": issues,
+        "issues_limited": held_file_total + error_file_total > len(issues),
+        "ignored_files": [key for key, value in latest_hidden.items() if value],
+        "history": preview_history,
     })
 
 
@@ -136,13 +179,19 @@ def history(request):
         page_size = min(50, max(1, int(request.GET.get("page_size", "10"))))
     except (TypeError, ValueError):
         return JsonResponse({"success": False, "error": "Invalid page"}, status=400)
+    try:
+        period = resolve_period(request.GET, client, default="all")
+    except InvalidPeriod as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
     pages = Paginator(
-        MIRFile.objects.filter(client=client).select_related("source_835").order_by("-converted_at", "-pk"),
+        apply_period(MIRFile.objects.filter(client=client), "converted_at", period)
+        .select_related("source_835").order_by("-converted_at", "-pk"),
         page_size,
     )
     page = pages.get_page(number)
     return JsonResponse({
         "success": True, "page": page.number, "pages": pages.num_pages, "page_size": page_size,
+        "period": period_payload(period),
         "count": pages.count, "files": [
             {
                 "id": str(item.pk),
