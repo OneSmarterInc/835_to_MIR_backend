@@ -208,3 +208,34 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(row["status"], "Clear")
         self.assertEqual(row["recon_amount"], "0.00")
         self.assertEqual(row["mismatch_amount"], "0.00")
+
+    def test_mir_extended_control_number_matches_only_its_source_835(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM200.835")
+        mir = MIRClaim.objects.get(mir_file__source_835=source)
+        recon = RECONClaim.objects.get(
+            recon_file__client=self.client, claim_control_number="CLM200",
+        )
+        mir.claim_control_number = "CLM200SFX7"
+        mir.save(update_fields=["claim_control_number"])
+        recon.claim_control_number = "CLM200SFX7"
+        recon.save(update_fields=["claim_control_number"])
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-12", "to": "2026-10-15"}
+        )
+        row = next(r for r in response["rows"] if r["claim"] == "CLM200")
+        self.assertEqual(row["billed_mir"], "120.00")
+        self.assertEqual(row["recon_amount"], "60.00")
+        self.assertEqual(row["mismatch_amount"], "25.00")
+
+    def test_mir_without_service_rows_is_not_a_zero_dollar_clear(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM100.835")
+        mir = MIRClaim.objects.get(mir_file__source_835=source)
+        MIRServiceLine.objects.filter(mir_claim=mir).delete()
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-12", "to": "2026-10-15"}
+        )
+        row = next(r for r in response["rows"] if r["claim"] == "CLM100")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertIsNone(row["billed_mir"])
+        self.assertIsNone(row["paid_mir"])
+        self.assertIn("MIR service amounts", row["reason"])
