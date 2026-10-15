@@ -1,6 +1,7 @@
 """Client-specific, paginated held-claim drilldown for the attention queue."""
 import uuid
 from itertools import groupby
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from django.core.paginator import Paginator
 from django.utils import timezone
@@ -29,9 +30,14 @@ def held_file_claims(request, file_id):
     except (TypeError, ValueError):
         return JsonResponse({"success": False, "error": "Invalid pagination"}, status=400)
 
+    try:
+        zone = ZoneInfo(client.timezone or "America/New_York")
+    except ZoneInfoNotFoundError:
+        zone = ZoneInfo("America/New_York")
     matched = held_claim_rows(source, EDI835Claim.objects.filter(
         edi_file=source
-    ).order_by("claim_sequence").iterator(chunk_size=500))
+    ).order_by("claim_sequence").iterator(chunk_size=500),
+        today=timezone.localtime(timezone.now(), zone).date(), zone=zone)
     pagination = Paginator(matched, page_size)
     current = pagination.get_page(page_number)
     rows = list(current.object_list)
@@ -44,8 +50,9 @@ def held_file_claims(request, file_id):
     })
 
 
-def held_claim_rows(source, claims) -> list[dict]:
-    days = max(0, (timezone.localdate() - timezone.localtime(source.uploaded_at).date()).days)
+def held_claim_rows(source, claims, *, today=None, zone=None) -> list[dict]:
+    today = today or timezone.localdate()
+    days = max(0, (today - timezone.localtime(source.uploaded_at, zone).date()).days)
     findings = [
         f for f in (source.conversion_findings or [])
         if isinstance(f, dict) and str(f.get("severity") or "").upper() in {"HOLD", "REFUSE"}
@@ -124,6 +131,7 @@ def attention_claims(request):
         except ValueError:
             return JsonResponse({"success": False, "error": "Invalid source file"}, status=400)
         sources = sources.filter(pk=file_id)
+    zone = ZoneInfo(period["timezone"])
     files = {source.pk: source for source in sources.only(
         "id", "original_filename", "uploaded_at", "conversion_findings", "held_claims_count"
     )}
@@ -135,10 +143,10 @@ def attention_claims(request):
     ).order_by("edi_file_id", "claim_sequence", "pk").iterator(chunk_size=1000)
     seen = set()
     for file_id, claims in groupby(normalized, key=lambda claim: claim.edi_file_id):
-        rows.extend(held_claim_rows(files[file_id], claims))
+        rows.extend(held_claim_rows(files[file_id], claims, today=period["today"], zone=zone))
         seen.add(file_id)
     for file_id in files.keys() - seen:
-        rows.extend(held_claim_rows(files[file_id], []))
+        rows.extend(held_claim_rows(files[file_id], [], today=period["today"], zone=zone))
     rows.sort(key=lambda row: (-row["days"], row["file_id"], row["row_key"]))
     pagination = Paginator(rows, page_size)
     current = pagination.get_page(number)
