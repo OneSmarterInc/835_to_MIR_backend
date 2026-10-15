@@ -92,12 +92,11 @@ def period_rows(client, period):
     for claim in received.iterator(chunk_size=1500):
         highmark = normalize_claim_id(claim["highmark_claim_number"])
         internal = normalize_claim_id(claim["internal_claim_number"])
-        if not highmark:
-            continue
-        control = highmark + internal if internal and not highmark.endswith(internal) else highmark
+        control = (highmark + internal if internal and not highmark.endswith(internal)
+                   else highmark) if highmark else "835-UNIDENTIFIED-" + str(claim["id"])
         row = rows.setdefault(control, compare_row(control))
         if not row["_835"]:
-            row["claim"] = claim["highmark_claim_number"]
+            row["claim"] = claim["highmark_claim_number"] or "Missing 835 claim number"
             row["claim_id"] = claim["id"]
             row["file_id"] = str(claim["edi_file_id"])
         row["_835"] = True
@@ -105,8 +104,9 @@ def period_rows(client, period):
         event = claim["edi_file__uploaded_at"]
         if row["_dt"] is None or event > row["_dt"]:
             row["_dt"] = event
-        aliases[highmark].add(control)
-        aliases[control].add(control)
+        if highmark:
+            aliases[highmark].add(control)
+            aliases[control].add(control)
 
     def target(control):
         if control in rows:
@@ -131,7 +131,7 @@ def period_rows(client, period):
     for claim in converted.iterator(chunk_size=1000):
         control = normalize_claim_id(claim["claim_control_number"])
         if not control:
-            continue
+            control = "MIR-UNIDENTIFIED-" + str(claim["id"])
         group = target(control)
         row = rows.setdefault(group, compare_row(group))
         if claim["service_lines"]:
@@ -141,7 +141,7 @@ def period_rows(client, period):
         else:
             row["_mir_unpriced"] = True
         if not row["_835"]:
-            row["claim"] = claim["claim_control_number"]
+            row["claim"] = claim["claim_control_number"] or "Missing MIR claim number"
         event = claim["mir_file__converted_at"]
         if row["_dt"] is None or event > row["_dt"]:
             row["_dt"] = event
@@ -154,12 +154,12 @@ def period_rows(client, period):
             recon_file__status__in=("PROCESSED", "PARTIAL"),
         ), "recon_file__uploaded_at", period,
     ).values(
-        "claim_control_number", "paid_amount", "recon_file__uploaded_at"
+        "id", "claim_control_number", "paid_amount", "recon_file__uploaded_at"
     ).order_by("pk")
     for claim in reconciled.iterator(chunk_size=1500):
         control = normalize_claim_id(claim["claim_control_number"])
         if not control:
-            continue
+            control = "RECON-UNIDENTIFIED-" + str(claim["id"])
         mir_hits = mir_aliases.get(control)
         if mir_hits and len(mir_hits) == 1:
             group = next(iter(mir_hits))
@@ -169,7 +169,7 @@ def period_rows(client, period):
         row["_recon"] = True
         add_value(row, "recon_amount", claim["paid_amount"])
         if not row["_835"] and not row["_mir"]:
-            row["claim"] = claim["claim_control_number"]
+            row["claim"] = claim["claim_control_number"] or "Missing Recon claim number"
         event = claim["recon_file__uploaded_at"]
         if row["_dt"] is None or event > row["_dt"]:
             row["_dt"] = event
