@@ -1,12 +1,14 @@
 """Regression coverage for client period claim comparison and data isolation."""
 from datetime import date, datetime, time
 from decimal import Decimal
+import csv
+import io
 import json
 from zoneinfo import ZoneInfo
 
 from django.test import RequestFactory, TestCase
 from accounts.models import Client, User
-from edi835.client_portal_comparison import comparison, period_rows, sorted_rows
+from edi835.client_portal_comparison import comparison, period_rows, sorted_rows, csv_safe_text
 from edi835.client_portal_period import resolve_period
 from edi835.models import (
     EDI835File, EDI835Claim, MIRFile, MIRClaim,
@@ -290,3 +292,67 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(paid["summary"]["confirmed_mismatch_amount"], "0.00")
         self.assertEqual(paid["summary"]["billed_gap_amount"], "0.00")
         self.assertEqual(paid["financial_totals"]["billed_835_claims"], 0)
+
+    def csv_download(self, **params):
+        request = self.factory.get(
+            "/edi835/api/client-portal/comparison/",
+            {**params, "format": "csv"},
+        )
+        request.user = self.viewer
+        response = comparison(request)
+        self.assertEqual(response.status_code, 200, getattr(response, "content", b""))
+        self.assertTrue(response.streaming)
+        self.assertTrue(response["Content-Type"].startswith("text/csv"))
+        self.assertIn("attachment;", response["Content-Disposition"])
+        self.assertIn("no-store", response["Cache-Control"])
+        raw = b"".join(response.streaming_content).decode("utf-8-sig")
+        return list(csv.DictReader(io.StringIO(raw))), response
+
+    def test_csv_export_contains_every_filtered_row_not_only_current_page(self):
+        window = {
+            "period": "custom", "from": "2026-10-12", "to": "2026-10-15",
+            "sort": "billed_835", "direction": "desc", "page_size": 1, "page": 2,
+        }
+        rows, response = self.csv_download(**window)
+        self.assertEqual([row["Claim"] for row in rows], ["CLM200", "CLM100", "CLM300"])
+        self.assertEqual(len(rows), 3)
+        self.assertEqual(rows[0]["Billed in 835"], "130.00")
+        self.assertEqual(rows[0]["Mismatch amount"], "25.00")
+        self.assertEqual(rows[0]["Status"], "Mismatch")
+        self.assertEqual(rows[0]["Why waiting"], "")
+        self.assertEqual(rows[0]["Latest note"], "")
+        self.assertEqual(rows[-1]["Billed MIR"], "")
+        self.assertEqual(rows[-1]["Amount in Recon"], "")
+        self.assertIn("custom_20261012-20261015", response["Content-Disposition"])
+
+    def test_csv_respects_payer_category_and_tenant(self):
+        rows, response = self.csv_download(
+            period="all", payer_status="denied", sort="claim", direction="asc"
+        )
+        self.assertEqual([row["Claim"] for row in rows], ["CLM300"])
+        self.assertNotIn("9999", str(rows))
+        self.assertEqual(rows[0]["Payer status"], "No payment")
+
+    def test_csv_handles_empty_filtered_results(self):
+        rows, response = self.csv_download(period="all", payer_status="paid")
+        self.assertEqual(rows, [])
+        self.assertEqual(response.status_code, 200)
+
+    def test_csv_protects_formulas_but_keeps_negative_money_valid(self):
+        for content in ("=2+2", "+SUM(1)", "-3+4", "@FUNC()", "\t=1+1"):
+            self.assertTrue(csv_safe_text(content).startswith("'"))
+        self.assertEqual(csv_safe_text("CLM100"), "CLM100")
+        self.assertEqual(csv_safe_text(""), "")
+
+    def test_client_admin_cannot_download_csv(self):
+        admin = User.objects.create_user(
+            email="csv-admin@comparison.example", name="Client Admin",
+            mobile="+12125550818", password="NotARealPassword123!",
+            client=self.client, client_role="CLIENT_ADMIN",
+        )
+        request = self.factory.get(
+            "/edi835/api/client-portal/comparison/",
+            {"period": "all", "format": "csv"},
+        )
+        request.user = admin
+        self.assertEqual(comparison(request).status_code, 403)
