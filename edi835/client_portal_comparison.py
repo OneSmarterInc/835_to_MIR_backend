@@ -36,6 +36,7 @@ def compare_row(key):
         "status": "Mismatch", "reason": "",
         "_835": False, "_mir": False, "_recon": False,
         "_mir_unpriced": False,
+        "_835_occ": 0, "_mir_occ": 0, "_recon_occ": 0,
     }
 
 
@@ -71,7 +72,10 @@ def classify(row):
             reasons.append("MIR and Recon paid differ")
     if len(known_deltas) == 2 and known_deltas[1] > ZERO:
         reasons.append("MIR and Recon paid differ")
-    row["status"] = "Clear" if not missing and all(v == ZERO for v in known_deltas) else "Mismatch"
+    repeated = any(row[field] > 1 for field in ("_835_occ", "_mir_occ", "_recon_occ"))
+    if repeated:
+        reasons.append("Repeated claim identifier in the selected period; one-to-one match is uncertain")
+    row["status"] = "Clear" if not missing and not repeated and all(v == ZERO for v in known_deltas) else "Mismatch"
     row["reason"] = "; ".join(reasons) or "Both billed and payment comparisons agree"
     return row
 
@@ -100,6 +104,7 @@ def period_rows(client, period):
             row["claim_id"] = claim["id"]
             row["file_id"] = str(claim["edi_file_id"])
         row["_835"] = True
+        row["_835_occ"] += 1
         add_value(row, "billed_835", claim["total_charge_amount"])
         event = claim["edi_file__uploaded_at"]
         if row["_dt"] is None or event > row["_dt"]:
@@ -134,6 +139,7 @@ def period_rows(client, period):
             control = "MIR-UNIDENTIFIED-" + str(claim["id"])
         group = target(control)
         row = rows.setdefault(group, compare_row(group))
+        row["_mir_occ"] += 1
         if claim["service_lines"]:
             row["_mir"] = True
             add_value(row, "billed_mir", claim["billed"])
@@ -167,6 +173,7 @@ def period_rows(client, period):
             group = target(control)
         row = rows.setdefault(group, compare_row(group))
         row["_recon"] = True
+        row["_recon_occ"] += 1
         add_value(row, "recon_amount", claim["paid_amount"])
         if not row["_835"] and not row["_mir"]:
             row["claim"] = claim["claim_control_number"] or "Missing Recon claim number"
