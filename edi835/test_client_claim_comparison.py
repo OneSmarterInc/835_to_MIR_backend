@@ -318,12 +318,12 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["Billed in 835"], "130.00")
         self.assertEqual(rows[0]["Mismatch amount"], "25.00")
-        self.assertEqual(rows[0]["Status"], "Mismatch")
-        self.assertEqual(rows[0]["Why waiting"], "")
-        self.assertEqual(rows[0]["Latest note"], "")
+        self.assertIn("Billed amounts differ", rows[0]["Issue / reason"])
+        self.assertEqual(rows[0]["Latest note / action"], "")
+        self.assertNotIn("Status", rows[0])
         self.assertNotIn("Billed MIR", rows[0])
         self.assertNotIn("Latest activity", rows[0])
-        self.assertEqual(rows[0]["Status"], "Mismatch")
+        self.assertEqual(rows[0]["Payer status"], "Paid less than billed")
         self.assertEqual(rows[-1]["Amount in Recon"], "")
         self.assertIn("custom_20261012-20261015", response["Content-Disposition"])
 
@@ -334,13 +334,45 @@ class ClientClaimComparisonTests(TestCase):
             list(rows[0]),
             [
                 "Days waiting", "Claim", "Internal claim", "Billed in 835",
-                "Paid MIR", "Amount in Recon", "Mismatch amount", "Payer status",
-                "Why waiting", "Action status", "Latest note", "Status",
-                "Mismatch reason",
+                "Paid MIR", "Amount in Recon", "Mismatch amount",
+                "Issue / reason", "Latest note / action", "Payer status",
             ],
         )
         self.assertNotIn("Latest activity", rows[0])
         self.assertNotIn("Billed MIR", rows[0])
+
+    def test_issue_labels_are_short_and_specific(self):
+        params = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
+        result = self.fetch(**params, sort="claim", direction="asc")
+        by_claim = {row["claim"]: row for row in result["rows"]}
+        self.assertEqual(by_claim["CLM100"]["issue_label"], "Amounts match")
+        self.assertEqual(by_claim["CLM100"]["issue_tone"], "clear")
+        self.assertEqual(
+            by_claim["CLM200"]["issue_label"],
+            "Billed amounts differ · Paid amounts differ",
+        )
+        self.assertEqual(by_claim["CLM200"]["issue_tone"], "error")
+        self.assertEqual(
+            by_claim["CLM300"]["issue_label"],
+            "MIR record missing · Recon record missing",
+        )
+        self.assertEqual(by_claim["CLM300"]["issue_tone"], "error")
+        self.assertIn("MIR", by_claim["CLM300"]["issue_detail"])
+
+    def test_new_issue_and_action_columns_sort_across_entire_filtered_period(self):
+        window = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
+        for key in ("issue_label", "latest_note_action", "payer_status"):
+            ascending = self.fetch(**window, sort=key, direction="asc")
+            descending = self.fetch(**window, sort=key, direction="desc")
+            self.assertEqual(ascending["count"], 3)
+            self.assertEqual(
+                set(row["claim"] for row in ascending["rows"]),
+                set(row["claim"] for row in descending["rows"]),
+            )
+        csv_rows, _ = self.csv_download(**window, sort="issue_label", direction="asc")
+        self.assertEqual(len(csv_rows), 3)
+        self.assertNotIn("Status", csv_rows[0])
+        self.assertEqual(list(csv_rows[0])[-1], "Payer status")
 
     def test_csv_respects_payer_category_and_tenant(self):
         rows, response = self.csv_download(
