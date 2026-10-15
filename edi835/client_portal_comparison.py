@@ -36,6 +36,7 @@ def compare_row(key):
         "key": key, "claim": key, "claim_id": None, "file_id": None,
         "date": None, "_dt": None,
         "id": None, "waiting_days": None,
+        "waiting_basis": None, "is_held": False,
         "internal_number": "", "hold_reason": "", "action_status": "",
         "latest_note": "", "latest_note_at": None, "review_activity": [],
         "billed_835": None, "billed_mir": None, "paid_mir": None,
@@ -137,6 +138,14 @@ def period_rows(client, period):
             row["id"] = claim["id"]
             row["file_id"] = str(claim["edi_file_id"])
             row["internal_number"] = claim["internal_claim_number"] or ""
+        event = claim["edi_file__uploaded_at"]
+        # The original 835 arrival date is available even when conversion has
+        # no HOLD/REFUSE finding. Never show a misleading blank age simply
+        # because this claim was successfully converted.
+        received_days = max(0, (period["today"] - timezone.localtime(event, zone).date()).days)
+        if row["waiting_days"] is None or received_days > row["waiting_days"]:
+            row["waiting_days"] = received_days
+            row["waiting_basis"] = "835 received"
         source_hold = hold_findings.get(claim["edi_file_id"])
         if source_hold:
             from .client_portal_views import finding_for
@@ -150,10 +159,9 @@ def period_rows(client, period):
                     match.get("reason") or match.get("detail") or
                     match.get("rule_code") or "Conversion hold"
                 )
-                row["waiting_days"] = max(
-                    0, (period["today"] -
-                        timezone.localtime(source_hold[1], zone).date()).days
-                )
+                row["is_held"] = True
+                # Keep age from the 835's received date; HOLD findings explain
+                # why it remains held, not the beginning of a different clock.
         row["_835"] = True
         row["_835_occ"] += 1
         row["_835_paid"] += amount(claim["paid_amount"])
@@ -248,6 +256,15 @@ def period_rows(client, period):
         event = claim["recon_file__uploaded_at"]
         if row["_dt"] is None or event > row["_dt"]:
             row["_dt"] = event
+    for row in rows.values():
+        # MIR-only or Recon-only rows cannot have an 835 waiting period.
+        # Display their age since the most recent available file event,
+        # distinguishing that basis from an 835 claim's received age.
+        if row["waiting_days"] is None and row["_dt"] is not None:
+            row["waiting_days"] = max(
+                0, (period["today"] - timezone.localtime(row["_dt"], zone).date()).days
+            )
+            row["waiting_basis"] = "latest available file activity"
     return [classify(row) for row in rows.values()]
 
 
@@ -437,7 +454,8 @@ def comparison(request):
             "key": row["key"], "claim": row["claim"],
             "claim_id": row["claim_id"], "record_id": row["claim_id"],
             "id": row["claim_id"], "internal_number": row["internal_number"],
-            "waiting_days": row["waiting_days"], "hold_reason": row["hold_reason"],
+            "waiting_days": row["waiting_days"], "waiting_basis": row["waiting_basis"],
+            "is_held": row["is_held"], "hold_reason": row["hold_reason"],
             "payer_status": row["payer_status"],
             "action_status": row["action_status"],
             "latest_note": row["latest_note"], "latest_note_at": row["latest_note_at"],
