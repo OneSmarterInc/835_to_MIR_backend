@@ -147,6 +147,15 @@ def attention_claims(request):
         seen.add(file_id)
     for file_id in files.keys() - seen:
         rows.extend(held_claim_rows(files[file_id], [], today=period["today"], zone=zone))
+    category = str(request.GET.get("payer_status") or "all").lower()
+    categories = {
+        "all": None, "denied": {"Denied", "No payment"},
+        "less": {"Paid less than billed"}, "paid": {"Paid in full"},
+    }
+    if category not in categories:
+        return JsonResponse({"success": False, "error": "Invalid payer status filter"}, status=400)
+    if category != "all":
+        rows = [row for row in rows if row["payer_status"] in categories[category]]
     rows.sort(key=lambda row: (-row["days"], row["file_id"], row["row_key"]))
     pagination = Paginator(rows, page_size)
     current = pagination.get_page(number)
@@ -154,7 +163,7 @@ def attention_claims(request):
     attach_claim_activity(client, page_rows)
     return JsonResponse({
         "success": True, "claims": page_rows, "page_size": page_size,
-        "period": period_payload(period),
+        "period": period_payload(period), "payer_status": category,
         "count": pagination.count, "page": current.number,
         "pages": pagination.num_pages,
         "held_total": sum(source.held_claims_count for source in files.values()),
