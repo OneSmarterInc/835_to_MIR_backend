@@ -412,6 +412,29 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(claim_csv["Latest note / action"], "Note added: Check payer adjustment")
         self.assertNotIn("Status", claim_csv)
 
+    def test_pending_review_request_is_not_hidden_by_newer_note(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM100.835")
+        claim = EDI835Claim.objects.get(edi_file=source)
+        ClientPortalAction.objects.create(
+            client=self.client, file=source, claim=claim, created_by=self.viewer,
+            created_by_label="Client User", kind="REQUEST_RELEASE",
+            message="Please verify adjustment", status="OPEN",
+        )
+        ClientPortalAction.objects.create(
+            client=self.client, file=source, claim=claim, created_by=self.viewer,
+            created_by_label="Client User", kind="NOTE",
+            message="Call billing first", status="OPEN",
+        )
+        window = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
+        response = self.fetch(**window, sort="latest_note_action", direction="asc")
+        row = next(record for record in response["rows"] if record["claim"] == "CLM100")
+        self.assertEqual(row["action_status"], "Pending review")
+        self.assertEqual(row["latest_note"], "Call billing first")
+        self.assertEqual(row["latest_note_action"], "Pending review: Call billing first")
+        csv_rows, _ = self.csv_download(**window, sort="latest_note_action", direction="asc")
+        exported = next(record for record in csv_rows if record["Claim"] == "CLM100")
+        self.assertEqual(exported["Latest note / action"], "Pending review: Call billing first")
+
     def test_csv_respects_payer_category_and_tenant(self):
         rows, response = self.csv_download(
             period="all", payer_status="denied", sort="claim", direction="asc"
