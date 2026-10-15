@@ -8,6 +8,7 @@ from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
 from .models import EDI835Claim, EDI835File, MIRFile, ClientPortalAction
 from .client_portal_activity import attach_claim_activity
+from .client_portal_financials import financial_metrics
 from .client_portal_period import InvalidPeriod, resolve_period, apply_period, period_payload
 
 
@@ -74,8 +75,8 @@ def overview(request):
     sent = apply_period(
         MIRFile.objects.filter(client=client, status="PUSHED"), "updated_at", period
     )
-    # The same 835 arrival period determines the held work queue and money
-    # totals. This intentionally does not mix historical holds into Daily.
+    # The 835 arrival period determines the held work queue. Financial streams
+    # use their own event dates below, independently of this preview.
     held_qs = inbound.filter(held_claims_count__gt=0)
     errors_qs = inbound.filter(status="ERROR", held_claims_count=0)
     held_total = held_qs.aggregate(total=Sum("held_claims_count"))["total"] or 0
@@ -126,15 +127,7 @@ def overview(request):
     ).order_by("created_at", "pk").values("file_id", "kind"):
         latest_hidden[str(action["file_id"])] = action["kind"] == "IGNORE_FILE"
 
-    period_claims = apply_period(
-        EDI835Claim.objects.filter(edi_file__client=client),
-        "edi_file__uploaded_at", period
-    )
-    money = period_claims.aggregate(
-        billed=Sum("total_charge_amount"),
-        paid=Sum("paid_amount"),
-        patient=Sum("patient_responsibility"),
-    )
+    money = financial_metrics(client, period)
     preview_history = [
         {"id": str(m.pk), "filename": m.mir_filename,
          "date": m.converted_at.isoformat(), "count": m.claim_count,
@@ -154,10 +147,7 @@ def overview(request):
             "sent_claims": sent.aggregate(n=Sum("claim_count"))["n"] or 0,
             "waiting_claims": held_total, "oldest_days": oldest_days,
             "decisions": held_file_total + error_file_total,
-            "billed_amount": str(money["billed"] or 0),
-            "paid_amount": str(money["paid"] or 0),
-            "patient_amount": str(money["patient"] or 0),
-            "normalized_claims": period_claims.count(),
+            **money,
         },
         "claims": claims, "claims_limited": int(held_total) > len(claims),
         "issues": issues,

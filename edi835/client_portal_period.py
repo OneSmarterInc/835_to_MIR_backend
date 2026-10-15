@@ -45,6 +45,8 @@ def resolve_period(query, client, *, default="daily", today=None):
             raise InvalidPeriod("Custom dates require a valid From and To (YYYY-MM-DD).")
         if first > last:
             raise InvalidPeriod("From date must be on or before To date.")
+        if last == date.max:
+            raise InvalidPeriod("To date must be earlier than 9999-12-31.")
 
     start = timezone.make_aware(datetime.combine(first, time.min), zone) if first else None
     end = timezone.make_aware(
