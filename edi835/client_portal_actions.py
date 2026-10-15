@@ -14,6 +14,7 @@ from django.views.decorators.csrf import csrf_exempt
 from project835.decorators import authenticated_api_required
 from .models import ClientPortalAction, EDI835Claim, EDI835File
 from .client_portal_views import only_client_user
+from .client_portal_period import InvalidPeriod, resolve_period, apply_period, period_payload
 
 
 KIND_LABELS = {
@@ -80,8 +81,15 @@ def actions(request):
                 "page": page.number, "pages": page.paginator.num_pages,
                 "count": page.paginator.count,
             })
-        qs = qs[:200]
-        return JsonResponse({"success": True, "actions": [serialize(row) for row in qs]})
+        try:
+            period = resolve_period(request.GET, client, default="all")
+        except InvalidPeriod as exc:
+            return JsonResponse({"success": False, "error": str(exc)}, status=400)
+        qs = apply_period(qs, "created_at", period)[:200]
+        return JsonResponse({
+            "success": True, "actions": [serialize(row) for row in qs],
+            "period": period_payload(period),
+        })
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "GET or POST only"}, status=405)
     if request.user.client_role != "CLIENT_USER":
