@@ -6,10 +6,11 @@ Absence of a stream is NOT a zero-dollar record. Missing rows are mismatches
 with unknown financial variance until the missing stream is available.
 """
 from collections import defaultdict
+import csv
 from decimal import Decimal
 
 from django.db.models import Sum, Count
-from django.http import JsonResponse
+from django.http import JsonResponse, StreamingHttpResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 
@@ -231,6 +232,68 @@ def sorted_rows(rows, sort, direction):
     return known + missing
 
 
+CSV_COLUMNS = (
+    ("claim", "Claim"),
+    ("date", "Latest activity"),
+    ("billed_835", "Billed in 835"),
+    ("billed_mir", "Billed MIR"),
+    ("paid_mir", "Paid MIR"),
+    ("recon_amount", "Amount in Recon"),
+    ("mismatch_amount", "Mismatch amount"),
+    ("status", "Status"),
+    ("reason", "Mismatch reason"),
+)
+
+
+def csv_safe_text(value):
+    """Prevent spreadsheet formula execution in exported untrusted identifiers.
+
+    Numeric Decimal fields are handled separately, preserving genuine negative
+    amounts; only human-supplied/free-text columns require formula escaping.
+    """
+    text = str(value or "")
+    if text.lstrip(" \\t\\r\\n").startswith(("=", "+", "-", "@")) or text.startswith(("\\t", "\\r", "\\n")):
+        return "'" + text
+    return text
+
+
+class _CsvSink:
+    def write(self, value):
+        return value
+
+
+def export_csv(rows, period, payer, sort, direction):
+    """Stream *every* matching sorted row; no pagination truncation."""
+    writer = csv.writer(_CsvSink(), lineterminator="\\r\\n")
+    zone = period["timezone"]
+
+    def body():
+        yield "\\ufeff"  # Excel-compatible UTF-8; header follows the BOM.
+        yield writer.writerow([label for _, label in CSV_COLUMNS])
+        for row in rows:
+            date = timezone.localtime(row["_dt"], zone).strftime("%Y-%m-%d %H:%M:%S %Z") if row["_dt"] else ""
+            export = {
+                "claim": csv_safe_text(row["claim"]),
+                "date": date,
+                "status": row["status"],
+                "reason": csv_safe_text(row["reason"] if row["status"] == "Mismatch" else ""),
+            }
+            for key in ("billed_835", "billed_mir", "paid_mir", "recon_amount", "mismatch_amount"):
+                amount_value = row[key]
+                export[key] = format(amount_value, ".2f") if amount_value is not None else ""
+            yield writer.writerow([export.get(key, "") for key, _ in CSV_COLUMNS])
+
+    scope = period["mode"]
+    if period["from"]:
+        scope += "_" + period["from"].strftime("%Y%m%d") + "-" + period["to"].strftime("%Y%m%d")
+    filename = f"filex-835-mir-recon_{scope}_{payer}_{sort}-{direction}.csv"
+    response = StreamingHttpResponse(body(), content_type="text/csv; charset=utf-8")
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    response["Cache-Control"] = "private, no-store, max-age=0"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
 @authenticated_api_required
 @require_GET
 def comparison(request):
@@ -259,6 +322,12 @@ def comparison(request):
     if payer != "all":
         period_data = [row for row in period_data if row["payer_status"] in categories[payer]]
     rows = sorted_rows(period_data, sort, direction)
+    export_format = str(request.GET.get("format") or "json").strip().lower()
+    if export_format not in {"json", "csv"}:
+        return JsonResponse({"success": False, "error": "Unsupported export format"}, status=400)
+    if export_format == "csv":
+        return export_csv(rows, period, payer, sort, direction)
+
     clear = sum(row["status"] == "Clear" for row in rows)
     mismatches = len(rows) - clear
     missing_streams = sum(
