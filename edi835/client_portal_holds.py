@@ -11,6 +11,7 @@ from project835.decorators import authenticated_api_required
 from .client_portal_views import only_client_user, finding_for, as_claim
 from .models import EDI835File, EDI835Claim
 from .client_portal_activity import attach_claim_activity
+from .client_portal_period import InvalidPeriod, resolve_period, apply_period, period_payload
 
 
 @authenticated_api_required
@@ -109,7 +110,14 @@ def attention_claims(request):
         page_size = min(50, max(1, int(request.GET.get("page_size", "10"))))
     except (TypeError, ValueError):
         return JsonResponse({"success": False, "error": "Invalid pagination"}, status=400)
-    sources = EDI835File.objects.filter(client=client, held_claims_count__gt=0)
+    try:
+        period = resolve_period(request.GET, client, default="all")
+    except InvalidPeriod as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=400)
+    sources = apply_period(
+        EDI835File.objects.filter(client=client, held_claims_count__gt=0),
+        "uploaded_at", period,
+    )
     if request.GET.get("file_id"):
         try:
             file_id = uuid.UUID(request.GET["file_id"])
@@ -138,6 +146,7 @@ def attention_claims(request):
     attach_claim_activity(client, page_rows)
     return JsonResponse({
         "success": True, "claims": page_rows, "page_size": page_size,
+        "period": period_payload(period),
         "count": pagination.count, "page": current.number,
         "pages": pagination.num_pages,
         "held_total": sum(source.held_claims_count for source in files.values()),
