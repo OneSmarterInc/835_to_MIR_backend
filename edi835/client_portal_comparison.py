@@ -332,16 +332,27 @@ def enrich_activity(client, rows):
             row = by_claim.get(event["claim_id"])
             if row is None:
                 continue
-            if not row["action_status"]:
-                row["action_status"] = event["status"] if event["kind"] != "NOTE" else "Note added"
-            if event["kind"] == "NOTE" and not row["latest_note"]:
-                row["latest_note"] = event["message"]
-                row["latest_note_at"] = event["created_at"].isoformat()
+            if event["kind"] == "NOTE":
+                if not row["latest_note"]:
+                    row["latest_note"] = event["message"]
+                    row["latest_note_at"] = event["created_at"].isoformat()
+                continue
+            if event["kind"].startswith("REQUEST_"):
+                if event["status"] == "OPEN":
+                    # Pending requests take precedence over later notes and
+                    # reviewed requests; never hide actionable work behind a
+                    # "Note added" label in the unified table.
+                    row["action_status"] = "Pending review"
+                elif not row["action_status"]:
+                    row["action_status"] = "Reviewed"
+            elif not row["action_status"]:
+                row["action_status"] = "Reviewed" if event["status"] == "REVIEWED" else "Open"
     for row in rows:
-        # The same single-line value powers table sorting and CSV export.
+        # Use the same compact label for sorting, display and full CSV export.
         action = row["action_status"]
         note = row["latest_note"]
-        row["latest_note_action"] = (action + ": " + note if action and note else action or note)
+        row["latest_note_action"] = (action + ": " + note if action and note else
+                                     action or ("Note added: " + note if note else ""))
 
 
 def sorted_rows(rows, sort, direction):
