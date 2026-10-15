@@ -269,3 +269,21 @@ class ClientClaimComparisonTests(TestCase):
         request.user = admin
         response = comparison(request)
         self.assertEqual(response.status_code, 403)
+
+    def test_payer_status_filter_recalculates_rows_summary_and_financial_cards(self):
+        window = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
+        less = self.fetch(**window, payer_status="less")
+        self.assertEqual(less["count"], 2)
+        self.assertEqual(less["financial_totals"]["billed_835_amount"], "230.00")
+        self.assertEqual(less["financial_totals"]["billed_mir_amount"], "220.00")
+        self.assertEqual(less["financial_totals"]["recon_amount"], "140.00")
+        self.assertEqual(less["summary"]["confirmed_mismatch_amount"], "25.00")
+        denied = self.fetch(**window, payer_status="denied")
+        self.assertEqual(denied["count"], 1)
+        self.assertEqual(denied["rows"][0]["claim"], "CLM300")
+        self.assertEqual(denied["financial_totals"]["billed_835_amount"], "60.00")
+        self.assertEqual(denied["financial_totals"]["billed_mir_services"], 0)
+        paid = self.fetch(**window, payer_status="paid")
+        self.assertEqual(paid["count"], 0)
+        self.assertEqual(paid["summary"]["confirmed_mismatch_amount"], "0.00")
+        self.assertEqual(paid["financial_totals"]["billed_835_claims"], 0)
