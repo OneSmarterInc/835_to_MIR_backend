@@ -300,10 +300,10 @@ def sorted_rows(rows, sort, direction):
 
 
 CSV_COLUMNS = (
+    ("waiting_days", "Days waiting"),
     ("claim", "Claim"),
     ("internal_number", "Internal claim"),
     ("date", "Latest activity"),
-    ("waiting_days", "Days waiting"),
     ("billed_835", "Billed in 835"),
     ("billed_mir", "Billed MIR"),
     ("paid_mir", "Paid MIR"),
