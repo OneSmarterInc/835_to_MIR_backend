@@ -84,6 +84,7 @@ def period_rows(client, period):
     """Read each source independently, avoiding multiplying amounts by joins."""
     rows = {}
     aliases = defaultdict(set)
+    file_claim_keys = defaultdict(list)
 
     received = apply_period(
         EDI835Claim.objects.filter(edi_file__client=client).exclude(
@@ -112,6 +113,7 @@ def period_rows(client, period):
         if highmark:
             aliases[highmark].add(control)
             aliases[control].add(control)
+            file_claim_keys[claim["edi_file_id"]].append((highmark, control))
 
     def target(control):
         if control in rows:
@@ -126,7 +128,8 @@ def period_rows(client, period):
             mir_file__client=client, mir_file__source_835__client=client,
         ), "mir_file__converted_at", period,
     ).values(
-        "id", "claim_control_number", "mir_file__converted_at"
+        "id", "claim_control_number", "mir_file__converted_at",
+        "mir_file__source_835_id"
     ).annotate(
         billed=Sum("service_lines__charge_amount"),
         paid=Sum("service_lines__paid_amount"),
@@ -138,6 +141,18 @@ def period_rows(client, period):
         if not control:
             control = "MIR-UNIDENTIFIED-" + str(claim["id"])
         group = target(control)
+        if group not in rows:
+            # The canonical MIR control sometimes extends CLP01 with a CLP07
+            # suffix which 835 normalization may not have recognized. Only
+            # resolve that suffix inside this MIR's linked source 835 file,
+            # and only when it identifies exactly one claim.
+            candidates = {
+                key for external, key in file_claim_keys.get(
+                    claim["mir_file__source_835_id"], []
+                ) if control.startswith(external) and len(control) > len(external)
+            }
+            if len(candidates) == 1:
+                group = next(iter(candidates))
         row = rows.setdefault(group, compare_row(group))
         row["_mir_occ"] += 1
         if claim["service_lines"]:
