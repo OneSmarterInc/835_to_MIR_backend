@@ -6,6 +6,7 @@ Absence of a stream is NOT a zero-dollar record. Missing rows are mismatches
 with unknown financial variance until the missing stream is available.
 """
 from collections import defaultdict
+from types import SimpleNamespace
 import csv
 from decimal import Decimal
 from zoneinfo import ZoneInfo
@@ -18,7 +19,7 @@ from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
 from .client_portal_period import InvalidPeriod, resolve_period, period_payload, apply_period
 from .client_portal_views import only_client_user
-from .models import EDI835Claim, MIRClaim, RECONClaim
+from .models import EDI835Claim, EDI835File, MIRClaim, RECONClaim, ClientPortalAction
 from .reconciliation_service import normalize_claim_id
 
 
@@ -26,6 +27,7 @@ ZERO = Decimal("0.00")
 SORTABLE = {
     "claim", "date", "billed_835", "billed_mir", "paid_mir",
     "recon_amount", "mismatch_amount", "status",
+    "waiting_days", "internal_number", "payer_status", "hold_reason", "action_status",
 }
 
 
@@ -33,6 +35,9 @@ def compare_row(key):
     return {
         "key": key, "claim": key, "claim_id": None, "file_id": None,
         "date": None, "_dt": None,
+        "id": None, "waiting_days": None,
+        "internal_number": "", "hold_reason": "", "action_status": "",
+        "latest_note": "", "latest_note_at": None, "review_activity": [],
         "billed_835": None, "billed_mir": None, "paid_mir": None,
         "recon_amount": None, "mismatch_amount": None,
         "status": "Mismatch", "reason": "",
@@ -98,6 +103,18 @@ def period_rows(client, period):
     rows = {}
     aliases = defaultdict(set)
     file_claim_keys = defaultdict(list)
+    hold_findings = {}
+    for held in apply_period(
+        EDI835File.objects.filter(client=client, held_claims_count__gt=0),
+        "uploaded_at", period,
+    ).values("id", "conversion_findings", "uploaded_at").iterator(chunk_size=300):
+        hold_findings[held["id"]] = (
+            [finding for finding in (held["conversion_findings"] or [])
+             if isinstance(finding, dict)
+             and str(finding.get("severity") or "").upper() in ("HOLD", "REFUSE")],
+            held["uploaded_at"],
+        )
+    zone = ZoneInfo(period["timezone"])
 
     received = apply_period(
         EDI835Claim.objects.filter(edi_file__client=client).exclude(
@@ -105,7 +122,7 @@ def period_rows(client, period):
         ), "edi_file__uploaded_at", period,
     ).values(
         "id", "highmark_claim_number", "internal_claim_number",
-        "total_charge_amount", "paid_amount", "claim_status",
+        "total_charge_amount", "paid_amount", "claim_status", "claim_sequence",
         "edi_file_id", "edi_file__uploaded_at"
     ).order_by("id")
     for claim in received.iterator(chunk_size=1500):
@@ -117,7 +134,26 @@ def period_rows(client, period):
         if not row["_835"]:
             row["claim"] = claim["highmark_claim_number"] or "Missing 835 claim number"
             row["claim_id"] = claim["id"]
+            row["id"] = claim["id"]
             row["file_id"] = str(claim["edi_file_id"])
+            row["internal_number"] = claim["internal_claim_number"] or ""
+        source_hold = hold_findings.get(claim["edi_file_id"])
+        if source_hold:
+            from .client_portal_views import finding_for
+            match = finding_for(SimpleNamespace(
+                highmark_claim_number=claim["highmark_claim_number"],
+                internal_claim_number=claim["internal_claim_number"],
+                claim_sequence=claim["claim_sequence"],
+            ), source_hold[0])
+            if match:
+                row["hold_reason"] = str(
+                    match.get("reason") or match.get("detail") or
+                    match.get("rule_code") or "Conversion hold"
+                )
+                row["waiting_days"] = max(
+                    0, (period["today"] -
+                        timezone.localtime(source_hold[1], zone).date()).days
+                )
         row["_835"] = True
         row["_835_occ"] += 1
         row["_835_paid"] += amount(claim["paid_amount"])
@@ -215,6 +251,34 @@ def period_rows(client, period):
     return [classify(row) for row in rows.values()]
 
 
+def enrich_activity(client, rows):
+    """One recent note and one action status per claim, without per-row queries.
+
+    Chunk claim IDs to avoid SQLite's bound-parameter limit for All histories.
+    """
+    by_claim = {row["claim_id"]: row for row in rows if row["claim_id"] is not None}
+    identifiers = list(by_claim)
+    if not identifiers:
+        return
+    for offset in range(0, len(identifiers), 400):
+        subset = identifiers[offset:offset + 400]
+        qs = ClientPortalAction.objects.filter(
+            client=client, claim_id__in=subset, file__client=client,
+        ).values(
+            "claim_id", "kind", "status", "message", "created_at",
+            "created_by_label",
+        ).order_by("-created_at", "-pk")
+        for event in qs.iterator(chunk_size=400):
+            row = by_claim.get(event["claim_id"])
+            if row is None:
+                continue
+            if not row["action_status"]:
+                row["action_status"] = event["status"] if event["kind"] != "NOTE" else "Note added"
+            if event["kind"] == "NOTE" and not row["latest_note"]:
+                row["latest_note"] = event["message"]
+                row["latest_note_at"] = event["created_at"].isoformat()
+
+
 def sorted_rows(rows, sort, direction):
     descending = direction == "desc"
     def value(row):
@@ -224,6 +288,8 @@ def sorted_rows(rows, sort, direction):
             return row["_dt"]
         if sort == "status":
             return row["status"].casefold()
+        if sort in {"internal_number", "payer_status", "hold_reason", "action_status"}:
+            return (row.get(sort) or "").casefold()
         return row[sort]
     # Unknown amounts are last in both ascending and descending views.
     known = [row for row in rows if value(row) is not None]
@@ -322,6 +388,7 @@ def comparison(request):
     period_data = period_rows(client, period)
     if payer != "all":
         period_data = [row for row in period_data if row["payer_status"] in categories[payer]]
+    enrich_activity(client, period_data)
     rows = sorted_rows(period_data, sort, direction)
     export_format = str(request.GET.get("format") or "json").strip().lower()
     if export_format not in {"json", "csv"}:
@@ -357,6 +424,11 @@ def comparison(request):
         response_rows.append({
             "key": row["key"], "claim": row["claim"],
             "claim_id": row["claim_id"], "record_id": row["claim_id"],
+            "id": row["claim_id"], "internal_number": row["internal_number"],
+            "waiting_days": row["waiting_days"], "hold_reason": row["hold_reason"],
+            "payer_status": row["payer_status"],
+            "action_status": row["action_status"],
+            "latest_note": row["latest_note"], "latest_note_at": row["latest_note_at"],
             "file_id": row["file_id"],
             "date": timezone.localtime(row["_dt"]).isoformat() if row["_dt"] else None,
             **{field: format(row[field], ".2f") if row[field] is not None else None
