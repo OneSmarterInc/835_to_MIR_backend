@@ -231,7 +231,8 @@ def comparison(request):
     for row in rows[(current - 1) * page_size:current * page_size]:
         response_rows.append({
             "key": row["key"], "claim": row["claim"],
-            "claim_id": row["claim_id"], "file_id": row["file_id"],
+            "claim_id": row["claim_id"], "record_id": row["claim_id"],
+            "file_id": row["file_id"],
             "date": timezone.localtime(row["_dt"]).isoformat() if row["_dt"] else None,
             **{field: format(row[field], ".2f") if row[field] is not None else None
                for field in ("billed_835", "billed_mir", "paid_mir", "recon_amount", "mismatch_amount")},
