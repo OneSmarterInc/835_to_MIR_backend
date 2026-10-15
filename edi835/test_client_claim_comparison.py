@@ -13,6 +13,7 @@ from edi835.client_portal_period import resolve_period
 from edi835.models import (
     EDI835File, EDI835Claim, MIRFile, MIRClaim,
     MIRClaimChunk, MIRServiceLine, RECONFile, RECONClaim,
+    ClientPortalAction,
 )
 
 EASTERN = ZoneInfo("America/New_York")
@@ -373,6 +374,43 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(len(csv_rows), 3)
         self.assertNotIn("Status", csv_rows[0])
         self.assertEqual(list(csv_rows[0])[-1], "Payer status")
+
+
+    def test_hold_explanation_is_short_but_full_reason_is_preserved(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM100.835")
+        EDI835File.objects.filter(pk=source.pk).update(
+            held_claims_count=1,
+            conversion_findings=[
+                {"severity": "HOLD", "claim_index": "1",
+                 "reason": "This claim is held until the four-day waiting period expires."}
+            ],
+        )
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-12", "to": "2026-10-15"},
+            sort="claim", direction="asc",
+        )
+        row = next(row for row in response["rows"] if row["claim"] == "CLM100")
+        self.assertEqual(row["issue_label"], "Claim on hold")
+        self.assertEqual(row["issue_tone"], "warning")
+        self.assertIn("four-day waiting period", row["issue_detail"])
+        self.assertNotIn("four-day waiting period", row["issue_label"])
+
+    def test_latest_note_action_combines_short_cell_and_csv_without_status_column(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM100.835")
+        claim = EDI835Claim.objects.get(edi_file=source)
+        ClientPortalAction.objects.create(
+            client=self.client, file=source, claim=claim,
+            created_by=self.viewer, created_by_label="Client User",
+            kind="NOTE", message="Check payer adjustment",
+        )
+        window = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
+        response = self.fetch(**window, sort="latest_note_action", direction="asc")
+        row = next(row for row in response["rows"] if row["claim"] == "CLM100")
+        self.assertEqual(row["latest_note_action"], "Note added: Check payer adjustment")
+        csv_rows, _ = self.csv_download(**window, sort="latest_note_action", direction="asc")
+        claim_csv = next(row for row in csv_rows if row["Claim"] == "CLM100")
+        self.assertEqual(claim_csv["Latest note / action"], "Note added: Check payer adjustment")
+        self.assertNotIn("Status", claim_csv)
 
     def test_csv_respects_payer_category_and_tenant(self):
         rows, response = self.csv_download(
