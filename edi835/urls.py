@@ -2,6 +2,7 @@ from django.urls import path
 from .claims_dashboard_views import dashboard_files, dashboard_file_claims
 from .client_portal_views import overview as client_portal_overview, history as client_portal_history
 from .client_portal_claim import detail as client_portal_claim_detail
+from .client_portal_comparison import comparison as client_portal_comparison
 from .client_portal_actions import actions as client_portal_actions, review_action as client_portal_review_action
 from .client_portal_conversion import convert as client_portal_convert
 from .client_portal_holds import held_file_claims as client_portal_held_file_claims, attention_claims
@@ -103,6 +104,7 @@ urlpatterns = [
     path("api/mpl-notices/<uuid:notice_id>/claims/workflow-status/", mpl_claim_workflow_status, name="mpl_notice_claim_workflow_status"),
     path("api/process/", api_process_tracked_file, name="edi835_api_process"),
     path("api/client-portal/overview/", client_portal_overview, name="client_portal_overview"),
+    path("api/client-portal/comparison/", client_portal_comparison, name="client_portal_comparison"),
     path("api/client-portal/attention/", attention_claims, name="client_portal_attention"),
     path("api/client-portal/history/", client_portal_history, name="client_portal_history"),
     path("api/client-portal/holds/<uuid:file_id>/", client_portal_held_file_claims, name="client_portal_held_file_claims"),
