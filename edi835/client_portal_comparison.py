@@ -8,6 +8,7 @@ with unknown financial variance until the missing stream is available.
 from collections import defaultdict
 import csv
 from decimal import Decimal
+from zoneinfo import ZoneInfo
 
 from django.db.models import Sum, Count
 from django.http import JsonResponse, StreamingHttpResponse
@@ -252,7 +253,7 @@ def csv_safe_text(value):
     amounts; only human-supplied/free-text columns require formula escaping.
     """
     text = str(value or "")
-    if text.lstrip(" \\t\\r\\n").startswith(("=", "+", "-", "@")) or text.startswith(("\\t", "\\r", "\\n")):
+    if text.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")) or text.startswith(("\t", "\r", "\n")):
         return "'" + text
     return text
 
@@ -264,11 +265,11 @@ class _CsvSink:
 
 def export_csv(rows, period, payer, sort, direction):
     """Stream *every* matching sorted row; no pagination truncation."""
-    writer = csv.writer(_CsvSink(), lineterminator="\\r\\n")
-    zone = period["timezone"]
+    writer = csv.writer(_CsvSink(), lineterminator="\r\n")
+    zone = ZoneInfo(period["timezone"])
 
     def body():
-        yield "\\ufeff"  # Excel-compatible UTF-8; header follows the BOM.
+        yield "\ufeff"  # Excel-compatible UTF-8; header follows the BOM.
         yield writer.writerow([label for _, label in CSV_COLUMNS])
         for row in rows:
             date = timezone.localtime(row["_dt"], zone).strftime("%Y-%m-%d %H:%M:%S %Z") if row["_dt"] else ""
