@@ -181,3 +181,30 @@ class ClientClaimComparisonTests(TestCase):
         self.assertNotIn("Hospital B", json.dumps(response))
         self.assertEqual(sum(Decimal(r["billed_835"]) for r in response["rows"]),
                          Decimal("1190"))
+
+    def test_duplicate_claim_identifier_is_not_marked_clear(self):
+        # Reusing the same claim control number in two 835 remittances must not
+        # look reconciled solely because aggregate differences cancel.
+        self.record("CLM100", self.client, date(2026, 10, 15),
+                    billed="100", mir_billed="100", mir_paid="80", recon_paid="80")
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-12", "to": "2026-10-15"},
+            sort="claim", direction="asc",
+        )
+        row = next(r for r in response["rows"] if r["claim"] == "CLM100")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertIn("Repeated claim identifier", row["reason"])
+        self.assertEqual(row["billed_835"], "200.00")
+        self.assertEqual(row["billed_mir"], "200.00")
+
+    def test_zero_is_a_real_amount_not_the_same_as_missing(self):
+        self.record("ZERO500", self.client, date(2026, 10, 15),
+                    billed="0", mir_billed="0", mir_paid="0", recon_paid="0")
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-15", "to": "2026-10-15"},
+            sort="claim", direction="asc",
+        )
+        row = next(r for r in response["rows"] if r["claim"] == "ZERO500")
+        self.assertEqual(row["status"], "Clear")
+        self.assertEqual(row["recon_amount"], "0.00")
+        self.assertEqual(row["mismatch_amount"], "0.00")
