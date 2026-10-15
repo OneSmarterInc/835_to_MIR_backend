@@ -37,6 +37,8 @@ def compare_row(key):
         "_835": False, "_mir": False, "_recon": False,
         "_mir_unpriced": False,
         "_835_occ": 0, "_mir_occ": 0, "_recon_occ": 0,
+        "_mir_services": 0, "_835_paid": ZERO, "_835_denied": False,
+        "payer_status": None,
     }
 
 
@@ -77,6 +79,15 @@ def classify(row):
         reasons.append("Repeated claim identifier in the selected period; one-to-one match is uncertain")
     row["status"] = "Clear" if not missing and not repeated and all(v == ZERO for v in known_deltas) else "Mismatch"
     row["reason"] = "; ".join(reasons) or "Both billed and payment comparisons agree"
+    if row["_835"]:
+        if row["_835_denied"]:
+            row["payer_status"] = "Denied"
+        elif row["_835_paid"] >= row["billed_835"]:
+            row["payer_status"] = "Paid in full"
+        elif row["_835_paid"] > ZERO:
+            row["payer_status"] = "Paid less than billed"
+        else:
+            row["payer_status"] = "No payment"
     return row
 
 
@@ -92,7 +103,8 @@ def period_rows(client, period):
         ), "edi_file__uploaded_at", period,
     ).values(
         "id", "highmark_claim_number", "internal_claim_number",
-        "total_charge_amount", "edi_file_id", "edi_file__uploaded_at"
+        "total_charge_amount", "paid_amount", "claim_status",
+        "edi_file_id", "edi_file__uploaded_at"
     ).order_by("id")
     for claim in received.iterator(chunk_size=1500):
         highmark = normalize_claim_id(claim["highmark_claim_number"])
@@ -106,6 +118,8 @@ def period_rows(client, period):
             row["file_id"] = str(claim["edi_file_id"])
         row["_835"] = True
         row["_835_occ"] += 1
+        row["_835_paid"] += amount(claim["paid_amount"])
+        row["_835_denied"] = row["_835_denied"] or claim["claim_status"] == "4"
         add_value(row, "billed_835", claim["total_charge_amount"])
         event = claim["edi_file__uploaded_at"]
         if row["_dt"] is None or event > row["_dt"]:
@@ -157,6 +171,7 @@ def period_rows(client, period):
         row["_mir_occ"] += 1
         if claim["service_lines"]:
             row["_mir"] = True
+            row["_mir_services"] += claim["service_lines"]
             add_value(row, "billed_mir", claim["billed"])
             add_value(row, "paid_mir", claim["paid"])
         else:
@@ -230,16 +245,37 @@ def comparison(request):
         return JsonResponse({"success": False, "error": str(exc) or "Invalid filter"}, status=400)
     sort = str(request.GET.get("sort") or "date")
     direction = str(request.GET.get("direction") or "desc")
+    payer = str(request.GET.get("payer_status") or "all").strip().lower()
     if sort not in SORTABLE or direction not in {"asc", "desc"}:
         return JsonResponse({"success": False, "error": "Invalid sort column or direction"}, status=400)
+    categories = {
+        "all": None, "denied": {"Denied", "No payment"},
+        "less": {"Paid less than billed"}, "paid": {"Paid in full"},
+    }
+    if payer not in categories:
+        return JsonResponse({"success": False, "error": "Invalid payer status filter"}, status=400)
 
-    rows = sorted_rows(period_rows(client, period), sort, direction)
+    period_data = period_rows(client, period)
+    if payer != "all":
+        period_data = [row for row in period_data if row["payer_status"] in categories[payer]]
+    rows = sorted_rows(period_data, sort, direction)
     clear = sum(row["status"] == "Clear" for row in rows)
     mismatches = len(rows) - clear
     missing_streams = sum(
         not all((row["_835"], row["_mir"], row["_recon"])) for row in rows
     )
     confirmed = sum((row["mismatch_amount"] or ZERO for row in rows), ZERO)
+    def stream_total(field):
+        return format(sum((row[field] for row in rows if row[field] is not None), ZERO), ".2f")
+
+    financial_totals = {
+        "billed_835_amount": stream_total("billed_835"),
+        "billed_mir_amount": stream_total("billed_mir"),
+        "recon_amount": stream_total("recon_amount"),
+        "billed_835_claims": sum(row["_835_occ"] for row in rows),
+        "billed_mir_services": sum(row["_mir_services"] for row in rows),
+        "recon_claims": sum(row["_recon_occ"] for row in rows),
+    }
     page_count = max(1, (len(rows) + page_size - 1) // page_size)
     current = min(page_no, page_count)
     response_rows = []
@@ -257,6 +293,7 @@ def comparison(request):
         "success": True, "period": period_payload(period),
         "page": current, "pages": page_count, "page_size": page_size,
         "count": len(rows), "sort": sort, "direction": direction,
+        "payer_status": payer, "financial_totals": financial_totals,
         "summary": {
             "clear": clear, "mismatch": mismatches,
             "missing_streams": missing_streams,
