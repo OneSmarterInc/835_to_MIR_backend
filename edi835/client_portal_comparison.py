@@ -276,6 +276,10 @@ def comparison(request):
         "billed_mir_services": sum(row["_mir_services"] for row in rows),
         "recon_claims": sum(row["_recon_occ"] for row in rows),
     }
+    billed_gap = abs(
+        Decimal(financial_totals["billed_835_amount"])
+        - Decimal(financial_totals["billed_mir_amount"])
+    )
     page_count = max(1, (len(rows) + page_size - 1) // page_size)
     current = min(page_no, page_count)
     response_rows = []
@@ -298,6 +302,7 @@ def comparison(request):
             "clear": clear, "mismatch": mismatches,
             "missing_streams": missing_streams,
             "confirmed_mismatch_amount": format(confirmed, ".2f"),
+            "billed_gap_amount": format(billed_gap, ".2f"),
         },
         "rows": response_rows,
     })
