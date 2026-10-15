@@ -104,3 +104,13 @@ class AttentionDateFilterTests(TestCase):
     def test_daily_shows_no_unrelated_historical_holds(self):
         result = self.check(period="daily")
         self.assertEqual(result["count"], 0)
+
+    def test_payer_filter_stays_within_month_before_age_sort(self):
+        denied = self.check(period="monthly", payer_status="denied")
+        self.assertEqual(
+            [r["number"] for r in denied["claims"]],
+            ["oct-first", "oct-sixth", "oct-fourteenth"],
+        )
+        paid = self.check(period="monthly", payer_status="paid")
+        self.assertEqual(paid["count"], 0)
+        self.assertEqual(paid["claims"], [])
