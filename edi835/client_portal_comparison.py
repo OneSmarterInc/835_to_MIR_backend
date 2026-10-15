@@ -27,7 +27,7 @@ ZERO = Decimal("0.00")
 SORTABLE = {
     "claim", "date", "billed_835", "billed_mir", "paid_mir",
     "recon_amount", "mismatch_amount", "status",
-    "waiting_days", "internal_number", "payer_status", "hold_reason", "action_status",
+    "waiting_days", "internal_number", "payer_status", "hold_reason", "action_status", "latest_note",
 }
 
 
@@ -288,7 +288,7 @@ def sorted_rows(rows, sort, direction):
             return row["_dt"]
         if sort == "status":
             return row["status"].casefold()
-        if sort in {"internal_number", "payer_status", "hold_reason", "action_status"}:
+        if sort in {"internal_number", "payer_status", "hold_reason", "action_status", "latest_note"}:
             return (row.get(sort) or "").casefold()
         return row[sort]
     # Unknown amounts are last in both ascending and descending views.
@@ -301,12 +301,18 @@ def sorted_rows(rows, sort, direction):
 
 CSV_COLUMNS = (
     ("claim", "Claim"),
+    ("internal_number", "Internal claim"),
     ("date", "Latest activity"),
+    ("waiting_days", "Days waiting"),
     ("billed_835", "Billed in 835"),
     ("billed_mir", "Billed MIR"),
     ("paid_mir", "Paid MIR"),
     ("recon_amount", "Amount in Recon"),
     ("mismatch_amount", "Mismatch amount"),
+    ("payer_status", "Payer status"),
+    ("hold_reason", "Why waiting"),
+    ("action_status", "Action status"),
+    ("latest_note", "Latest note"),
     ("status", "Status"),
     ("reason", "Mismatch reason"),
 )
@@ -341,6 +347,12 @@ def export_csv(rows, period, payer, sort, direction):
             date = timezone.localtime(row["_dt"], zone).strftime("%Y-%m-%d %H:%M:%S %Z") if row["_dt"] else ""
             export = {
                 "claim": csv_safe_text(row["claim"]),
+                "internal_number": csv_safe_text(row["internal_number"]),
+                "waiting_days": row["waiting_days"] if row["waiting_days"] is not None else "",
+                "payer_status": csv_safe_text(row["payer_status"]),
+                "hold_reason": csv_safe_text(row["hold_reason"]),
+                "action_status": csv_safe_text(row["action_status"]),
+                "latest_note": csv_safe_text(row["latest_note"]),
                 "date": date,
                 "status": row["status"],
                 "reason": csv_safe_text(row["reason"] if row["status"] == "Mismatch" else ""),
