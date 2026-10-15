@@ -320,9 +320,7 @@ CSV_COLUMNS = (
     ("waiting_days", "Days waiting"),
     ("claim", "Claim"),
     ("internal_number", "Internal claim"),
-    ("date", "Latest activity"),
     ("billed_835", "Billed in 835"),
-    ("billed_mir", "Billed MIR"),
     ("paid_mir", "Paid MIR"),
     ("recon_amount", "Amount in Recon"),
     ("mismatch_amount", "Mismatch amount"),
@@ -402,7 +400,7 @@ def comparison(request):
         page_no = max(1, int(request.GET.get("page", "1")))
     except (InvalidPeriod, TypeError, ValueError) as exc:
         return JsonResponse({"success": False, "error": str(exc) or "Invalid filter"}, status=400)
-    sort = str(request.GET.get("sort") or "date")
+    sort = str(request.GET.get("sort") or "waiting_days")
     direction = str(request.GET.get("direction") or "desc")
     payer = str(request.GET.get("payer_status") or "all").strip().lower()
     if sort not in SORTABLE or direction not in {"asc", "desc"}:
