@@ -147,7 +147,7 @@ def period_rows(client, period):
     ).annotate(
         billed=Sum("service_lines__charge_amount"),
         paid=Sum("service_lines__paid_amount"),
-        service_lines=Count("service_lines__id"),
+        service_line_count=Count("service_lines__id"),
     ).order_by("id")
     mir_aliases = defaultdict(set)
     for claim in converted.iterator(chunk_size=1000):
@@ -169,9 +169,9 @@ def period_rows(client, period):
                 group = next(iter(candidates))
         row = rows.setdefault(group, compare_row(group))
         row["_mir_occ"] += 1
-        if claim["service_lines"]:
+        if claim["service_line_count"]:
             row["_mir"] = True
-            row["_mir_services"] += claim["service_lines"]
+            row["_mir_services"] += claim["service_line_count"]
             add_value(row, "billed_mir", claim["billed"])
             add_value(row, "paid_mir", claim["paid"])
         else:
