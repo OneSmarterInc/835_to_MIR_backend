@@ -128,9 +128,9 @@ class PortalPeriodQueryTests(TestCase):
         self.assertEqual(result["metrics"]["received_files"], 1)
         self.assertEqual(result["metrics"]["waiting_claims"], 1)
         self.assertEqual(result["metrics"]["received_claims"], 1)
-        self.assertEqual(result["metrics"]["billed_amount"], "125")
-        self.assertEqual(result["metrics"]["paid_amount"], "95")
-        self.assertEqual(result["metrics"]["patient_amount"], "30")
+        self.assertEqual(Decimal(result["metrics"]["billed_amount"]), Decimal("125.00"))
+        self.assertEqual(Decimal(result["metrics"]["paid_amount"]), Decimal("95.00"))
+        self.assertEqual(Decimal(result["metrics"]["patient_amount"]), Decimal("30.00"))
         self.assertEqual(result["metrics"]["sent_files"], 1)
         self.assertEqual({item["filename"] for item in result["issues"]}, {"inside.835"})
         self.assertEqual(len(result["claims"]), 1)
@@ -148,7 +148,7 @@ class PortalPeriodQueryTests(TestCase):
         self.assertEqual(Decimal(result["metrics"]["billed_amount"]), Decimal("925.00"))
         attention = self.get(attention_claims, "/edi835/api/client-portal/attention/", {"period": "all"})
         self.assertEqual(attention["count"], 2)
-        self.assertEqual(history_page := self.get(history, "/edi835/api/client-portal/history/", {"period": "all"})["count"], 2)
+        self.assertEqual(self.get(history, "/edi835/api/client-portal/history/", {"period": "all"})["count"], 2)
 
     def test_daily_does_not_include_older_holds(self):
         result = self.get(overview, "/edi835/api/client-portal/overview/", {"period": "daily"})
