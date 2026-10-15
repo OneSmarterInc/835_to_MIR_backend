@@ -6,10 +6,9 @@ Absence of a stream is NOT a zero-dollar record. Missing rows are mismatches
 with unknown financial variance until the missing stream is available.
 """
 from collections import defaultdict
-from datetime import datetime
 from decimal import Decimal
 
-from django.db.models import Sum
+from django.db.models import Sum, Count
 from django.http import JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
@@ -36,6 +35,7 @@ def compare_row(key):
         "recon_amount": None, "mismatch_amount": None,
         "status": "Mismatch", "reason": "",
         "_835": False, "_mir": False, "_recon": False,
+        "_mir_unpriced": False,
     }
 
 
@@ -52,7 +52,7 @@ def classify(row):
     if not row["_835"]:
         missing.append("835")
     if not row["_mir"]:
-        missing.append("MIR")
+        missing.append("MIR service amounts" if row["_mir_unpriced"] else "MIR")
     if not row["_recon"]:
         missing.append("Recon")
     known_deltas = []
@@ -125,6 +125,7 @@ def period_rows(client, period):
     ).annotate(
         billed=Sum("service_lines__charge_amount"),
         paid=Sum("service_lines__paid_amount"),
+        service_lines=Count("service_lines__id"),
     ).order_by("id")
     mir_aliases = defaultdict(set)
     for claim in converted.iterator(chunk_size=1000):
@@ -133,9 +134,12 @@ def period_rows(client, period):
             continue
         group = target(control)
         row = rows.setdefault(group, compare_row(group))
-        row["_mir"] = True
-        add_value(row, "billed_mir", claim["billed"])
-        add_value(row, "paid_mir", claim["paid"])
+        if claim["service_lines"]:
+            row["_mir"] = True
+            add_value(row, "billed_mir", claim["billed"])
+            add_value(row, "paid_mir", claim["paid"])
+        else:
+            row["_mir_unpriced"] = True
         if not row["_835"]:
             row["claim"] = claim["claim_control_number"]
         event = claim["mir_file__converted_at"]
