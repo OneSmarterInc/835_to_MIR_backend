@@ -239,3 +239,33 @@ class ClientClaimComparisonTests(TestCase):
         self.assertIsNone(row["billed_mir"])
         self.assertIsNone(row["paid_mir"])
         self.assertIn("MIR service amounts", row["reason"])
+
+    def test_each_stream_uses_its_own_date_and_missing_is_not_zero(self):
+        source = EDI835File.objects.get(client=self.client, original_filename="CLM100.835")
+        MIRFile.objects.filter(source_835=source).update(
+            converted_at=moment(date(2026, 9, 30))
+        )
+        RECONFile.objects.filter(client=self.client, original_filename="CLM100.recon").update(
+            uploaded_at=moment(date(2026, 9, 30))
+        )
+        response = self.fetch(
+            period="custom", **{"from": "2026-10-12", "to": "2026-10-15"},
+            sort="claim", direction="asc",
+        )
+        row = next(r for r in response["rows"] if r["claim"] == "CLM100")
+        self.assertEqual(row["billed_835"], "100.00")
+        self.assertIsNone(row["billed_mir"])
+        self.assertIsNone(row["recon_amount"])
+        self.assertIsNone(row["mismatch_amount"])
+        self.assertEqual(row["status"], "Mismatch")
+
+    def test_non_client_user_cannot_see_comparison(self):
+        admin = User.objects.create_user(
+            email="admin@comparison.example", name="Client Admin",
+            mobile="+12125550344", password="NotARealPassword123!",
+            client=self.client, client_role="CLIENT_ADMIN",
+        )
+        request = self.factory.get("/edi835/api/client-portal/comparison/?period=all")
+        request.user = admin
+        response = comparison(request)
+        self.assertEqual(response.status_code, 403)
