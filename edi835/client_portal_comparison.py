@@ -1,7 +1,8 @@
 """Tenant-isolated, period-filtered claim comparison of 835, MIR and Recon.
 
 Accounting comparisons deliberately use like-for-like measures:
-835 billed vs MIR service billed, MIR service paid vs Recon paid.
+835 billed vs MIR service billed, 835 paid vs MIR service paid, and,
+separately, MIR service paid vs Recon paid.
 Absence of a stream is NOT a zero-dollar record. Missing rows are mismatches
 with unknown financial variance until the missing stream is available.
 """
@@ -25,7 +26,7 @@ from .reconciliation_service import normalize_claim_id
 
 ZERO = Decimal("0.00")
 SORTABLE = {
-    "claim", "date", "billed_835", "billed_mir", "paid_mir",
+    "claim", "date", "billed_835", "billed_mir", "paid_835", "paid_mir",
     "recon_amount", "mismatch_amount", "status",
     "waiting_days", "internal_number", "payer_status", "hold_reason", "action_status", "latest_note",
     "issue_label", "latest_note_action",
@@ -41,13 +42,13 @@ def compare_row(key):
         "internal_number": "", "hold_reason": "", "action_status": "",
         "issue_label": "", "issue_detail": "", "issue_tone": "neutral", "latest_note_action": "",
         "latest_note": "", "latest_note_at": None, "review_activity": [],
-        "billed_835": None, "billed_mir": None, "paid_mir": None,
+        "billed_835": None, "billed_mir": None, "paid_835": None, "paid_mir": None,
         "recon_amount": None, "mismatch_amount": None,
         "status": "Mismatch", "reason": "",
         "_835": False, "_mir": False, "_recon": False,
         "_mir_unpriced": False,
         "_835_occ": 0, "_mir_occ": 0, "_recon_occ": 0,
-        "_mir_services": 0, "_835_paid": ZERO, "_835_denied": False,
+        "_mir_services": 0, "_835_denied": False,
         "payer_status": None,
     }
 
@@ -60,41 +61,49 @@ def add_value(row, field, value):
     row[field] = amount(row[field]) + amount(value)
 
 
+def source_ready(row, source):
+    """Only complete, unique records support a confirmed comparison."""
+    return (row["_" + source] and row["_" + source + "_occ"] == 1
+            and not (source == "mir" and row["_mir_unpriced"]))
+
+
+COMPARISONS = (
+    ("835", "mir", "billed_835", "billed_mir", "835 and MIR billed differ"),
+    ("835", "mir", "paid_835", "paid_mir", "835 and MIR paid differ"),
+    ("mir", "recon", "paid_mir", "recon_amount", "MIR and Recon paid differ"),
+)
+
+
 def classify(row):
     missing = []
     if not row["_835"]:
         missing.append("835")
-    if not row["_mir"]:
+    if not row["_mir"] or row["_mir_unpriced"]:
         missing.append("MIR service amounts" if row["_mir_unpriced"] else "MIR")
     if not row["_recon"]:
         missing.append("Recon")
-    known_deltas = []
-    if row["_835"] and row["_mir"]:
-        known_deltas.append(abs(row["billed_835"] - row["billed_mir"]))
-    if row["_mir"] and row["_recon"]:
-        known_deltas.append(abs(row["paid_mir"] - row["recon_amount"]))
-    row["mismatch_amount"] = sum(known_deltas, ZERO) if known_deltas else None
     reasons = []
     if missing:
         reasons.append("No " + ", ".join(missing) + " record in selected period")
-    if len(known_deltas) >= 1 and known_deltas[0] > ZERO:
-        if row["_835"] and row["_mir"]:
-            reasons.append("835 and MIR billed differ")
-        else:
-            reasons.append("MIR and Recon paid differ")
-    if len(known_deltas) == 2 and known_deltas[1] > ZERO:
-        reasons.append("MIR and Recon paid differ")
+    known_deltas = []
+    for left_source, right_source, left, right, reason in COMPARISONS:
+        if source_ready(row, left_source) and source_ready(row, right_source):
+            delta = abs(row[left] - row[right])
+            known_deltas.append(delta)
+            if delta > ZERO:
+                reasons.append(reason)
+    row["mismatch_amount"] = sum(known_deltas, ZERO) if known_deltas else None
     repeated = any(row[field] > 1 for field in ("_835_occ", "_mir_occ", "_recon_occ"))
     if repeated:
         reasons.append("Repeated claim identifier in the selected period; one-to-one match is uncertain")
     row["status"] = "Clear" if not missing and not repeated and all(v == ZERO for v in known_deltas) else "Mismatch"
-    row["reason"] = "; ".join(reasons) or "Both billed and payment comparisons agree"
+    row["reason"] = "; ".join(reasons) or "835/MIR billed and paid, and MIR/Recon paid agree"
     if row["_835"]:
         if row["_835_denied"]:
             row["payer_status"] = "Denied"
-        elif row["_835_paid"] >= row["billed_835"]:
+        elif row["paid_835"] >= row["billed_835"]:
             row["payer_status"] = "Paid in full"
-        elif row["_835_paid"] > ZERO:
+        elif row["paid_835"] > ZERO:
             row["payer_status"] = "Paid less than billed"
         else:
             row["payer_status"] = "No payment"
@@ -102,43 +111,60 @@ def classify(row):
 
 
 def summarize_issue(row):
-    """Human-readable, compact label; retain full supporting facts on hover.
-
-    This is a comparison of independent records, *not* a claim adjudication
-    or assertion that a whole file is absent.
-    """
+    """Keep 835/MIR status independent of Recon and conversion holds."""
     reasons = []
-    if any(row[name] > 1 for name in ("_835_occ", "_mir_occ", "_recon_occ")):
-        reasons.append("Repeated claim ID")
-    if not row["_835"]:
-        reasons.append("835 record missing")
-    if not row["_mir"]:
-        reasons.append("MIR amounts missing" if row["_mir_unpriced"] else "MIR record missing")
-    if not row["_recon"]:
-        reasons.append("Recon record missing")
-    if row["_835"] and row["_mir"] and row["billed_835"] != row["billed_mir"]:
-        reasons.append("Billed amounts differ")
-    if row["_mir"] and row["_recon"] and row["paid_mir"] != row["recon_amount"]:
-        reasons.append("Paid amounts differ")
-    if row["is_held"]:
-        reasons.append("Claim on hold")
+    for source, label in (("835", "835"), ("mir", "MIR")):
+        if row["_" + source + "_occ"] > 1:
+            reasons.append("Duplicate " + label)
+        if not row["_" + source + "_occ"]:
+            reasons.append(label + " record missing")
+        elif source == "mir" and row["_mir_unpriced"]:
+            reasons.append("MIR amounts missing")
+    if source_ready(row, "835") and source_ready(row, "mir"):
+        billed_differs = row["billed_835"] != row["billed_mir"]
+        paid_differs = row["paid_835"] != row["paid_mir"]
+        if billed_differs and paid_differs:
+            reasons.append("Billed & paid differ")
+        elif billed_differs:
+            reasons.append("Billed differs")
+        elif paid_differs:
+            reasons.append("Paid differs")
+    row["issue_label"] = " · ".join(reasons[:2]) or "Billed & paid match"
+    if len(reasons) > 2:
+        row["issue_label"] += f" +{len(reasons) - 2}"
+    row["issue_tone"] = "error" if reasons else "clear"
 
-    if reasons:
-        row["issue_label"] = " · ".join(reasons[:2]) + (
-            f" +{len(reasons) - 2}" if len(reasons) > 2 else ""
-        )
-        row["issue_tone"] = (
-            "error" if row["status"] == "Mismatch"
-            else "warning"
-        )
-    else:
-        row["issue_label"] = "Amounts match"
-        row["issue_tone"] = "clear"
+    def money(field):
+        return format(row[field], ".2f") if row[field] is not None else "unavailable"
 
-    details = [row["reason"]] if row["status"] == "Mismatch" else []
+    details = [
+        "835/MIR: " + ("; ".join(reasons) or "billed and paid match"),
+        f"Billed: 835 {money('billed_835')} / MIR {money('billed_mir')}",
+        f"Paid: 835 {money('paid_835')} / MIR {money('paid_mir')}",
+    ]
+    if any(row[name] > 1 for name in ("_835_occ", "_mir_occ")):
+        details.append("Aggregate amounts shown; one-to-one match is uncertain")
     if row["hold_reason"]:
         details.append("Conversion hold: " + row["hold_reason"])
-    row["issue_detail"] = " | ".join(details) if details else "Amounts agree for available 835, MIR and Recon records"
+    row["issue_detail"] = " | ".join(details)
+
+    recon_reasons = []
+    for source, label in (("mir", "MIR"), ("recon", "Recon")):
+        if row["_" + source + "_occ"] > 1:
+            recon_reasons.append("Duplicate " + label)
+        if not row["_" + source + "_occ"]:
+            recon_reasons.append(label + " record missing")
+        elif source == "mir" and row["_mir_unpriced"]:
+            recon_reasons.append("MIR amounts missing")
+    if source_ready(row, "mir") and source_ready(row, "recon"):
+        if row["paid_mir"] != row["recon_amount"]:
+            recon_reasons.append("Paid differs")
+    row["recon_issue_label"] = " · ".join(recon_reasons[:2]) or "Paid matches"
+    row["recon_issue_tone"] = "error" if recon_reasons else "clear"
+    row["recon_issue_detail"] = (
+        "MIR/Recon: " + ("; ".join(recon_reasons) or "paid amounts match")
+        + f" | Paid: MIR {money('paid_mir')} / Recon {money('recon_amount')}"
+    )
     return row
 
 
@@ -207,7 +233,7 @@ def period_rows(client, period):
                 # why it remains held, not the beginning of a different clock.
         row["_835"] = True
         row["_835_occ"] += 1
-        row["_835_paid"] += amount(claim["paid_amount"])
+        add_value(row, "paid_835", claim["paid_amount"])
         row["_835_denied"] = row["_835_denied"] or claim["claim_status"] == "4"
         add_value(row, "billed_835", claim["total_charge_amount"])
         event = claim["edi_file__uploaded_at"]
@@ -232,7 +258,7 @@ def period_rows(client, period):
         ), "mir_file__converted_at", period,
     ).values(
         "id", "claim_control_number", "mir_file__converted_at",
-        "mir_file__source_835_id"
+        "mir_file__source_835_id", "service_count"
     ).annotate(
         billed=Sum("service_lines__charge_amount"),
         paid=Sum("service_lines__paid_amount"),
@@ -258,6 +284,8 @@ def period_rows(client, period):
                 group = next(iter(candidates))
         row = rows.setdefault(group, compare_row(group))
         row["_mir_occ"] += 1
+        if claim["service_count"] > claim["service_line_count"]:
+            row["_mir_unpriced"] = True
         if claim["service_line_count"]:
             row["_mir"] = True
             row["_mir_services"] += claim["service_line_count"]
@@ -380,10 +408,13 @@ CSV_COLUMNS = (
     ("claim", "Claim"),
     ("internal_number", "Internal claim"),
     ("billed_835", "Billed in 835"),
+    ("billed_mir", "Billed MIR"),
+    ("paid_835", "Paid 835"),
     ("paid_mir", "Paid MIR"),
     ("recon_amount", "Amount in Recon"),
     ("mismatch_amount", "Mismatch amount"),
-    ("issue_label", "Issue / reason"),
+    ("issue_label", "835/MIR status"),
+    ("recon_issue_label", "MIR/Recon status"),
     ("latest_note_action", "Latest note / action"),
     ("payer_status", "Payer status"),
 )
@@ -422,10 +453,11 @@ def export_csv(rows, period, payer, sort, direction):
                 "waiting_days": row["waiting_days"] if row["waiting_days"] is not None else "",
                 "payer_status": csv_safe_text(row["payer_status"]),
                 "issue_label": csv_safe_text(row["issue_label"]),
+                "recon_issue_label": csv_safe_text(row["recon_issue_label"]),
                 "latest_note_action": csv_safe_text(row["latest_note_action"]),
                 "date": date,
             }
-            for key in ("billed_835", "billed_mir", "paid_mir", "recon_amount", "mismatch_amount"):
+            for key in ("billed_835", "billed_mir", "paid_835", "paid_mir", "recon_amount", "mismatch_amount"):
                 amount_value = row[key]
                 export[key] = format(amount_value, ".2f") if amount_value is not None else ""
             yield writer.writerow([export.get(key, "") for key, _ in CSV_COLUMNS])
@@ -479,7 +511,8 @@ def comparison(request):
     clear = sum(row["status"] == "Clear" for row in rows)
     mismatches = len(rows) - clear
     missing_streams = sum(
-        not all((row["_835"], row["_mir"], row["_recon"])) for row in rows
+        not all((row["_835"], row["_mir"], row["_recon"])) or row["_mir_unpriced"]
+        for row in rows
     )
     confirmed = sum((row["mismatch_amount"] or ZERO for row in rows), ZERO)
     def stream_total(field):
@@ -513,10 +546,13 @@ def comparison(request):
             "latest_note_action": row["latest_note_action"],
             "issue_label": row["issue_label"], "issue_detail": row["issue_detail"],
             "issue_tone": row["issue_tone"],
+            "recon_issue_label": row["recon_issue_label"],
+            "recon_issue_detail": row["recon_issue_detail"],
+            "recon_issue_tone": row["recon_issue_tone"],
             "file_id": row["file_id"],
             "date": timezone.localtime(row["_dt"]).isoformat() if row["_dt"] else None,
             **{field: format(row[field], ".2f") if row[field] is not None else None
-               for field in ("billed_835", "billed_mir", "paid_mir", "recon_amount", "mismatch_amount")},
+               for field in ("billed_835", "billed_mir", "paid_835", "paid_mir", "recon_amount", "mismatch_amount")},
             "status": row["status"], "reason": row["reason"],
         })
     return JsonResponse({

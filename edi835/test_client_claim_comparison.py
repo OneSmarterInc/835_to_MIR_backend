@@ -51,7 +51,7 @@ class ClientClaimComparisonTests(TestCase):
                     billed="9999", mir_billed="9999", mir_paid="9000", recon_paid="9000")
 
     def record(self, key, client, day, *, billed, mir_billed=None,
-               mir_paid=None, recon_paid=None):
+               mir_paid=None, recon_paid=None, paid_835=None):
         source = EDI835File.objects.create(
             client=client, original_filename=key + ".835",
             stored_filename=key + ".835",
@@ -61,7 +61,7 @@ class ClientClaimComparisonTests(TestCase):
         EDI835Claim.objects.create(
             edi_file=source, claim_sequence=1,
             highmark_claim_number=key, total_charge_amount=Decimal(billed),
-            paid_amount=Decimal(mir_paid or 0),
+            paid_amount=Decimal(paid_835 if paid_835 is not None else mir_paid or 0),
         )
         if mir_billed is not None:
             mir = MIRFile.objects.create(
@@ -152,7 +152,7 @@ class ClientClaimComparisonTests(TestCase):
     def test_sort_every_supported_column(self):
         window = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
         for column in ("claim", "date", "billed_835", "billed_mir",
-                       "paid_mir", "recon_amount", "mismatch_amount", "status"):
+                       "paid_835", "paid_mir", "recon_amount", "mismatch_amount", "status"):
             ascending = self.fetch(**window, sort=column, direction="asc")
             descending = self.fetch(**window, sort=column, direction="desc")
             self.assertEqual(ascending["count"], 3)
@@ -319,43 +319,46 @@ class ClientClaimComparisonTests(TestCase):
         self.assertEqual(len(rows), 3)
         self.assertEqual(rows[0]["Billed in 835"], "130.00")
         self.assertEqual(rows[0]["Mismatch amount"], "25.00")
-        self.assertIn("Billed amounts differ", rows[0]["Issue / reason"])
+        self.assertEqual(rows[0]["835/MIR status"], "Billed differs")
+        self.assertEqual(rows[0]["MIR/Recon status"], "Paid differs")
+        self.assertEqual(rows[0]["Paid 835"], "75.00")
+        self.assertEqual(rows[0]["Billed MIR"], "120.00")
         self.assertEqual(rows[0]["Latest note / action"], "")
         self.assertNotIn("Status", rows[0])
-        self.assertNotIn("Billed MIR", rows[0])
+        self.assertNotIn("Issue / reason", rows[0])
         self.assertNotIn("Latest activity", rows[0])
         self.assertEqual(rows[0]["Payer status"], "Paid less than billed")
         self.assertEqual(rows[-1]["Amount in Recon"], "")
         self.assertIn("custom_20261012-20261015", response["Content-Disposition"])
 
-    def test_csv_columns_match_simplified_visible_table(self):
+    def test_csv_includes_both_like_for_like_pairs_and_separate_recon_status(self):
         rows, response = self.csv_download(period="all", sort="waiting_days", direction="desc")
         self.assertTrue(rows)
         self.assertEqual(
             list(rows[0]),
             [
                 "Days waiting", "Claim", "Internal claim", "Billed in 835",
-                "Paid MIR", "Amount in Recon", "Mismatch amount",
-                "Issue / reason", "Latest note / action", "Payer status",
+                "Billed MIR", "Paid 835", "Paid MIR", "Amount in Recon", "Mismatch amount",
+                "835/MIR status", "MIR/Recon status", "Latest note / action", "Payer status",
             ],
         )
         self.assertNotIn("Latest activity", rows[0])
-        self.assertNotIn("Billed MIR", rows[0])
+        self.assertNotIn("Issue / reason", rows[0])
 
     def test_issue_labels_are_short_and_specific(self):
         params = {"period": "custom", "from": "2026-10-12", "to": "2026-10-15"}
         result = self.fetch(**params, sort="claim", direction="asc")
         by_claim = {row["claim"]: row for row in result["rows"]}
-        self.assertEqual(by_claim["CLM100"]["issue_label"], "Amounts match")
+        self.assertEqual(by_claim["CLM100"]["issue_label"], "Billed & paid match")
         self.assertEqual(by_claim["CLM100"]["issue_tone"], "clear")
         self.assertEqual(
             by_claim["CLM200"]["issue_label"],
-            "Billed amounts differ · Paid amounts differ",
+            "Billed differs",
         )
         self.assertEqual(by_claim["CLM200"]["issue_tone"], "error")
         self.assertEqual(
             by_claim["CLM300"]["issue_label"],
-            "MIR record missing · Recon record missing",
+            "MIR record missing",
         )
         self.assertEqual(by_claim["CLM300"]["issue_tone"], "error")
         self.assertIn("MIR", by_claim["CLM300"]["issue_detail"])
@@ -390,8 +393,8 @@ class ClientClaimComparisonTests(TestCase):
             sort="claim", direction="asc",
         )
         row = next(row for row in response["rows"] if row["claim"] == "CLM100")
-        self.assertEqual(row["issue_label"], "Claim on hold")
-        self.assertEqual(row["issue_tone"], "warning")
+        self.assertEqual(row["issue_label"], "Billed & paid match")
+        self.assertEqual(row["issue_tone"], "clear")
         self.assertIn("four-day waiting period", row["issue_detail"])
         self.assertNotIn("four-day waiting period", row["issue_label"])
 
@@ -466,3 +469,140 @@ class ClientClaimComparisonTests(TestCase):
         )
         request.user = admin
         self.assertEqual(comparison(request).status_code, 403)
+
+    def claim_row(self, key):
+        return next(row for row in self.fetch(period="all", page_size=100)["rows"]
+                    if row["claim"] == key)
+
+    def test_835_paid_difference_is_not_hidden_by_matching_recon(self):
+        EDI835Claim.objects.filter(
+            edi_file__client=self.client, highmark_claim_number="CLM100",
+        ).update(paid_amount=Decimal("79.99"))
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["paid_835"], "79.99")
+        self.assertEqual(row["issue_label"], "Paid differs")
+        self.assertEqual(row["issue_tone"], "error")
+        self.assertEqual(row["recon_issue_label"], "Paid matches")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertEqual(row["mismatch_amount"], "0.01")
+        self.assertIn("835 and MIR paid differ", row["reason"])
+        self.assertIn("Paid: 835 79.99 / MIR 80.00", row["issue_detail"])
+        exported, _ = self.csv_download(period="all")
+        exported = next(item for item in exported if item["Claim"] == "CLM100")
+        self.assertEqual(exported["835/MIR status"], "Paid differs")
+        self.assertEqual(exported["Paid 835"], "79.99")
+        self.assertEqual(exported["Paid MIR"], "80.00")
+
+    def test_partial_payment_compares_paid_to_paid_not_billed(self):
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["billed_835"], "100.00")
+        self.assertEqual(row["paid_835"], "80.00")
+        self.assertEqual(row["paid_mir"], "80.00")
+        self.assertEqual(row["issue_label"], "Billed & paid match")
+        self.assertEqual(row["payer_status"], "Paid less than billed")
+        self.assertIn("Billed: 835 100.00 / MIR 100.00", row["issue_detail"])
+
+    def test_both_differences_sum_without_cancelling(self):
+        self.record("BOTH", self.client, date(2026, 10, 15),
+                    billed="100", paid_835="90", mir_billed="110",
+                    mir_paid="80", recon_paid="75")
+        row = self.claim_row("BOTH")
+        self.assertEqual(row["issue_label"], "Billed & paid differ")
+        self.assertEqual(row["recon_issue_label"], "Paid differs")
+        self.assertEqual(row["mismatch_amount"], "25.00")
+
+    def test_recon_discrepancy_does_not_change_835_mir_status(self):
+        RECONClaim.objects.filter(client=self.client, claim_control_number="CLM100").update(
+            paid_amount=Decimal("79"),
+        )
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["issue_label"], "Billed & paid match")
+        self.assertEqual(row["issue_tone"], "clear")
+        self.assertEqual(row["recon_issue_label"], "Paid differs")
+        self.assertEqual(row["recon_issue_tone"], "error")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertEqual(row["mismatch_amount"], "1.00")
+        self.assertNotIn("Recon", row["issue_detail"])
+
+    def test_missing_recon_does_not_change_835_mir_status(self):
+        RECONClaim.objects.filter(client=self.client, claim_control_number="CLM100").delete()
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["issue_label"], "Billed & paid match")
+        self.assertEqual(row["recon_issue_label"], "Recon record missing")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertIsNone(row["recon_amount"])
+
+    def test_missing_835_is_unknown_even_when_mir_and_recon_match(self):
+        EDI835Claim.objects.filter(
+            edi_file__client=self.client, highmark_claim_number="CLM100",
+        ).delete()
+        row = self.claim_row("CLM100")
+        self.assertIsNone(row["paid_835"])
+        self.assertEqual(row["issue_label"], "835 record missing")
+        self.assertEqual(row["recon_issue_label"], "Paid matches")
+
+    def test_missing_and_incomplete_mir_services_cannot_match(self):
+        mir = MIRClaim.objects.get(mir_file__client=self.client, claim_control_number="CLM100")
+        for service_count, remove_lines in ((2, False), (1, True)):
+            with self.subTest(service_count=service_count):
+                mir.service_count = service_count
+                mir.save(update_fields=["service_count"])
+                if remove_lines:
+                    mir.service_lines.all().delete()
+                row = self.claim_row("CLM100")
+                self.assertEqual(row["issue_label"], "MIR amounts missing")
+                self.assertEqual(row["recon_issue_label"], "MIR amounts missing")
+                self.assertEqual(row["status"], "Mismatch")
+                self.assertIsNone(row["mismatch_amount"])
+
+    def test_duplicate_835_with_balanced_aggregate_does_not_confirm_match(self):
+        original = EDI835Claim.objects.get(
+            edi_file__client=self.client, highmark_claim_number="CLM100",
+        )
+        original.total_charge_amount = Decimal("50")
+        original.paid_amount = Decimal("40")
+        original.save(update_fields=["total_charge_amount", "paid_amount"])
+        self.record("CLM100", self.client, date(2026, 10, 15), billed="50", paid_835="40")
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["billed_835"], row["billed_mir"])
+        self.assertEqual(row["paid_835"], row["paid_mir"])
+        self.assertEqual(row["issue_label"], "Duplicate 835")
+        self.assertEqual(row["recon_issue_label"], "Paid matches")
+        self.assertEqual(row["status"], "Mismatch")
+
+    def test_duplicate_mir_with_unpriced_occurrence_is_unresolved(self):
+        mir = MIRClaim.objects.get(mir_file__client=self.client, claim_control_number="CLM100")
+        MIRClaim.objects.create(mir_file=mir.mir_file, claim_sequence=2,
+                                claim_control_number="CLM100", header_raw="H" * 334)
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["issue_label"], "Duplicate MIR · MIR amounts missing")
+        self.assertEqual(row["recon_issue_tone"], "error")
+        self.assertIsNone(row["mismatch_amount"])
+
+    def test_duplicate_recon_does_not_change_835_mir_status_or_inflate_variance(self):
+        recon = RECONClaim.objects.get(client=self.client, claim_control_number="CLM100")
+        recon.pk = None
+        recon.claim_sequence = 2
+        recon.save()
+        row = self.claim_row("CLM100")
+        self.assertEqual(row["issue_label"], "Billed & paid match")
+        self.assertEqual(row["recon_issue_label"], "Duplicate Recon")
+        self.assertEqual(row["status"], "Mismatch")
+        self.assertEqual(row["mismatch_amount"], "0.00")
+
+    def test_zero_negative_and_large_amounts_keep_decimal_precision(self):
+        cases = (
+            ("ZERO", "0.00", "0.00", "0.00", "Billed & paid match"),
+            ("NEGATIVE", "-100.00", "-80.00", "-80.01", "Paid differs"),
+            ("LARGE", "9999999999999.99", "9999999999999.99",
+             "9999999999999.98", "Paid differs"),
+        )
+        for key, billed, paid, mir_paid, label in cases:
+            with self.subTest(key=key):
+                self.record(key, self.client, date(2026, 10, 15), billed=billed,
+                            paid_835=paid, mir_billed=billed, mir_paid=mir_paid,
+                            recon_paid=mir_paid)
+                row = self.claim_row(key)
+                self.assertEqual(row["paid_835"], paid)
+                self.assertEqual(row["issue_label"], label)
+                self.assertEqual(row["mismatch_amount"], "0.00" if key == "ZERO" else "0.01")
