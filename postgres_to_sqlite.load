@@ -1,0 +1,3 @@
+LOAD DATABASE
+     FROM postgresql://mir_user:Sahil1200secure@localhost:5432/mir_backend
+     INTO sqlite:///home/ubuntu/database.sqlite3;

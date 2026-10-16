@@ -1,0 +1,81 @@
+[4m [0m[4m [0m[4mUNIT                                          [0m[4m [0m[4mLOAD  [0m[4m [0m[4mACTIVE[0m[4m [0m[4mSUB    [0m[4m [0m[4mDESCRIPTION                                                                  [0m
+  acpid.service                                  loaded active running ACPI event daemon
+  apparmor.service                               loaded active [0;38:5:245mexited [0m Load AppArmor profiles
+  apport.service                                 loaded active [0;38:5:245mexited [0m automatic crash report generation
+  blk-availability.service                       loaded active [0;38:5:245mexited [0m Availability of block devices
+  chrony.service                                 loaded active running chrony, an NTP client/server
+  cloud-config.service                           loaded active [0;38:5:245mexited [0m Cloud-init: Config Stage
+  cloud-final.service                            loaded active [0;38:5:245mexited [0m Cloud-init: Final Stage
+  cloud-init-local.service                       loaded active [0;38:5:245mexited [0m Cloud-init: Local Stage (pre-network)
+  cloud-init-network.service                     loaded active [0;38:5:245mexited [0m Cloud-init: Network Stage
+  console-setup.service                          loaded active [0;38:5:245mexited [0m Set console font and keymap
+  containerd.service                             loaded active running containerd container runtime
+  cron.service                                   loaded active running Regular background program processing daemon
+  dbus.service                                   loaded active running D-Bus System Message Bus
+  docker.service                                 loaded active running Docker Application Container Engine
+  dracut-shutdown.service                        loaded active [0;38:5:245mexited [0m Restore /run/initramfs on shutdown
+  finalrd.service                                loaded active [0;38:5:245mexited [0m Create final runtime dir for shutdown pivot root
+  fwupd.service                                  loaded active running Firmware update daemon
+  getty@tty1.service                             loaded active running Getty on tty1
+  irqbalance.service                             loaded active running irqbalance daemon
+  keyboard-setup.service                         loaded active [0;38:5:245mexited [0m Set the console keyboard layout
+  kmod-static-nodes.service                      loaded active [0;38:5:245mexited [0m Create List of Static Device Nodes
+  lvm2-monitor.service                           loaded active [0;38:5:245mexited [0m Monitoring of LVM2 mirrors, snapshots etc. using dmeventd or progress polling
+  mir-batch-worker.service                       loaded active running MIR isolated batch conversion worker
+  mir.service                                    loaded active running MIR Django Backend
+  ModemManager.service                           loaded active running Modem Manager
+  mpl-ai.service                                 loaded active running Private Qwen3 0.6B MPL CPU Inference Server
+  mpl-notice-worker.service                      loaded active running MIR MPL Notice Analysis Worker
+  multipathd-queueing.service                    loaded active [0;38:5:245mexited [0m Enable queuing for multipath maps
+  multipathd.service                             loaded active running Device-Mapper Multipath Device Controller
+  netplan-configure.service                      loaded active [0;38:5:245mexited [0m Netplan Backend Configuration
+  networkd-dispatcher.service                    loaded active running Dispatcher daemon for systemd-networkd
+  nginx.service                                  loaded active running A high performance web server and a reverse proxy server
+  plymouth-quit-wait.service                     loaded active [0;38:5:245mexited [0m Hold until boot process finishes up
+  plymouth-quit.service                          loaded active [0;38:5:245mexited [0m Terminate Plymouth Boot Screen
+  plymouth-read-write.service                    loaded active [0;38:5:245mexited [0m Tell Plymouth To Write Out Runtime Data
+  polkit.service                                 loaded active running Authorization Manager
+  postgresql.service                             loaded active [0;38:5:245mexited [0m PostgreSQL RDBMS
+  postgresql@18-main.service                     loaded active running PostgreSQL Cluster 18-main
+  rsyslog.service                                loaded active running System Logging Service
+  serial-getty@ttyS0.service                     loaded active running Serial Getty on ttyS0
+  setvtrgb.service                               loaded active [0;38:5:245mexited [0m Set console scheme
+  snap.amazon-ssm-agent.amazon-ssm-agent.service loaded active running Service for snap application amazon-ssm-agent.amazon-ssm-agent
+  snapd.apparmor.service                         loaded active [0;38:5:245mexited [0m Load AppArmor profiles managed internally by snapd
+  snapd.seeded.service                           loaded active [0;38:5:245mexited [0m Wait until snapd is fully seeded
+  snapd.service                                  loaded active running Snap Daemon
+  ssh.service                                    loaded active running OpenBSD Secure Shell server
+  sysstat.service                                loaded active [0;38:5:245mexited [0m Resets System Activity Logs
+  systemd-binfmt.service                         loaded active [0;38:5:245mexited [0m Set Up Additional Binary Formats
+  systemd-fsck-root.service                      loaded active [0;38:5:245mexited [0m File System Check on Root Device
+  systemd-fsck@dev-disk-by\x2dlabel-BOOT.service loaded active [0;38:5:245mexited [0m File System Check on /dev/disk/by-label/BOOT
+  systemd-fsck@dev-disk-by\x2dlabel-UEFI.service loaded active [0;38:5:245mexited [0m File System Check on /dev/disk/by-label/UEFI
+  systemd-journal-flush.service                  loaded active [0;38:5:245mexited [0m Flush Journal to Persistent Storage
+  systemd-journald.service                       loaded active running Journal Service
+  systemd-logind.service                         loaded active running User Login Management
+  systemd-modules-load.service                   loaded active [0;38:5:245mexited [0m Load Kernel Modules
+  systemd-networkd-persistent-storage.service    loaded active [0;38:5:245mexited [0m Enable Persistent Storage in systemd-networkd
+  systemd-networkd.service                       loaded active running Network Management
+  systemd-random-seed.service                    loaded active [0;38:5:245mexited [0m Load/Save OS Random Seed
+  systemd-remount-fs.service                     loaded active [0;38:5:245mexited [0m Remount Root and Kernel File Systems
+  systemd-resolved.service                       loaded active running Network Name Resolution
+  systemd-sysctl.service                         loaded active [0;38:5:245mexited [0m Apply Kernel Variables
+  systemd-tmpfiles-setup-dev-early.service       loaded active [0;38:5:245mexited [0m Create Static Device Nodes in /dev gracefully
+  systemd-tmpfiles-setup-dev.service             loaded active [0;38:5:245mexited [0m Create Static Device Nodes in /dev
+  systemd-tmpfiles-setup.service                 loaded active [0;38:5:245mexited [0m Create System Files and Directories
+  systemd-udev-load-credentials.service          loaded active [0;38:5:245mexited [0m Load udev Rules from Credentials
+  systemd-udev-trigger.service                   loaded active [0;38:5:245mexited [0m Coldplug All udev Devices
+  systemd-udevd.service                          loaded active running Rule-based Manager for Device Events and Files
+  systemd-user-sessions.service                  loaded active [0;38:5:245mexited [0m Permit User Sessions
+  udisks2.service                                loaded active running Disk Manager
+  ufw.service                                    loaded active [0;38:5:245mexited [0m Uncomplicated firewall
+  unattended-upgrades.service                    loaded active running Unattended Upgrades Shutdown
+  user-runtime-dir@1000.service                  loaded active [0;38:5:245mexited [0m User Runtime Directory /run/user/1000
+  user@1000.service                              loaded active running User Manager for UID 1000
+
+[0;38:5:245mLegend: LOAD   → Reflects whether the unit definition was properly loaded.[0m
+[0;38:5:245m        ACTIVE → The high-level unit activation state, i.e. generalization of SUB.[0m
+[0;38:5:245m        SUB    → The low-level unit activation state, values depend on unit type.[0m
+
+[0;1;39m73 loaded units listed.[0m [0;38:5:245mPass --all to see loaded but inactive units, too.[0m
+[0;38:5:245mTo show all installed unit files use 'systemctl list-unit-files'.[0m

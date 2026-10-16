@@ -1,0 +1,13 @@
+LOAD DATABASE
+     FROM postgresql://mir_user:Sahil1200secure@localhost:5432/mir_backend
+     INTO sqlite:///mir_backend.sqlite3
+
+WITH include drop,
+     create tables,
+     create indexes,
+     reset sequences,
+     foreign keys
+
+CAST
+     type uuid to text,
+     type json to json;
