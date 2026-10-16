@@ -437,7 +437,7 @@ class _CsvSink:
         return value
 
 
-def export_csv(rows, period, payer, sort, direction):
+def export_csv(rows, period, payer, sort, direction, age_band="all"):
     """Stream *every* matching sorted row; no pagination truncation."""
     writer = csv.writer(_CsvSink(), lineterminator="\r\n")
     zone = ZoneInfo(period["timezone"])
@@ -465,7 +465,8 @@ def export_csv(rows, period, payer, sort, direction):
     scope = period["mode"]
     if period["from"]:
         scope += "_" + period["from"].strftime("%Y%m%d") + "-" + period["to"].strftime("%Y%m%d")
-    filename = f"filex-835-mir-recon_{scope}_{payer}_{sort}-{direction}.csv"
+    age_suffix = "" if age_band == "all" else f"_age-{age_band}"
+    filename = f"filex-835-mir-recon_{scope}_{payer}_{sort}-{direction}{age_suffix}.csv"
     response = StreamingHttpResponse(body(), content_type="text/csv; charset=utf-8")
     response["Content-Disposition"] = f'attachment; filename="{filename}"'
     response["Cache-Control"] = "private, no-store, max-age=0"
@@ -488,6 +489,12 @@ def comparison(request):
     sort = str(request.GET.get("sort") or "waiting_days")
     direction = str(request.GET.get("direction") or "desc")
     payer = str(request.GET.get("payer_status") or "all").strip().lower()
+    age_band = str(request.GET.get("age_band") or "all").strip().lower()
+    # Half-open ranges ensure 10, 20 and 30 each enter exactly one band.
+    age_ranges = {"all": None, "0-10": (0, 10), "10-20": (10, 20),
+                  "20-30": (20, 30), "30-plus": (30, None)}
+    if age_band not in age_ranges:
+        return JsonResponse({"success": False, "error": "Invalid age band filter"}, status=400)
     if sort not in SORTABLE or direction not in {"asc", "desc"}:
         return JsonResponse({"success": False, "error": "Invalid sort column or direction"}, status=400)
     categories = {
@@ -500,13 +507,19 @@ def comparison(request):
     period_data = period_rows(client, period)
     if payer != "all":
         period_data = [row for row in period_data if row["payer_status"] in categories[payer]]
+    if age_band != "all":
+        lower, upper = age_ranges[age_band]
+        period_data = [row for row in period_data
+                       if row["waiting_days"] is not None
+                       and row["waiting_days"] >= lower
+                       and (upper is None or row["waiting_days"] < upper)]
     enrich_activity(client, period_data)
     rows = sorted_rows(period_data, sort, direction)
     export_format = str(request.GET.get("format") or "json").strip().lower()
     if export_format not in {"json", "csv"}:
         return JsonResponse({"success": False, "error": "Unsupported export format"}, status=400)
     if export_format == "csv":
-        return export_csv(rows, period, payer, sort, direction)
+        return export_csv(rows, period, payer, sort, direction, age_band)
 
     clear = sum(row["status"] == "Clear" for row in rows)
     mismatches = len(rows) - clear
@@ -559,7 +572,7 @@ def comparison(request):
         "success": True, "period": period_payload(period),
         "page": current, "pages": page_count, "page_size": page_size,
         "count": len(rows), "sort": sort, "direction": direction,
-        "payer_status": payer, "financial_totals": financial_totals,
+        "payer_status": payer, "age_band": age_band, "financial_totals": financial_totals,
         "summary": {
             "clear": clear, "mismatch": mismatches,
             "missing_streams": missing_streams,

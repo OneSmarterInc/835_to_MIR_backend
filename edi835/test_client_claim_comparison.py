@@ -5,6 +5,7 @@ import csv
 import io
 import json
 from zoneinfo import ZoneInfo
+from unittest.mock import patch
 
 from django.test import RequestFactory, TestCase
 from accounts.models import Client, User
@@ -24,6 +25,38 @@ def moment(day):
 
 
 class ClientClaimComparisonTests(TestCase):
+    def test_age_filter_boundaries_pagination_and_csv(self):
+        period = resolve_period({"period": "all"}, self.client)
+        template = period_rows(self.client, period)[0]
+        ages = [0, 9, 10, 19, 20, 29, 30, 90, None]
+        rows = [{**template, "key": str(index), "claim": f"AGE{index}",
+                 "claim_id": None, "waiting_days": age} for index, age in enumerate(ages)]
+        with patch("edi835.client_portal_comparison.period_rows", return_value=rows):
+            for band, expected in (("all", ages), ("0-10", [0, 9]),
+                                   ("10-20", [10, 19]), ("20-30", [20, 29]),
+                                   ("30-plus", [30, 90])):
+                with self.subTest(band=band):
+                    result = self.fetch(period="all", age_band=band, sort="waiting_days", direction="asc")
+                    self.assertEqual([row["waiting_days"] for row in result["rows"]], expected)
+                    self.assertEqual(result["count"], len(expected))
+                    page = self.fetch(period="all", age_band=band, page_size=1, page=2,
+                                      sort="waiting_days", direction="asc")
+                    self.assertEqual(page["pages"], len(expected))
+                    self.assertEqual(page["rows"][0]["waiting_days"], expected[1])
+                    request = self.factory.get("/comparison/", {"period": "all", "age_band": band,
+                        "format": "csv", "page_size": 1, "sort": "waiting_days", "direction": "asc"})
+                    request.user = self.viewer
+                    response = comparison(request)
+                    content = b"".join(response.streaming_content).decode("utf-8-sig")
+                    exported = list(csv.DictReader(io.StringIO(content)))
+                    self.assertEqual([row["Days waiting"] for row in exported],
+                                     ["" if age is None else str(age) for age in expected])
+
+    def test_invalid_age_filter_is_rejected(self):
+        request = self.factory.get("/comparison/", {"period": "all", "age_band": "-10"})
+        request.user = self.viewer
+        self.assertEqual(comparison(request).status_code, 400)
+
     def setUp(self):
         self.factory = RequestFactory()
         self.client = Client.objects.create(
