@@ -3,12 +3,13 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 import re
 
-from django.http import JsonResponse
+from django.http import HttpResponse, JsonResponse
 from django.utils import timezone
 from django.views.decorators.http import require_GET
 from project835.decorators import authenticated_api_required
 from .models import EDI835Claim
 from .client_portal_views import only_client_user, as_claim, finding_for
+from .client_claim_slice import claim_slice
 
 
 def amount(value):
@@ -63,6 +64,7 @@ def detail(request, claim_id):
     if not claim:
         return JsonResponse({"success": False, "error": "Claim not found"}, status=404)
     source_file = claim.edi_file
+    sliced = claim_slice(claim)
     findings = [finding for finding in (source_file.conversion_findings or [])
                 if isinstance(finding, dict)
                 and str(finding.get("severity", "")).upper() in ("HOLD", "REFUSE")]
@@ -75,10 +77,10 @@ def detail(request, claim_id):
     services, claim_adjustments = [], []
     current_service = None
     patient = ""
-    for segment in (claim.segment_data or {}).get("segments") or []:
+    for segment in sliced["claim_segments"]:
         if not isinstance(segment, str):
             continue
-        fields = segment.strip().split("*")
+        fields = segment.strip().split(sliced["element"])
         tag = fields[0].upper()
         if tag == "SVC":
             current_service = {
@@ -111,14 +113,16 @@ def detail(request, claim_id):
     ]
     contractual = [amount(a["amount"]) for a in all_adjustments if a["group"] == "CO"]
     allowed = str(claim.total_charge_amount - sum(contractual)) if contractual else None
-    payment = file_payment_header(source_file.input_file_content)
+    payment = file_payment_header("~".join(
+        segment.replace(sliced["element"], "*") for segment in sliced["segments"]
+    ))
     mir = getattr(source_file, "mir_file", None)
     return JsonResponse({
         "success": True,
         "claim": {
             **as_claim(claim, reason, days),
             "status_code": claim.claim_status,
-            "service_count": claim.service_count,
+            "service_count": len(services),
             "file_name": source_file.original_filename,
             "file_id": str(source_file.pk),
             "received_at": source_file.uploaded_at.isoformat(),
@@ -133,7 +137,9 @@ def detail(request, claim_id):
             "adjustments": all_adjustments,
             "reason_code": match.get("rule_code", "") if match else "",
             "remark_code": match.get("remark_code", "") if match else "",
-            "technical_segments": (claim.segment_data or {}).get("segments", [])[:250],
+            "technical_segments": sliced["segments"],
+            "technical_content": sliced["content"],
+            "technical_segments_error": sliced["error"],
             "timeline": [
                 {"label": "835 received", "at": source_file.uploaded_at.isoformat()},
                 *([{"label": "Conversion completed", "at": source_file.processing_completed_at.isoformat()}]
@@ -141,3 +147,25 @@ def detail(request, claim_id):
             ],
         },
     })
+
+
+@authenticated_api_required
+@require_GET
+def download(request, claim_id):
+    client, denied = only_client_user(request)
+    if denied:
+        return denied
+    claim = EDI835Claim.objects.select_related("edi_file").filter(
+        pk=claim_id, edi_file__client=client,
+    ).first()
+    if not claim:
+        return JsonResponse({"success": False, "error": "Claim not found"}, status=404)
+    sliced = claim_slice(claim)
+    if sliced["error"]:
+        return JsonResponse({"success": False, "error": sliced["error"]}, status=422)
+    response = HttpResponse(sliced["content"], content_type="application/EDI-X12")
+    # Use the record ID so an untrusted claim identifier cannot enter headers.
+    response["Content-Disposition"] = f'attachment; filename="claim-{claim.pk}.835"'
+    response["Cache-Control"] = "private, no-store, max-age=0"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response

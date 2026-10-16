@@ -7,7 +7,8 @@ from django.http import JsonResponse
 from accounts.models import Client, User
 from edi835.models import EDI835File, EDI835Claim
 from edi835.client_portal_views import overview
-from edi835.client_portal_claim import detail
+from edi835.client_portal_claim import detail, download
+from edi835.test_client_claim_slice import source, BODY
 from project835.middleware import AdminAccessMiddleware
 
 
@@ -65,6 +66,25 @@ class ClientPortalSecurityTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.content)["claim"]["number"], "ALPHA-001")
+
+    def test_download_is_tenant_bound_and_matches_preview(self):
+        denied = download(self.request(self.viewer, "/download/"), self.cb.pk)
+        self.assertEqual(denied.status_code, 404)
+        self.fa.input_file_content = source(BODY.replace("CLP*FIRST", "CLP*ALPHA-001"))
+        self.fa.save(update_fields=["input_file_content"])
+        response = download(self.request(self.viewer, "/download/"), self.ca.pk)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response["Content-Type"], "application/EDI-X12")
+        self.assertIn("no-store", response["Cache-Control"])
+        preview = json.loads(detail(self.request(self.viewer, "/claim/"), self.ca.pk).content)["claim"]
+        self.assertEqual(response.content.decode(), preview["technical_content"])
+        self.assertEqual(preview["payer"], "FIRST PAYER")
+        self.assertEqual(preview["service_count"], 1)
+        self.assertNotIn("SECOND", response.content.decode())
+
+    def test_download_without_complete_envelope_reports_error(self):
+        response = download(self.request(self.viewer, "/download/"), self.ca.pk)
+        self.assertEqual(response.status_code, 422)
 
     def test_client_admin_does_not_impersonate_client_user(self):
         response = overview(self.request(self.legacy, "/edi835/api/client-portal/overview/"))

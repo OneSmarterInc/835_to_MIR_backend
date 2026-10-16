@@ -49,6 +49,10 @@ def normalized_835_claims(content):
                 "service_count": 0,
                 "segments": [segment],
             }
+        elif tag in {"LX", "PLB", "TS3", "TS2", "SE", "ST", "GE", "GS", "IEA", "ISA"}:
+            if current:
+                claims.append(current)
+                current = None
         elif current:
             current["segments"].append(segment)
             if tag == "SVC":
