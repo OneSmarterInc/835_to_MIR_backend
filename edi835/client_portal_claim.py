@@ -10,6 +10,7 @@ from project835.decorators import authenticated_api_required
 from .models import EDI835Claim
 from .client_portal_views import only_client_user, as_claim, finding_for
 from .client_claim_slice import claim_slice
+from .client_claim_sources import available_sources, source_records, source_metadata, source_slice, download_name
 
 
 def amount(value):
@@ -140,6 +141,7 @@ def detail(request, claim_id):
             "technical_segments": sliced["segments"],
             "technical_content": sliced["content"],
             "technical_segments_error": sliced["error"],
+            "sources": available_sources(claim),
             "timeline": [
                 {"label": "835 received", "at": source_file.uploaded_at.isoformat()},
                 *([{"label": "Conversion completed", "at": source_file.processing_completed_at.isoformat()}]
@@ -166,6 +168,40 @@ def download(request, claim_id):
     response = HttpResponse(sliced["content"], content_type="application/EDI-X12")
     # Use the record ID so an untrusted claim identifier cannot enter headers.
     response["Content-Disposition"] = f'attachment; filename="claim-{claim.pk}.835"'
+    response["Cache-Control"] = "private, no-store, max-age=0"
+    response["X-Content-Type-Options"] = "nosniff"
+    return response
+
+
+@authenticated_api_required
+@require_GET
+def source_preview(request, claim_id, kind):
+    client, denied = only_client_user(request)
+    if denied:
+        return denied
+    claim = EDI835Claim.objects.select_related("edi_file").filter(
+        pk=claim_id, edi_file__client=client,
+    ).first()
+    if not claim or kind not in {"835", "mir", "837", "recon"}:
+        return JsonResponse({"success": False, "error": "Claim source not found."}, status=404)
+    record_id = request.GET.get("record_id", "")
+    # Recompute eligibility: a supplied ID alone never grants source access.
+    record = next((row for row in source_records(claim, kind) if str(row.pk) == record_id), None)
+    if record is None:
+        return JsonResponse({"success": False, "error": "Claim source not found."}, status=404)
+    try:
+        content = source_slice(record, kind)
+    except ValueError as exc:
+        return JsonResponse({"success": False, "error": str(exc)}, status=422)
+    filename = download_name(claim, kind)
+    if request.GET.get("download") == "1":
+        response = HttpResponse(content, content_type=(
+            "application/EDI-X12" if kind in {"835", "837"} else "application/octet-stream"
+        ))
+        response["Content-Disposition"] = f'attachment; filename="{filename}"'
+    else:
+        response = JsonResponse({"success": True, "kind": kind, "content": content,
+                                 "download_name": filename, "source": source_metadata(record, kind)})
     response["Cache-Control"] = "private, no-store, max-age=0"
     response["X-Content-Type-Options"] = "nosniff"
     return response

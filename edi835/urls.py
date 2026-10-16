@@ -3,6 +3,7 @@ from .claims_dashboard_views import dashboard_files, dashboard_file_claims
 from .client_portal_views import overview as client_portal_overview, history as client_portal_history
 from .client_portal_claim import detail as client_portal_claim_detail
 from .client_portal_claim import download as client_portal_claim_download
+from .client_portal_claim import source_preview as client_portal_source_preview
 from .client_portal_comparison import comparison as client_portal_comparison
 from .client_portal_actions import actions as client_portal_actions, review_action as client_portal_review_action
 from .client_portal_conversion import convert as client_portal_convert
@@ -112,6 +113,7 @@ urlpatterns = [
     path("api/client-portal/convert/", client_portal_convert, name="client_portal_convert"),
     path("api/client-portal/claim/<int:claim_id>/", client_portal_claim_detail, name="client_portal_claim_detail"),
     path("api/client-portal/claim/<int:claim_id>/download/", client_portal_claim_download, name="client_portal_claim_download"),
+    path("api/client-portal/claim/<int:claim_id>/source/<str:kind>/", client_portal_source_preview, name="client_portal_source_preview"),
     path("api/claims-dashboard/", dashboard_files, name="claims_dashboard"),
     path("api/claims-dashboard/<str:kind>/<uuid:file_id>/", dashboard_file_claims, name="claims_dashboard_file"),
     path("api/tracked-files/", tracked_files_list, name="edi835_tracked_files"),
