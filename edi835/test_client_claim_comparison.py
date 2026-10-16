@@ -39,10 +39,18 @@ class ClientClaimComparisonTests(TestCase):
                     result = self.fetch(period="all", age_band=band, sort="waiting_days", direction="asc")
                     self.assertEqual([row["waiting_days"] for row in result["rows"]], expected)
                     self.assertEqual(result["count"], len(expected))
+                    counts = {"0-10": 0, "10-20": 0, "20-30": 0, "30-plus": 0}
+                    for value in expected:
+                        if value is not None:
+                            counts["0-10" if value < 10 else "10-20" if value < 20 else "20-30" if value < 30 else "30-plus"] += 1
+                    self.assertEqual(result["age_summary"], {
+                        "counts": counts, "unknown": expected.count(None), "total": len(expected),
+                    })
                     page = self.fetch(period="all", age_band=band, page_size=1, page=2,
                                       sort="waiting_days", direction="asc")
                     self.assertEqual(page["pages"], len(expected))
                     self.assertEqual(page["rows"][0]["waiting_days"], expected[1])
+                    self.assertEqual(page["age_summary"], result["age_summary"])
                     request = self.factory.get("/comparison/", {"period": "all", "age_band": band,
                         "format": "csv", "page_size": 1, "sort": "waiting_days", "direction": "asc"})
                     request.user = self.viewer
@@ -56,6 +64,40 @@ class ClientClaimComparisonTests(TestCase):
         request = self.factory.get("/comparison/", {"period": "all", "age_band": "-10"})
         request.user = self.viewer
         self.assertEqual(comparison(request).status_code, 400)
+
+    @patch("edi835.client_portal_period.timezone.now", return_value=moment(date(2026, 10, 16)))
+    def test_age_chart_includes_nonheld_fifteen_day_claims_and_matches_filters(self, _now):
+        self.record("FIFTEEN", self.client, date(2026, 10, 1), billed="100")
+        self.record("FIFTEEN", self.other, date(2026, 10, 1), billed="9999")
+        # A separate recent hold must not define the chart's population.
+        EDI835File.objects.filter(client=self.client, original_filename="CLM300.835").update(
+            held_claims_count=1, conversion_findings=[{"severity": "HOLD", "claim_index": 1}],
+        )
+        result = self.fetch(period="monthly", page_size=1)
+        self.assertEqual(result["count"], 4)
+        self.assertEqual(result["rows"][0]["waiting_days"], 15)
+        self.assertFalse(result["rows"][0]["is_held"])
+        self.assertEqual(result["age_summary"], {
+            "counts": {"0-10": 3, "10-20": 1, "20-30": 0, "30-plus": 0},
+            "unknown": 0, "total": 4,
+        })
+        filtered = self.fetch(period="monthly", payer_status="denied", age_band="10-20")
+        self.assertEqual(filtered["count"], 1)
+        self.assertEqual(filtered["age_summary"]["counts"]["10-20"], 1)
+        empty = self.fetch(period="daily", age_band="10-20")
+        self.assertEqual(empty["age_summary"]["total"], 0)
+        self.assertEqual(sum(empty["age_summary"]["counts"].values()), 0)
+
+    def test_age_summary_is_not_limited_to_200_preview_rows(self):
+        template = period_rows(self.client, resolve_period({"period": "all"}, self.client))[0]
+        rows = [{**template, "key": str(index), "claim_id": None, "waiting_days": 15,
+                 "payer_status": "No payment" if index < 230 else "Paid in full"}
+                for index in range(250)]
+        with patch("edi835.client_portal_comparison.period_rows", return_value=rows):
+            result = self.fetch(period="all", payer_status="denied", page_size=10, page=2)
+        self.assertEqual(len(result["rows"]), 10)
+        self.assertEqual(result["age_summary"]["total"], 230)
+        self.assertEqual(result["age_summary"]["counts"]["10-20"], 230)
 
     def setUp(self):
         self.factory = RequestFactory()

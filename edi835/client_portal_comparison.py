@@ -25,6 +25,26 @@ from .reconciliation_service import normalize_claim_id
 
 
 ZERO = Decimal("0.00")
+AGE_RANGES = {"0-10": (0, 10), "10-20": (10, 20),
+              "20-30": (20, 30), "30-plus": (30, None)}
+
+
+def age_summary(rows: list[dict]) -> dict:
+    """Count the exact filtered comparison rows, before pagination."""
+    counts = dict.fromkeys(AGE_RANGES, 0)
+    unknown = 0
+    for row in rows:
+        days = row["waiting_days"]
+        if days is None or days < 0:
+            unknown += 1
+            continue
+        for band, (lower, upper) in AGE_RANGES.items():
+            if days >= lower and (upper is None or days < upper):
+                counts[band] += 1
+                break
+    return {"counts": counts, "unknown": unknown, "total": len(rows)}
+
+
 SORTABLE = {
     "claim", "date", "billed_835", "billed_mir", "paid_835", "paid_mir",
     "recon_amount", "mismatch_amount", "status",
@@ -491,9 +511,7 @@ def comparison(request):
     payer = str(request.GET.get("payer_status") or "all").strip().lower()
     age_band = str(request.GET.get("age_band") or "all").strip().lower()
     # Half-open ranges ensure 10, 20 and 30 each enter exactly one band.
-    age_ranges = {"all": None, "0-10": (0, 10), "10-20": (10, 20),
-                  "20-30": (20, 30), "30-plus": (30, None)}
-    if age_band not in age_ranges:
+    if age_band != "all" and age_band not in AGE_RANGES:
         return JsonResponse({"success": False, "error": "Invalid age band filter"}, status=400)
     if sort not in SORTABLE or direction not in {"asc", "desc"}:
         return JsonResponse({"success": False, "error": "Invalid sort column or direction"}, status=400)
@@ -508,7 +526,7 @@ def comparison(request):
     if payer != "all":
         period_data = [row for row in period_data if row["payer_status"] in categories[payer]]
     if age_band != "all":
-        lower, upper = age_ranges[age_band]
+        lower, upper = AGE_RANGES[age_band]
         period_data = [row for row in period_data
                        if row["waiting_days"] is not None
                        and row["waiting_days"] >= lower
@@ -573,6 +591,7 @@ def comparison(request):
         "page": current, "pages": page_count, "page_size": page_size,
         "count": len(rows), "sort": sort, "direction": direction,
         "payer_status": payer, "age_band": age_band, "financial_totals": financial_totals,
+        "age_summary": age_summary(rows),
         "summary": {
             "clear": clear, "mismatch": mismatches,
             "missing_streams": missing_streams,
