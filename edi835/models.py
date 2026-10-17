@@ -4,6 +4,43 @@ from django.db import models
 from django.utils import timezone
 
 
+class AnalysisUpload(models.Model):
+    """Durable staging uploads, deliberately separate from production ingestion."""
+
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="analysis_uploads")
+    uploaded_by = models.ForeignKey("accounts.User", on_delete=models.SET_NULL, null=True, related_name="analysis_uploads")
+    kind = models.CharField(max_length=3, choices=[("837", "837"), ("835", "835")])
+    filename = models.CharField(max_length=255)
+    content_sha256 = models.CharField(max_length=64)
+    raw_content = models.BinaryField(editable=False)
+    uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+
+    class Meta:
+        db_table = "client_analysis_upload"
+        indexes = [models.Index(fields=["client", "id"], name="analysis_client_upload_idx")]
+        constraints = [
+            models.UniqueConstraint(fields=["client", "kind", "filename", "content_sha256"], name="analysis_upload_identity"),
+            models.CheckConstraint(condition=models.Q(kind__in=["837", "835"]), name="analysis_upload_kind"),
+        ]
+
+
+class AnalysisClaim(models.Model):
+    """Claim occurrences with original sequence retained for a future controlled merge."""
+
+    upload = models.ForeignKey(AnalysisUpload, on_delete=models.CASCADE, related_name="claims")
+    sequence = models.PositiveIntegerField()
+    claim_number = models.CharField(max_length=255, db_index=True)
+    internal_number = models.CharField(max_length=255, blank=True)
+    billed = models.DecimalField(max_digits=18, decimal_places=2)
+    payment = models.DecimalField(max_digits=18, decimal_places=2, null=True)
+    patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, null=True)
+
+    class Meta:
+        db_table = "client_analysis_claim"
+        ordering = ["sequence"]
+        constraints = [models.UniqueConstraint(fields=["upload", "sequence"], name="analysis_claim_sequence")]
+
+
 class EDI835File(models.Model):
     STATUS_CHOICES = [
         ("UPLOADED", "Uploaded"),

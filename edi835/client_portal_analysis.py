@@ -1,17 +1,21 @@
-"""Stateless upload inspection. Never calls ingestion, storage or conversion services."""
+"""Isolated Analysis staging; never reads or writes production claim tables."""
 from decimal import Decimal
+import hashlib
+import logging
 import re
-from uuid import uuid4
 
+from django.db import DatabaseError, transaction
 from django.http import JsonResponse
 from django.middleware.csrf import get_token
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_protect
 from django.views.decorators.http import require_http_methods
 
 from project835.decorators import authenticated_api_required
 from .claim_numbers import split_claim_number
 from .client_portal_views import only_client_user
+from .models import AnalysisClaim, AnalysisUpload
+
+logger = logging.getLogger(__name__)
 
 MAX_BYTES = 10 * 1024 * 1024
 MAX_CLAIMS = 20000
@@ -22,11 +26,20 @@ def count_agrees(value: str, expected: int) -> bool:
     return bool(re.fullmatch(r"\d{1,9}", value)) and int(value) == expected
 
 
+def claim_amount(value: str, element: str, sequence: int, *, optional: bool = False) -> Decimal | None:
+    value = value.strip()
+    if optional and not value:
+        return None
+    if not re.fullmatch(r"-?\d{1,16}(?:\.\d{1,2})?", value):
+        raise ValueError(f"Claim occurrence {sequence} has an invalid {element} amount.")
+    return Decimal(value)
+
+
 def parse_analysis(text: str, kind: str) -> list[dict]:
-    """Validate envelope controls/counts and extract only identifiers and billed charges.
+    """Validate envelopes and extract identifiers and claim-level comparison amounts.
 
     This is structural validation, not a payer-specific implementation-guide check.
-    Iterate segments without retaining patient, service or raw transaction payloads.
+    Only comparison fields are returned; original bytes are retained in staging.
     """
     text = text.strip()
     if kind not in {"837", "835"} or not text.startswith("ISA") or len(text) < 106:
@@ -104,9 +117,8 @@ def parse_analysis(text: str, kind: str) -> list[dict]:
             amount_index = 2 if kind == "837" else 3
             if len(fields) <= amount_index or not fields[1].strip():
                 raise ValueError("A claim is missing its claim number or billed amount.")
-            value = fields[amount_index].strip()
-            if not re.fullmatch(r"-?\d{1,16}(?:\.\d{1,2})?", value):
-                raise ValueError(f"Claim occurrence {len(claims) + 1} has an invalid billed amount.")
+            sequence = len(claims) + 1
+            billed = claim_amount(fields[amount_index], "CLM02" if kind == "837" else "CLP03", sequence)
             control = fields[1].strip().upper()
             split = split_claim_number(control) if kind == "837" else {}
             internal = (split.get("internal_claim_number", "") if kind == "837"
@@ -114,9 +126,17 @@ def parse_analysis(text: str, kind: str) -> list[dict]:
             current = {
                 "claim": split.get("highmark_claim_number") or control,
                 "internal_number": internal.removeprefix("ZZ:"),
-                "billed": format(Decimal(value), ".2f"),
-                "sequence": len(claims) + 1,
+                "billed": format(billed, ".2f"),
+                "sequence": sequence,
             }
+            if kind == "835":
+                payment = claim_amount(fields[4] if len(fields) > 4 else "", "CLP04", sequence)
+                responsibility = claim_amount(fields[5] if len(fields) > 5 else "", "CLP05", sequence, optional=True)
+                current.update(
+                    payment=format(payment, ".2f"),
+                    patient_responsibility=format(responsibility, ".2f") if responsibility is not None else None,
+                    allowed=format(payment + responsibility, ".2f") if responsibility is not None else None,
+                )
             claims.append(current)
             service = False
             if len(claims) > MAX_CLAIMS:
@@ -132,18 +152,65 @@ def parse_analysis(text: str, kind: str) -> list[dict]:
         raise ValueError("The file contains too many segments.")
     if not complete or not claims:
         raise ValueError("The file is incomplete or contains no claim records.")
+    if any(len(row[key]) > 255 for row in claims for key in ("claim", "internal_number")):
+        raise ValueError("Claim identifiers may contain at most 255 characters.")
     return claims
+
+
+def upload_payload(upload: AnalysisUpload) -> dict:
+    claims = []
+    for claim in upload.claims.all():
+        row = {"claim": claim.claim_number, "internal_number": claim.internal_number,
+               "billed": format(claim.billed, ".2f"), "sequence": claim.sequence}
+        if upload.kind == "835":
+            allowed = (claim.payment + claim.patient_responsibility
+                       if claim.payment is not None and claim.patient_responsibility is not None else None)
+            row.update(payment=format(claim.payment, ".2f") if claim.payment is not None else None,
+                       patient_responsibility=format(claim.patient_responsibility, ".2f") if claim.patient_responsibility is not None else None,
+                       allowed=format(allowed, ".2f") if allowed is not None else None)
+        claims.append(row)
+    return {"id": str(upload.pk), "filename": upload.filename, "kind": upload.kind,
+            "uploaded_at": upload.uploaded_at.isoformat(), "claims": claims}
+
+
+def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict]):
+    # A content identity makes retries safe, including a lost success response.
+    # Both the source and all parsed claims commit together, or neither does.
+    with transaction.atomic():
+        record, created = AnalysisUpload.objects.get_or_create(
+            client=client, kind=kind, filename=upload.name.replace("\\", "/").rsplit("/", 1)[-1],
+            content_sha256=hashlib.sha256(raw).hexdigest(),
+            defaults={"uploaded_by": user, "raw_content": raw},
+        )
+        if created:
+            AnalysisClaim.objects.bulk_create([
+                AnalysisClaim(upload=record, sequence=row["sequence"], claim_number=row["claim"],
+                              internal_number=row["internal_number"], billed=row["billed"],
+                              payment=row.get("payment"), patient_responsibility=row.get("patient_responsibility"))
+                for row in claims
+            ], batch_size=500)
+    return record, created
 
 
 @authenticated_api_required
 @require_http_methods(["GET", "POST"])
 @csrf_protect
 def analysis_upload(request):
-    _, denied = only_client_user(request)
+    client, denied = only_client_user(request)
     if denied:
         return denied
     if request.method == "GET":
-        response = JsonResponse({"success": True, "csrf_token": get_token(request)})
+        payload = {"success": True, "csrf_token": get_token(request)}
+        if request.GET.get("csrf_only") != "1":
+            cursor = request.GET.get("after", "0")
+            if not re.fullmatch(r"\d{1,18}", cursor):
+                return JsonResponse({"success": False, "error": "Invalid upload cursor."}, status=400)
+            # One bounded file per response; raw bytes never leave the database.
+            uploads = list(AnalysisUpload.objects.filter(client=client, pk__gt=int(cursor))
+                           .defer("raw_content").order_by("pk")[:2])
+            payload.update(files=[upload_payload(uploads[0])] if uploads else [],
+                           next_cursor=str(uploads[0].pk) if len(uploads) > 1 else None)
+        response = JsonResponse(payload)
     else:
         upload = request.FILES.get("file")
         kind = request.POST.get("kind")
@@ -162,10 +229,14 @@ def analysis_upload(request):
             except ValueError as exc:
                 response = JsonResponse({"success": False, "error": str(exc)}, status=400)
             else:
-                response = JsonResponse({"success": True, "file": {
-                    "id": str(uuid4()), "filename": upload.name.replace("\\", "/").rsplit("/", 1)[-1],
-                    "kind": kind, "uploaded_at": timezone.now().isoformat(), "claims": claims,
-                }})
+                try:
+                    record, created = save_upload(client, request.user, upload, kind, raw, claims)
+                    response = JsonResponse({"success": True, "saved": True,
+                                             "reused": not created, "file": upload_payload(record)})
+                except DatabaseError:
+                    # Do not log uploaded data or database exception parameters.
+                    logger.error("Analysis staging save failed for client_id=%s", client.pk)
+                    response = JsonResponse({"success": False, "error": "The file could not be saved. Keep it selected and retry."}, status=503)
     response["Cache-Control"] = "private, no-store, max-age=0"
     response["X-Content-Type-Options"] = "nosniff"
     return response

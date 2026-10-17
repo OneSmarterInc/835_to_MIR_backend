@@ -1,15 +1,17 @@
 import json
+from decimal import Decimal
 from unittest.mock import patch
 
 from django.conf import settings
 from django.contrib.auth.models import AnonymousUser
 from django.core.files.uploadedfile import SimpleUploadedFile
-from django.db import connection
+from django.db import DatabaseError, connection
 from django.test import RequestFactory, SimpleTestCase, TestCase
 from django.test.utils import CaptureQueriesContext
 
 from accounts.models import Client, User
 from .client_portal_analysis import analysis_upload, parse_analysis
+from .models import AnalysisClaim, AnalysisUpload
 
 
 def envelope(kind="837", segments=None, element="*", terminator="~"):
@@ -36,6 +38,27 @@ class AnalysisParserTests(SimpleTestCase):
         for value in ("", "NaN", "Infinity", "1e3", "1,000", "1.123", "x", "12345678901234567"):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 parse_analysis(envelope("835", [f"CLP*123*1*{value}*0*0*ZZ*ID"]), "835")
+
+    def test_allowed_amount_includes_patient_responsibility(self):
+        cases = [("657", "0", "657", "657.00"), ("657", "500", "157", "657.00"),
+                 ("657", "500", "100", "600.00"), ("-657", "-500", "-157", "-657.00"),
+                 ("0", "0", "0", "0.00"), ("1", "0.10", "0.20", "0.30")]
+        for billed, payment, responsibility, expected in cases:
+            with self.subTest(payment=payment, responsibility=responsibility):
+                row = parse_analysis(envelope("835", [f"CLP*123*1*{billed}*{payment}*{responsibility}*ZZ*ID"]), "835")[0]
+                self.assertEqual(row["allowed"], expected)
+                self.assertEqual(row["payment"], format(Decimal(payment), ".2f"))
+
+    def test_missing_patient_responsibility_is_unknown(self):
+        row = parse_analysis(envelope("835", ["CLP*123*1*657*0**ZZ*ID"]), "835")[0]
+        self.assertEqual(row["payment"], "0.00")
+        self.assertIsNone(row["patient_responsibility"])
+        self.assertIsNone(row["allowed"])
+
+    def test_invalid_payment_or_responsibility_rejected(self):
+        for payment, responsibility in (("", "0"), ("NaN", "0"), ("0", "wrong"), ("0", "1.123")):
+            with self.subTest(payment=payment, responsibility=responsibility), self.assertRaises(ValueError):
+                parse_analysis(envelope("835", [f"CLP*123*1*657*{payment}*{responsibility}*ZZ*ID"]), "835")
 
     def test_wrong_type_and_malformed_envelopes(self):
         valid = envelope()
@@ -67,23 +90,85 @@ class AnalysisUploadTests(TestCase):
             client=self.tenant, client_role="CLIENT_USER", password="TestPassword!234")
         self.factory = RequestFactory()
 
-    def request(self, kind="837", raw=None, user=None, csrf=True):
+    def request(self, kind="837", raw=None, user=None, csrf=True, filename="claims.x12"):
         request = self.factory.post("/edi835/api/client-portal/analysis/", {
-            "kind": kind, "file": SimpleUploadedFile("claims.x12", (raw or envelope(kind)).encode()),
+            "kind": kind, "file": SimpleUploadedFile(filename, (raw or envelope(kind)).encode()),
         })
         request.user = user or self.user
         request._dont_enforce_csrf_checks = csrf
         return analysis_upload(request)
 
-    def test_success_without_database_writes_and_no_raw_content(self):
+    def get(self, user=None, query=""):
+        request = self.factory.get("/edi835/api/client-portal/analysis/" + query)
+        request.user = user or self.user
+        return analysis_upload(request)
+
+    def test_atomic_staging_save_without_production_writes(self):
         with CaptureQueriesContext(connection) as queries:
             response = self.request()
         self.assertEqual(response.status_code, 200)
         body = json.loads(response.content)
+        self.assertTrue(body["saved"])
+        self.assertFalse(body["reused"])
         self.assertEqual(body["file"]["claims"][0]["billed"], "100.00")
         self.assertEqual(set(body["file"]), {"id", "filename", "kind", "uploaded_at", "claims"})
-        self.assertFalse(any(q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE")) for q in queries))
+        writes = [q["sql"] for q in queries if q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
+        self.assertTrue(writes)
+        self.assertTrue(all("client_analysis_" in sql for sql in writes))
+        record = AnalysisUpload.objects.get()
+        self.assertEqual(bytes(record.raw_content), envelope().encode())
+        self.assertEqual(record.uploaded_by, self.user)
+        self.assertEqual(record.claims.count(), 1)
         self.assertIn("no-store", response["Cache-Control"])
+
+    def test_saved_data_survives_get_and_contains_both_sources(self):
+        self.request()
+        self.request("835", raw=envelope("835", ["CLP*123456789*1*657*0*657*ZZ*ID"]))
+        with CaptureQueriesContext(connection) as queries:
+            page1 = json.loads(self.get().content)
+        page2 = json.loads(self.get(query="?after=" + page1["next_cursor"]).content)
+        self.assertEqual(page1["files"][0]["kind"], "837")
+        self.assertEqual(page2["files"][0]["kind"], "835")
+        self.assertEqual(page2["files"][0]["claims"][0]["allowed"], "657.00")
+        self.assertIsNone(page2["next_cursor"])
+        self.assertFalse(any('raw_content' in q['sql'] for q in queries))
+        self.assertEqual(self.get(query="?after=bad").status_code, 400)
+
+    def test_tenant_isolation_and_empty_staging(self):
+        self.request()
+        other = Client.objects.create(name="Other", client_code="OTHER", email="other@example.com")
+        self.user.client = other
+        with CaptureQueriesContext(connection) as queries:
+            response = self.get()
+        self.assertEqual(json.loads(response.content)["files"], [])
+        # Analysis has no fallback to any existing ingestion table.
+        self.assertFalse(any('edi835_edi' in q['sql'] or 'edi837_claim' in q['sql'] for q in queries))
+        self.request("835")
+        self.assertEqual(AnalysisUpload.objects.filter(client=other).count(), 1)
+        self.assertEqual(AnalysisUpload.objects.filter(client=self.tenant).count(), 1)
+
+    def test_identical_upload_is_idempotent_but_changed_content_is_preserved(self):
+        first = json.loads(self.request().content)
+        retry = json.loads(self.request().content)
+        self.assertEqual(first["file"]["id"], retry["file"]["id"])
+        self.assertTrue(retry["reused"])
+        self.assertEqual(AnalysisClaim.objects.count(), 1)
+        self.request(raw=envelope(segments=["CLM*CHANGED*101"]))
+        self.request(filename="other.837")
+        self.assertEqual(AnalysisUpload.objects.count(), 3)
+
+    def test_failure_rolls_back_source_and_claims_and_can_retry(self):
+        with patch("edi835.client_portal_analysis.AnalysisClaim.objects.bulk_create", side_effect=DatabaseError("storage failure")):
+            self.assertEqual(self.request().status_code, 503)
+        self.assertEqual(AnalysisUpload.objects.count(), 0)
+        self.assertEqual(AnalysisClaim.objects.count(), 0)
+        self.assertEqual(self.request().status_code, 200)
+        self.assertEqual(AnalysisUpload.objects.count(), 1)
+
+    def test_invalid_file_never_enters_staging(self):
+        self.assertEqual(self.request(raw="invalid").status_code, 400)
+        self.assertEqual(AnalysisUpload.objects.count(), 0)
+        self.assertEqual(AnalysisClaim.objects.count(), 0)
 
     def test_permissions_and_csrf(self):
         self.assertEqual(self.request(user=AnonymousUser()).status_code, 401)
