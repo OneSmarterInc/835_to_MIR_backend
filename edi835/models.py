@@ -14,6 +14,10 @@ class AnalysisUpload(models.Model):
     content_sha256 = models.CharField(max_length=64)
     raw_content = models.BinaryField(editable=False)
     uploaded_at = models.DateTimeField(default=timezone.now, editable=False)
+    status = models.CharField(max_length=20, default="SAVED", choices=[("SAVED", "Saved"), ("PARTIAL", "Partially saved"), ("REJECTED", "Rejected")])
+    accepted_count = models.PositiveIntegerField(default=0)
+    rejected_count = models.PositiveIntegerField(default=0)
+    processing_version = models.PositiveIntegerField(default=1)
 
     class Meta:
         db_table = "client_analysis_upload"
@@ -908,3 +912,115 @@ class ClientPortalAction(models.Model):
             models.Index(fields=["client", "-created_at"], name="client_portal_activity_idx"),
             models.Index(fields=["client", "status"], name="client_portal_status_idx"),
         ]
+
+
+class Analysis835Claim(models.Model):
+    """Analysis-only mirror of EDI835Claim; never linked to live intake tables."""
+
+    edi_file = models.ForeignKey(AnalysisUpload, on_delete=models.CASCADE, related_name="normalized_835_claims")
+    analysis_claim = models.OneToOneField(AnalysisClaim, on_delete=models.CASCADE, related_name="normalized_835")
+    claim_sequence = models.PositiveIntegerField()
+    highmark_claim_number = models.CharField(max_length=100, db_index=True)
+    internal_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    claim_status = models.CharField(max_length=20, blank=True, default="")
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    service_count = models.PositiveIntegerField(default=0)
+    raw_claim = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "client_analysis_835_claim"
+        ordering = ["claim_sequence"]
+        constraints = [models.UniqueConstraint(fields=["edi_file", "claim_sequence"], name="analysis_835_claim_seq")]
+
+
+class Analysis837Claim(models.Model):
+    """Analysis-only mirror of EDI837Claim; never linked to live intake tables."""
+
+    edi_file = models.ForeignKey(AnalysisUpload, on_delete=models.CASCADE, related_name="normalized_837_claims")
+    analysis_claim = models.OneToOneField(AnalysisClaim, on_delete=models.CASCADE, related_name="normalized_837")
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="analysis_837_claims")
+    claim_sequence = models.PositiveIntegerField()
+    claim_control_number = models.CharField(max_length=100, db_index=True)
+    highmark_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    internal_claim_number = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    reference_9c = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    patient_control_number = models.CharField(max_length=100, blank=True, default="")
+    member_id = models.CharField(max_length=100, blank=True, default="", db_index=True)
+    patient_first_name = models.CharField(max_length=100, blank=True, default="")
+    patient_last_name = models.CharField(max_length=100, blank=True, default="")
+    subscriber_first_name = models.CharField(max_length=100, blank=True, default="")
+    subscriber_last_name = models.CharField(max_length=100, blank=True, default="")
+    billing_provider_name = models.CharField(max_length=255, blank=True, default="")
+    rendering_provider_name = models.CharField(max_length=255, blank=True, default="")
+    referring_provider_name = models.CharField(max_length=255, blank=True, default="")
+    payer_name = models.CharField(max_length=255, blank=True, default="")
+    claim_type = models.CharField(max_length=30, blank=True, default="")
+    place_of_service = models.CharField(max_length=10, blank=True, default="")
+    claim_frequency_code = models.CharField(max_length=5, blank=True, default="")
+    original_claim_number = models.CharField(max_length=100, blank=True, default="")
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    diagnosis_codes = models.JSONField(default=list, blank=True)
+    service_count = models.PositiveIntegerField(default=0)
+    total_charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    raw_claim = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "client_analysis_837_claim"
+        ordering = ["claim_sequence"]
+        constraints = [models.UniqueConstraint(fields=["edi_file", "claim_sequence"], name="analysis_837_claim_seq")]
+
+
+class Analysis837ServiceLine(models.Model):
+    """Analysis-only mirror of EDI837ServiceLine; never linked to live intake tables."""
+
+    claim = models.ForeignKey(Analysis837Claim, on_delete=models.CASCADE, related_name="service_lines")
+    edi_file = models.ForeignKey(AnalysisUpload, on_delete=models.CASCADE, related_name="service_lines")
+    service_sequence = models.PositiveIntegerField()
+    procedure_code = models.CharField(max_length=50, blank=True, default="")
+    procedure_qualifier = models.CharField(max_length=10, blank=True, default="")
+    modifiers = models.JSONField(default=list, blank=True)
+    revenue_code = models.CharField(max_length=30, blank=True, default="")
+    service_from_date = models.CharField(max_length=10, blank=True, default="")
+    service_to_date = models.CharField(max_length=10, blank=True, default="")
+    units = models.DecimalField(max_digits=12, decimal_places=2, default=0)
+    charge_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    diagnosis_pointers = models.JSONField(default=list, blank=True)
+    raw_segments = models.TextField(blank=True, default="")
+    segment_data = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = "client_analysis_837_service_line"
+        ordering = ["service_sequence"]
+        constraints = [models.UniqueConstraint(fields=["claim", "service_sequence"], name="analysis_837_service_seq")]
+
+
+class AnalysisClaimRejection(models.Model):
+    upload = models.ForeignKey(AnalysisUpload, on_delete=models.CASCADE, related_name="rejections")
+    sequence = models.PositiveIntegerField()
+    claim_number = models.CharField(max_length=255, blank=True)
+    reason = models.CharField(max_length=500)
+
+    class Meta:
+        db_table = "client_analysis_claim_rejection"
+        ordering = ["sequence"]
+        constraints = [models.UniqueConstraint(fields=["upload", "sequence"], name="analysis_rejected_claim_seq")]
+
+
+class AnalysisClaimIdentity(models.Model):
+    """Tenant/type-scoped identity of the complete accepted business claim."""
+    client = models.ForeignKey("accounts.Client", on_delete=models.CASCADE, related_name="analysis_claim_identities")
+    kind = models.CharField(max_length=3)
+    fingerprint = models.CharField(max_length=64)
+    claim = models.OneToOneField(AnalysisClaim, on_delete=models.CASCADE, related_name="identity")
+
+    class Meta:
+        db_table = "client_analysis_claim_identity"
+        constraints = [models.UniqueConstraint(fields=["client", "kind", "fingerprint"], name="analysis_exact_claim_identity")]

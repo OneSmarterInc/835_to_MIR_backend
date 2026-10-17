@@ -51,8 +51,9 @@ def _name(seg):
     return first, last, " ".join(part for part in (first, last) if part)
 
 
-def parse_837(text):
+def parse_837(text, *, allow_missing_claim_number=False):
     element_sep, segment_sep, raw_segments, segments = split_x12(text)
+    component_sep = segments[0][16] if segments and len(segments[0]) > 16 else ":"
     tags = [seg[0].upper() for seg in segments if seg]
     if "ISA" not in tags or "GS" not in tags or not any(seg[0].upper() == "ST" and len(seg) > 1 and seg[1] == "837" for seg in segments):
         raise ValueError("The file is not a supported X12 837: ISA, GS, or ST*837 is missing.")
@@ -61,6 +62,7 @@ def parse_837(text):
     context_start = 0
     context = {"member_id": "", "patient_first": "", "patient_last": "", "subscriber_first": "", "subscriber_last": "", "billing_provider": "", "rendering_provider": "", "referring_provider": "", "payer": ""}
     current_service = None
+    in_service_loop = False
     transaction_prefix = []
 
     for index, seg in enumerate(segments):
@@ -101,14 +103,16 @@ def parse_837(text):
                     current["referring_provider"] = display or last
             elif entity == "PR":
                 context["payer"] = display or last
+        if tag == "LX":
+            in_service_loop = True
         if tag == "CLM":
             if current:
                 current["end_index"] = index
                 claims.append(current)
             claim_id = seg[1].strip() if len(seg) > 1 else ""
-            if not claim_id:
+            if not claim_id and not allow_missing_claim_number:
                 raise ValueError(f"837 claim {len(claims) + 1} has no CLM01 claim number.")
-            facility = (seg[5].split(":") if len(seg) > 5 else [])
+            facility = (seg[5].split(component_sep) if len(seg) > 5 else [])
             current = {
                 "start_index": context_start,
                 "claim_index": index,
@@ -126,9 +130,10 @@ def parse_837(text):
                 **context,
             }
             current_service = None
+            in_service_loop = False
         elif current and tag in {"SV1", "SV2", "SV3"}:
             composite_index, charge_index, units_index = (1, 2, 4) if tag == "SV1" else (2, 3, 5) if tag == "SV2" else (1, 2, 6)
-            composite = seg[composite_index].split(":") if len(seg) > composite_index else []
+            composite = seg[composite_index].split(component_sep) if len(seg) > composite_index else []
             current_service = {
                 "service_sequence": len(current["services"]) + 1,
                 "procedure_qualifier": composite[0] if composite else "",
@@ -137,16 +142,16 @@ def parse_837(text):
                 "revenue_code": seg[1].strip() if tag == "SV2" and len(seg) > 1 else "",
                 "charge_amount": _decimal(seg[charge_index] if len(seg) > charge_index else ""),
                 "units": _decimal(seg[units_index] if len(seg) > units_index else ""),
-                "diagnosis_pointers": (seg[7].split(":") if tag == "SV1" and len(seg) > 7 else []),
+                "diagnosis_pointers": (seg[7].split(component_sep) if tag == "SV1" and len(seg) > 7 else []),
                 "service_from_date": "", "service_to_date": "", "raw": [raw_segments[index]], "segment_data": {tag: seg},
             }
             current["services"].append(current_service)
         elif current and tag == "HI":
             for value in seg[1:]:
-                parts = value.split(":")
+                parts = value.split(component_sep)
                 if len(parts) > 1 and parts[1]:
                     current["diagnosis_codes"].append(parts[1])
-        elif current and tag == "REF" and len(seg) > 2 and seg[1].upper() == "9C":
+        elif current and not in_service_loop and tag == "REF" and len(seg) > 2 and seg[1].upper() == "9C":
             current["reference_9c"] = seg[2].strip()
         elif current and tag == "REF" and len(seg) > 2 and seg[1].upper() == "F8":
             current["original_claim_number"] = seg[2].strip()
@@ -171,7 +176,14 @@ def parse_837(text):
     for claim in claims:
         if not claim["patient_first"] and not claim["patient_last"]:
             claim["patient_first"], claim["patient_last"] = claim["subscriber_first"], claim["subscriber_last"]
-        claim["raw_claim"] = segment_sep.join(raw_segments[claim["start_index"]:claim["end_index"]]) + segment_sep
+        # Several CLM loops may share one subscriber context. Keep the context
+        # plus this claim, without copying every preceding claim into later rows.
+        context_end = next((i for i in range(claim["start_index"], claim["claim_index"])
+                            if segments[i][0].upper() == "CLM"), claim["claim_index"])
+        claim["raw_claim"] = segment_sep.join(
+            raw_segments[claim["start_index"]:context_end]
+            + raw_segments[claim["claim_index"]:claim["end_index"]]
+        ) + segment_sep
     return {"element_sep": element_sep, "segment_sep": segment_sep, "prefix": transaction_prefix, "claims": claims}
 
 
@@ -220,6 +232,40 @@ def _write_outbound_copy(client, archived_path):
     return out_path
 
 
+def claim_837_values(data, parsed):
+    """Shared column mapping for live intake and isolated Analysis staging."""
+    split = _837_claim_numbers(data["claim_control_number"], data["reference_9c"])
+    return dict(
+        claim_control_number=data["claim_control_number"], **split,
+        reference_9c=data["reference_9c"],
+        patient_control_number=data["clm01"], member_id=data["member_id"],
+        patient_first_name=data["patient_first"], patient_last_name=data["patient_last"],
+        subscriber_first_name=data["subscriber_first"], subscriber_last_name=data["subscriber_last"],
+        billing_provider_name=data["billing_provider"], rendering_provider_name=data["rendering_provider"],
+        referring_provider_name=data["referring_provider"],
+        payer_name=data["payer"], claim_type=data["claim_type"], place_of_service=data["place_of_service"],
+        claim_frequency_code=data["claim_frequency_code"], original_claim_number=data["original_claim_number"],
+        service_from_date=data["service_from_date"], service_to_date=data["service_to_date"],
+        diagnosis_codes=data["diagnosis_codes"], service_count=len(data["services"]),
+        total_charge_amount=data["total_charge_amount"], raw_claim=data["raw_claim"],
+        segment_data={"prefix": parsed["prefix"], "element_separator": parsed["element_sep"], "segment_separator": parsed["segment_sep"]},
+    )
+
+
+def service_837_values(service, parsed):
+    """Shared service-line column mapping."""
+    return dict(
+        service_sequence=service["service_sequence"],
+        procedure_code=service["procedure_code"], procedure_qualifier=service["procedure_qualifier"],
+        modifiers=service["modifiers"], revenue_code=service["revenue_code"],
+        service_from_date=service["service_from_date"], service_to_date=service["service_to_date"],
+        units=service["units"], charge_amount=service["charge_amount"],
+        diagnosis_pointers=service["diagnosis_pointers"],
+        raw_segments=parsed["segment_sep"].join(service["raw"]) + parsed["segment_sep"],
+        segment_data=service["segment_data"],
+    )
+
+
 @transaction.atomic
 def ingest_837(
     client, actor, filename, raw, text=None, import_mode="MANUAL",
@@ -251,22 +297,9 @@ def ingest_837(
     service_total = 0
     claim_models = []
     for sequence, data in enumerate(parsed["claims"], start=1):
-        split = _837_claim_numbers(data["claim_control_number"], data["reference_9c"])
         claim_models.append(EDI837Claim(
             edi_file=edi_file, client=client, claim_sequence=sequence,
-            claim_control_number=data["claim_control_number"], **split,
-            reference_9c=data["reference_9c"],
-            patient_control_number=data["clm01"], member_id=data["member_id"],
-            patient_first_name=data["patient_first"], patient_last_name=data["patient_last"],
-            subscriber_first_name=data["subscriber_first"], subscriber_last_name=data["subscriber_last"],
-            billing_provider_name=data["billing_provider"], rendering_provider_name=data["rendering_provider"],
-            referring_provider_name=data["referring_provider"],
-            payer_name=data["payer"], claim_type=data["claim_type"], place_of_service=data["place_of_service"],
-            claim_frequency_code=data["claim_frequency_code"], original_claim_number=data["original_claim_number"],
-            service_from_date=data["service_from_date"], service_to_date=data["service_to_date"],
-            diagnosis_codes=data["diagnosis_codes"], service_count=len(data["services"]),
-            total_charge_amount=data["total_charge_amount"], raw_claim=data["raw_claim"],
-            segment_data={"prefix": parsed["prefix"], "element_separator": parsed["element_sep"], "segment_separator": parsed["segment_sep"]},
+            **claim_837_values(data, parsed),
         ))
         total_charge += data["total_charge_amount"]
         service_total += len(data["services"])
@@ -275,14 +308,8 @@ def ingest_837(
     for claim, data in zip(claim_models, parsed["claims"]):
         service_models.extend([
             EDI837ServiceLine(
-                claim=claim, edi_file=edi_file, service_sequence=service["service_sequence"],
-                procedure_code=service["procedure_code"], procedure_qualifier=service["procedure_qualifier"],
-                modifiers=service["modifiers"], revenue_code=service["revenue_code"],
-                service_from_date=service["service_from_date"], service_to_date=service["service_to_date"],
-                units=service["units"], charge_amount=service["charge_amount"],
-                diagnosis_pointers=service["diagnosis_pointers"],
-                raw_segments=parsed["segment_sep"].join(service["raw"]) + parsed["segment_sep"],
-                segment_data=service["segment_data"],
+                claim=claim, edi_file=edi_file,
+                **service_837_values(service, parsed),
             ) for service in data["services"]
         ])
     EDI837ServiceLine.objects.bulk_create(service_models, batch_size=2000)

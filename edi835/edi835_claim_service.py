@@ -13,8 +13,8 @@ def _decimal(value):
         return Decimal("0")
 
 
-def normalized_835_claims(content):
-    segments = [
+def normalized_835_claims(content, *, segments=None, element="*", include_empty=False):
+    segments = segments if segments is not None else [
         segment.strip()
         for segment in re.split(r"[~\r\n]+", str(content or ""))
         if segment.strip()
@@ -22,7 +22,7 @@ def normalized_835_claims(content):
     claims = []
     current = None
     for segment in segments:
-        fields = segment.split("*")
+        fields = segment.split(element)
         tag = fields[0].upper()
         if tag == "CLP":
             if current:
@@ -59,7 +59,7 @@ def normalized_835_claims(content):
                 current["service_count"] += 1
     if current:
         claims.append(current)
-    return [claim for claim in claims if claim["highmark_claim_number"]]
+    return [claim for claim in claims if include_empty or claim["highmark_claim_number"]]
 
 
 def normalize_835_file(edi_file, *, replace=False):
