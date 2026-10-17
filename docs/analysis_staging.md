@@ -27,6 +27,13 @@ success response can safely be retried without duplicating stored data.
 `GET /edi835/api/client-portal/analysis/` returns one upload's normalized claims
 per page (`after` / `next_cursor`), never raw source bytes. `?csrf_only=1` returns
 only the CSRF token. `POST` accepts one multipart `file` and `kind` (837 or 835).
+The UI accepts multiple files from either picker, in either order. It submits
+one file per request through independent, bounded 837 and 835 queues. A failed
+file does not stop subsequent files, and retry resends only failed files. Each
+upload box shows live queued, processing, saved, and failed counts for its
+current selection, plus the filename being processed. Saved means the server
+confirmed its database transaction; these Analysis queues do not invoke the
+production conversion pipeline.
 The limits remain 10 MB and 20,000 claim occurrences per upload. As upload
 history grows, server-side comparison/pagination can replace client aggregation
 without changing the staging provenance.
@@ -38,5 +45,8 @@ arbitrarily pairing them. Source records remain intact in staging.
 
 Comparisons use exact signed decimal amounts: CLM02 versus CLP03, and CLM02
 versus the requested allowed amount, CLP04 + CLP05. Missing CLP05 means unknown,
-not zero. Both match and mismatch rows remain visible in Analysis. This does
-not change the separate persisted 835/837 status page's filtering rules.
+not zero. The Analysis filters are **Mismatch amount** and **Missing in 835**.
+The first excludes claims where both comparisons match, retaining differences
+and unresolved records with their actual statuses. The same filter applies to
+counts and CSV exports. The second lists 837 claims without an Analysis 835.
+This does not change the separate persisted 835/837 status page's filtering rules.
