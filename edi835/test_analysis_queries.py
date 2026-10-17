@@ -48,7 +48,7 @@ class AnalysisQueryTests(TestCase):
                             ("ALLOWED", "657", "600", "0"), ("SIGNED", "-100", "-100", "0"),
                             ("UNKNOWN", "100", "10", None), ("CENTS", ".30", ".10", ".20")])
         result = self.page()
-        self.assertEqual(result["counts"], {"both": 4, "837-only": 1})
+        self.assertEqual(result["counts"], {"both": 4, "matched": 2, "837-only": 1})
         rows = {row["claim"]: row for row in result["rows"]}
         self.assertEqual(rows["SIGNED"]["difference"], "200.00")
         self.assertEqual(rows["BILLED"]["allowed_status"], "Match")
@@ -57,6 +57,30 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(rows["UNKNOWN"]["occurrences"], [])
         self.assertNotIn("filename", rows["BILLED"])
         self.assertEqual(self.page(category="837-only")["rows"][0]["claim"], "MISSING")
+        matched = self.page(category="matched")
+        self.assertEqual({row["claim"] for row in matched["rows"]}, {"MATCH", "CENTS"})
+        self.assertTrue(all(row["billed_status"] == row["allowed_status"] == "Match" for row in matched["rows"]))
+
+    def test_matched_category_pagination_search_export_and_ambiguity(self):
+        self.upload("837", [(f"M{i:02}", str(i)) for i in range(23)] + [("NEG", "-100"), ("AMB", "50")])
+        self.upload("835", [(f"M{i:02}", str(i), str(i), "0") for i in range(23)] +
+                    [("NEG", "-100", "-80", "-20"), ("AMB", "50", "50", "0")])
+        self.upload("835", [("AMB", "50", "50", "0")], "different-source.835")
+        page = self.page(category="matched", page="2", sort="claim", direction="desc")
+        self.assertEqual((page["total"], page["pages"], len(page["rows"])), (24, 3, 10))
+        self.assertNotIn("AMB", [row["claim"] for row in page["rows"]])
+        self.assertEqual(self.page(category="matched", search="NEG")["rows"][0]["difference"], "0.00")
+        self.assertEqual(self.page(category="matched", search="absent")["total"], 0)
+        response = self.get(view="export", category="matched", search="M0", page="2")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("matched-amount.csv", response["Content-Disposition"])
+        rows = list(csv.reader(StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
+        self.assertEqual(len(rows), 11)
+        self.assertTrue(all(row[12] == row[14] == "Match" for row in rows[1:]))
+        other = Client.objects.create(name="Other", client_code="MATCH-OTHER", email="matched-other@example.com")
+        self.upload("837", [("FOREIGN", "1")], tenant=other)
+        self.upload("835", [("FOREIGN", "1", "1", "0")], tenant=other)
+        self.assertEqual(self.page(category="matched")["total"], 24)
 
     def test_distinct_filename_financial_records_and_display_values(self):
         self.upload("837", [(" claim ", "100", None, None, " r "), ("CLAIM", "100", None, None, "R")], "same.837")
@@ -134,7 +158,7 @@ class AnalysisQueryTests(TestCase):
         self.assertIn("no-store", response["Cache-Control"])
         self.assertNotIn("SECRET", response.content.decode())
         self.assertNotIn("Invalid amount", response.content.decode())
-        self.assertEqual(json.loads(response.content)["counts"], {"both": 0, "837-only": 1})
+        self.assertEqual(json.loads(response.content)["counts"], {"both": 0, "matched": 0, "837-only": 1})
         self.assertEqual(self.get(view="claim", claim="SECRET").status_code, 404)
         self.assertEqual(self.get(view="rejections", upload=str(foreign.pk)).status_code, 404)
         self.assertEqual(self.get(view="rejection-export", upload=str(foreign.pk)).status_code, 404)

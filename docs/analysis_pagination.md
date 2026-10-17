@@ -10,7 +10,9 @@ All reads use the existing authenticated, client-scoped
 
 - `GET ?view=comparison&category=auto&page=1&page_size=10&sort=claim&direction=asc&search=`
   returns summary rows, filtered category counts, file counts and page metadata.
-  `category` accepts `auto`, `both` (mismatches/unresolved), or `837-only`.
+  `category` accepts `auto`, `both` (mismatches/unresolved), `matched` (both
+  billed and allowed comparisons match), or `837-only`. Counts include all
+  three categories, using the same search and tenant scope as the table.
   Page sizes are 10, 25 or 50; unknown sorting/filter values return 400.
 - `GET ?view=claim&claim=...` returns only the selected claim's source occurrences.
 - `GET ?view=export&category=both&search=...&sort=claim&direction=asc`
@@ -44,7 +46,9 @@ rules; it does not replace ingestion's full-business-claim duplicate check.
 
 Signed billed and allowed comparisons use integer cents derived from PostgreSQL
 NUMERIC columns. Null values remain unknown. Both-match groups are excluded from
-the mismatch view. The browser receives only counts and single values for summary
+the mismatch view and are available in the matched view, including signed and
+zero amounts. Missing amounts and ambiguous occurrences cannot count as matches.
+The browser receives only counts and single values for summary
 cells; filenames and occurrence arrays are fetched on opening a claim.
 The Internal claim column and CSV use only 835 CLP07 references. Submission
 references remain in stored source records but are not presented as 835 internal

@@ -17,7 +17,7 @@ def analysis_read(request, client):
         if options["category"] == "auto":
             options["category"] = "both" if file_counts(client)["835"] else "837-only"
         response = StreamingHttpResponse(comparison_csv(client, options), content_type="text/csv; charset=utf-8")
-        suffix = "mismatch-amount" if options["category"] == "both" else "missing-in-835"
+        suffix = {"both": "mismatch-amount", "matched": "matched-amount", "837-only": "missing-in-835"}[options["category"]]
         response["Content-Disposition"] = f'attachment; filename="filex-analysis_{suffix}.csv"'
         return response
     if view == "claim":

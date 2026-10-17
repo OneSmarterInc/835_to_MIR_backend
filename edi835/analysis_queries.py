@@ -23,7 +23,8 @@ AMOUNTS = {
     "allowed": ("835", "payment + patient_responsibility"),
 }
 SORTS = {"claim", "internal_number", "filename", "difference", "allowed_difference", *AMOUNTS}
-MISMATCH = "n835 > 0 AND NOT COALESCE(n837 = 1 AND n835 = 1 AND a837 = a835 AND a837 = allowed_value, FALSE)"
+MATCH = "COALESCE(n837 = 1 AND n835 = 1 AND a837 = a835 AND a837 = allowed_value, FALSE)"
+MISMATCH = f"n835 > 0 AND NOT {MATCH}"
 
 
 def query_options(params: Mapping[str, str]) -> dict[str, Any]:
@@ -35,7 +36,7 @@ def query_options(params: Mapping[str, str]) -> dict[str, Any]:
         page, size = int(params.get("page", "1")), int(params.get("page_size", "10"))
     except (ValueError, TypeError) as exc:
         raise ValueError("Invalid page.") from exc
-    if (category not in {"auto", "both", "837-only"} or sort not in SORTS
+    if (category not in {"auto", "both", "matched", "837-only"} or sort not in SORTS
             or direction not in {"asc", "desc"} or not 1 <= page <= 1000000000 or size not in {10, 25, 50}
             or len(search) > 100):
         raise ValueError("Invalid comparison filters.")
@@ -143,7 +144,7 @@ def dictionaries(cursor, rows):
 
 
 def selection(options: dict[str, Any]) -> str:
-    where = MISMATCH if options["category"] == "both" else "n835 = 0"
+    where = {"both": MISMATCH, "matched": MATCH, "837-only": "n835 = 0"}[options["category"]]
     # All identifiers come from the allowlist in query_options, never request SQL.
     sort = options["sort"]
     direction = options["direction"].upper()
@@ -156,11 +157,12 @@ def comparison_page(client: Client, options: dict[str, Any]) -> dict[str, Any]:
     if options["category"] == "auto":
         options["category"] = "both" if counts["835"] else "837-only"
     sql, params = comparison_sql(client, options["search"])
-    total_column = "count_both" if options["category"] == "both" else "count_missing"
+    total_column = {"both": "count_both", "matched": "count_matched", "837-only": "count_missing"}[options["category"]]
     # Counts and visible rows share one SQL snapshot. The grouped CTE is reused,
     # so we don't repeat the full comparison scan for pagination totals.
     sql += f""", totals AS (
         SELECT COUNT(CASE WHEN {MISMATCH} THEN 1 END) AS count_both,
+               COUNT(CASE WHEN {MATCH} THEN 1 END) AS count_matched,
                COUNT(CASE WHEN n835 = 0 THEN 1 END) AS count_missing FROM compared
     ), page_counts AS (
         SELECT *, {total_column} AS total,
@@ -178,7 +180,7 @@ def comparison_page(client: Client, options: dict[str, Any]) -> dict[str, Any]:
     metadata = records[0]
     rows = [summary_row(record, counts["835"] > 0) for record in records if record["claim"] is not None]
     return {"rows": rows, "total": metadata["total"],
-            "counts": {"both": metadata["count_both"], "837-only": metadata["count_missing"]},
+            "counts": {"both": metadata["count_both"], "matched": metadata["count_matched"], "837-only": metadata["count_missing"]},
             "file_counts": counts, "page": metadata["page"], "pages": metadata["pages"], "category": options["category"]}
 
 
