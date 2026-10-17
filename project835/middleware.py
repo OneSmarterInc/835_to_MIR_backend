@@ -86,6 +86,34 @@ class AdminAccessMiddleware:
         # an ALL/837/RECON batch.
         user = getattr(request, "user", None)
         if (user and user.is_authenticated and not user.is_staff
+                and getattr(user, "client_role", "") == "DEMO"):
+            # Default-deny business operations. Demo shares only the tenant-scoped
+            # Analysis endpoint; authentication and its own MFA remain available.
+            auth_paths = {
+                "/accounts/api/user/", "/accounts/api/login/", "/accounts/api/logout/",
+                "/accounts/api/user/change-password/", "/accounts/api/totp/setup/",
+                "/accounts/api/totp/verify/", "/accounts/api/webauthn/register/options/",
+                "/accounts/api/webauthn/register/verify/", "/accounts/api/webauthn/login/options/",
+                "/accounts/api/webauthn/login/verify/", "/accounts/api/webauthn/credentials/",
+            }
+            analysis = normalized_path == "/edi835/api/client-portal/analysis/"
+            shell = request.method == "GET" and (
+                normalized_path in {"/", "/analysis/"}
+                or re.fullmatch(r"/analysis/claims/[^/]+/", normalized_path)
+                or normalized_path.startswith(("/static/", "/assets/"))
+            )
+            permitted = (
+                (analysis and request.method in {"GET", "POST"}) or shell
+                or normalized_path in auth_paths
+                or re.fullmatch(r"/accounts/api/webauthn/credentials/[0-9a-f-]+/", normalized_path)
+            )
+            if not permitted:
+                return JsonResponse({"success": False, "error": "Demo role can only access Analysis."}, status=403)
+            if analysis:
+                selected_client = requested_client_id(request, normalized_path)
+                if not user.client_id or (selected_client and str(selected_client) != str(user.client_id)):
+                    return JsonResponse({"success": False, "error": "Client scope mismatch"}, status=403)
+        if (user and user.is_authenticated and not user.is_staff
                 and getattr(user, "client_role", "CLIENT_ADMIN") == "CLIENT_USER"):
             public_auth = {
                 "/accounts/api/user/", "/accounts/api/login/",

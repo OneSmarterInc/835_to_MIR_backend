@@ -199,7 +199,7 @@ def portal_role_name(user):
         return "Super Admin"
     if user.is_staff:
         return "Admin"
-    return "Client User" if user.client_role == "CLIENT_USER" else "Client Admin"
+    return user.get_client_role_display()
 
 
 def api_user_info(request):
@@ -1074,11 +1074,11 @@ def api_admin_create_user(request):
     password = data.get("password") or "Password@123"
     
     role = data.get("role", "Client Admin")
-    if role not in ("User", "Client Admin", "Client User", "Admin", "Super Admin"):
+    if role not in ("User", "Client Admin", "Client User", "Demo", "Admin", "Super Admin"):
         return JsonResponse({"success": False, "error": "Invalid user role."}, status=400)
     is_staff = role in ("Admin", "Super Admin")
     is_superuser = role == "Super Admin"
-    client_role = "CLIENT_USER" if role == "Client User" else "CLIENT_ADMIN"
+    client_role = {"Client User": "CLIENT_USER", "Demo": "DEMO"}.get(role, "CLIENT_ADMIN")
     client_id = data.get("client_id")
 
     if not name:
@@ -1163,7 +1163,7 @@ def api_admin_update_user(request, user_id):
         return JsonResponse({"success": False, "error": "Access Denied: Only Super Admins can update Admin or Super Admin accounts."}, status=403)
 
     role = data.get("role")
-    if role is not None and role not in ("User", "Client Admin", "Client User", "Admin", "Super Admin"):
+    if role is not None and role not in ("User", "Client Admin", "Client User", "Demo", "Admin", "Super Admin"):
         return JsonResponse({"success": False, "error": "Invalid user role."}, status=400)
     new_is_staff = user_obj.is_staff
     new_is_superuser = user_obj.is_superuser
@@ -1203,7 +1203,7 @@ def api_admin_update_user(request, user_id):
     user_obj.is_staff = new_is_staff
     user_obj.is_superuser = new_is_superuser
     if role is not None:
-        user_obj.client_role = "CLIENT_USER" if role == "Client User" else "CLIENT_ADMIN"
+        user_obj.client_role = {"Client User": "CLIENT_USER", "Demo": "DEMO"}.get(role, "CLIENT_ADMIN")
 
     if user_obj.is_staff:
         user_obj.client = None

@@ -455,7 +455,7 @@ def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict],
 @require_http_methods(["GET", "POST"])
 @csrf_protect
 def analysis_upload(request):
-    client, denied = only_client_user(request)
+    client, denied = only_client_user(request, allowed_roles=("CLIENT_USER", "DEMO"))
     if denied:
         return denied
     if request.method == "GET" and request.GET.get("view"):

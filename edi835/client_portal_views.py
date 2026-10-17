@@ -12,10 +12,10 @@ from .client_portal_financials import financial_metrics
 from .client_portal_period import InvalidPeriod, resolve_period, apply_period, period_payload
 
 
-def only_client_user(request):
+def only_client_user(request, *, allowed_roles=("CLIENT_USER",)):
     user = request.user
     if (not user.is_authenticated or user.is_staff
-            or user.client_role != "CLIENT_USER" or not user.client_id):
+            or user.client_role not in allowed_roles or not user.client_id):
         return None, JsonResponse({"success": False, "error": "Client User access required"}, status=403)
     return user.client, None
 

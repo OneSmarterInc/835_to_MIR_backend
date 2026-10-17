@@ -198,6 +198,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     CLIENT_ROLE_CHOICES = [
         ("CLIENT_ADMIN", "Client Admin"),
         ("CLIENT_USER", "Client User"),
+        ("DEMO", "Demo"),
     ]
     # Legacy non-staff client accounts retain their existing administrative access.
     client_role = models.CharField(
