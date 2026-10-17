@@ -6,6 +6,7 @@ from .client_portal_claim import download as client_portal_claim_download
 from .client_portal_claim import source_preview as client_portal_source_preview
 from .client_portal_comparison import comparison as client_portal_comparison
 from .client_portal_835_837 import comparison_835_837
+from .client_portal_analysis import analysis_upload
 from .client_portal_actions import actions as client_portal_actions, review_action as client_portal_review_action
 from .client_portal_conversion import convert as client_portal_convert
 
@@ -114,6 +115,7 @@ urlpatterns = [
     path("api/client-portal/convert/", client_portal_convert, name="client_portal_convert"),
     path("api/client-portal/claim/<int:claim_id>/", client_portal_claim_detail, name="client_portal_claim_detail"),
     path("api/client-portal/comparison-835-837/", comparison_835_837, name="client_portal_comparison_835_837"),
+    path("api/client-portal/analysis/", analysis_upload, name="client_portal_analysis"),
     path("api/client-portal/claim/<int:claim_id>/download/", client_portal_claim_download, name="client_portal_claim_download"),
     path("api/client-portal/claim/<int:claim_id>/source/<str:kind>/", client_portal_source_preview, name="client_portal_source_preview"),
     path("api/claims-dashboard/", dashboard_files, name="claims_dashboard"),

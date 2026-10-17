@@ -80,7 +80,7 @@ class Client835837Tests(TestCase):
         self.assertEqual(self.data(page_size=1, page=2)["pages"], 1)
         response = self.request(format="csv", page_size=1)
         rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
-        self.assertEqual([r["Claim"] for r in rows], ["222"])
+        self.assertEqual([r["Claim"] for r in rows], ["222", "222"])
         self.assertEqual(rows[0]["Billed difference"], "0.01")
         self.assertEqual(self.data(sort="waiting_days", direction="desc")["rows"][0]["claim"], "222")
         self.assertEqual(self.data(age_band="10-20")["amount_summary"]["mismatched"], 0)
@@ -109,7 +109,8 @@ class Client835837Tests(TestCase):
         EDI837File.objects.filter(pk=first.edi_file_id).update(original_filename="find-me.837")
         self.add("837", "111")
         self.add("835", "111", "90")
-        self.assertEqual(self.data(search="find-me")["count"], 0)
+        self.assertEqual(self.data(search="find-me")["count"], 1)
+        self.assertEqual(self.data(search="find-me")["occurrence_count"], 3)
         self.assertEqual(self.data(search="find-me")["ambiguous_claims"], 1)
         self.add("837", "MISSING", "100")
         self.assertEqual(self.data(category="837-only", search="missing")["count"], 1)
@@ -130,7 +131,8 @@ class Client835837Tests(TestCase):
         self.add("837", "111", "0", day=2)
         self.add("835", "111", "0", client=self.client_b)
         data = self.data(category="837-only")
-        self.assertEqual(data["count"], 2)
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["occurrence_count"], 2)
         self.assertEqual(len({r["key"] for r in data["rows"]}), 2)
         for row in data["rows"]:
             self.assertIsNone(row["billed_835"])
@@ -170,8 +172,8 @@ class Client835837Tests(TestCase):
         self.add("837", "111", internal="A12345")
         self.add("837", "111", internal="B12345")
         self.add("835", "111", "90", internal="C12345")
-        self.assertEqual(self.data()["ambiguous_claims"], 2)
-        self.assertEqual(self.data()["count"], 0)
+        self.assertEqual(self.data()["ambiguous_claims"], 1)
+        self.assertEqual(self.data()["count"], 1)
         self.assertEqual(self.data(category="837-only")["count"], 0)
 
     def test_duplicates_and_ambiguous_missing_internal_are_explained(self):
@@ -182,8 +184,9 @@ class Client835837Tests(TestCase):
         self.add("837", "222", internal="B12345")
         self.add("835", "222", internal="")
         result = self.data()
-        self.assertEqual(result["count"], 0)
-        self.assertEqual(result["ambiguous_claims"], 3)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["ambiguous_claims"], 2)
+        self.assertEqual(result["occurrence_count"], 6)
         self.assertEqual(self.data(category="837-only")["count"], 0)
 
     def test_filters_pagination_sort_and_csv_use_same_rows(self):
@@ -198,8 +201,8 @@ class Client835837Tests(TestCase):
         self.assertEqual(self.data(page=2, **filters)["rows"][0]["claim"], "0")
         response = self.request(format="csv", **filters)
         rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
-        self.assertEqual([r["Claim"] for r in rows], ["1", "0"])
-        self.assertEqual(len(rows[0]), 8)
+        self.assertEqual([r["Claim"] for r in rows], ["1", "1", "0", "0"])
+        self.assertEqual(len(rows[0]), 12)
         self.assertIn("no-store", response["Cache-Control"])
 
     def test_tenant_isolation_and_client_role(self):
@@ -224,4 +227,44 @@ class Client835837Tests(TestCase):
         EDI837File.objects.filter(pk=row.edi_file_id).update(original_filename="=DANGEROUS.837")
         response = self.request(category="837-only", format="csv")
         exported = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
-        self.assertEqual(exported[0]["837 source"], "'=DANGEROUS.837")
+        self.assertEqual(exported[0]["Source file"], "'=DANGEROUS.837")
+
+    def test_occurrences_keep_files_dates_amounts_and_do_not_cross_join(self):
+        first = self.add("837", "MULTI", "100", day=1)
+        second = self.add("837", "MULTI", "200", day=15)
+        third = self.add("835", "MULTI", "100", day=16)
+        fourth = self.add("835", "MULTI", "150", day=16)
+        self.add("837", "OTHER", "100")
+        self.add("835", "OTHER", "90")
+        result = self.data(search="multi.835", page_size=1)
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["occurrence_count"], 4)
+        self.assertEqual(result["age_summary"]["counts"]["10-20"], 1)
+        row = result["rows"][0]
+        self.assertTrue(row["ambiguous"])
+        self.assertIsNone(row["difference"])
+        files = row["occurrences"]
+        self.assertEqual({item["file_id"] for item in files}, {str(c.edi_file_id) for c in (first, second, third, fourth)})
+        self.assertEqual({item["billed_837"] for item in files}, {"100.00", "200.00", None})
+        self.assertEqual({item["billed_835"] for item in files}, {"100.00", "150.00", None})
+        self.assertEqual(files[0]["received_at"], "2026-10-01T07:00:00-05:00")
+        self.assertEqual(self.data(search="multi", age_band="0-10")["count"], 0)
+        self.assertEqual(self.data(page_size=1, sort="claim", direction="asc")["occurrence_count"], 6)
+        self.assertEqual(len(self.data(page_size=1, sort="claim", direction="asc")["rows"][0]["occurrences"]), 4)
+        self.assertEqual(self.data(page_size=1, page=2, sort="claim", direction="asc")["rows"][0]["claim"], "OTHER")
+
+    def test_multiple_claims_in_one_file_are_not_deduplicated(self):
+        first = self.add("837", "MULTI", "100")
+        EDI837Claim.objects.create(edi_file=first.edi_file, client=self.client_a, claim_sequence=2,
+            highmark_claim_number="MULTI", internal_claim_number=first.internal_claim_number,
+            claim_control_number="MULTI", total_charge_amount="100")
+        self.add("835", "MULTI", "100")
+        data = self.data()
+        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["occurrence_count"], 3)
+        self.assertIsNone(data["rows"][0]["difference"])
+        response = self.request(format="csv")
+        rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
+        self.assertEqual(len(rows), 3)
+        self.assertEqual([r["Claim occurrence"] for r in rows[:2]], ["1", "2"])
+        self.assertEqual(len({r["File ID"] for r in rows}), 2)
