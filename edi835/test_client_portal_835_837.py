@@ -5,6 +5,8 @@ from datetime import datetime, timezone
 from unittest.mock import patch
 
 from django.test import RequestFactory, TestCase
+from django.db import connection
+from django.test.utils import CaptureQueriesContext
 from accounts.models import Client, User
 from .models import EDI835File, EDI835Claim, EDI837File, EDI837Claim
 from .client_portal_835_837 import comparison_835_837
@@ -40,7 +42,7 @@ class Client835837Tests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return json.loads(response.content)
 
-    def test_billed_matches_and_mismatches_with_mismatches_first(self):
+    def test_exact_signed_matches_excluded_in_sql(self):
         self.add("837", "111", "100")
         paid = self.add("835", "111", "90")
         paid.paid_amount = 100
@@ -49,30 +51,79 @@ class Client835837Tests(TestCase):
         self.add("835", "222", "100")
         self.add("837", "333", "0")
         self.add("835", "333", "0")
-        data = self.data()
-        self.assertEqual(data["count"], 3)
-        self.assertEqual(data["rows"][0]["difference"], "10.00")
-        self.assertEqual(data["rows"][0]["status"], "Billed amounts differ")
-        self.assertEqual([r["difference"] for r in data["rows"][1:]], ["0.00", "0.00"])
-        self.assertTrue(all(r["status"] == "Billed amounts match" for r in data["rows"][1:]))
+        self.add("837", "444", "-100")
+        self.add("835", "444", "-100")
+        self.add("837", "555", "100")
+        self.add("835", "555", "-100")
+        self.add("837", "666", "-100")
+        self.add("835", "666", "100")
+        with CaptureQueriesContext(connection) as queries:
+            data = self.data()
+        self.assertEqual({r["claim"]: r["difference"] for r in data["rows"]},
+                         {"111": "10.00", "555": "200.00", "666": "200.00"})
+        amount_queries = [q["sql"] for q in queries if 'AS "_billed_835"' in q["sql"]]
+        self.assertTrue(amount_queries, "Amounts must be filtered by the database")
+        self.assertTrue(all('NOT (' in q and 'total_charge_amount' in q for q in amount_queries))
+        self.assertTrue(all(r["status"] == "Billed amounts differ" for r in data["rows"]))
         self.assertEqual(data["rows"][0]["waiting_days"], 15)
         self.assertEqual(data["age_summary"]["counts"]["10-20"], 3)
-        self.assertEqual(data["amount_summary"], {"matched": 2, "mismatched": 1, "missing_835": 0})
+        self.assertEqual(data["amount_summary"], {"matched": 0, "mismatched": 3, "missing_835": 0})
+        self.assertEqual(self.data(category="837-only")["count"], 0)
 
-    def test_priority_across_pages_and_csv_with_older_matches(self):
+    def test_pagination_and_csv_exclude_exact_matches(self):
         self.add("837", "111", "100", day=1)
         self.add("835", "111", "100")
         self.add("837", "222", "100", day=15)
         self.add("835", "222", "99.99")
         self.assertEqual(self.data(page_size=1)["rows"][0]["claim"], "222")
-        self.assertEqual(self.data(page_size=1, page=2)["rows"][0]["claim"], "111")
+        self.assertEqual(self.data(page_size=1, page=2)["count"], 1)
+        self.assertEqual(self.data(page_size=1, page=2)["pages"], 1)
         response = self.request(format="csv", page_size=1)
         rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
-        self.assertEqual([r["Claim"] for r in rows], ["222", "111"])
-        self.assertEqual(rows[1]["835/837 status"], "Billed amounts match")
-        self.assertEqual(rows[1]["Billed difference"], "0.00")
-        self.assertEqual(self.data(sort="waiting_days", direction="desc")["rows"][0]["claim"], "111")
+        self.assertEqual([r["Claim"] for r in rows], ["222"])
+        self.assertEqual(rows[0]["Billed difference"], "0.01")
+        self.assertEqual(self.data(sort="waiting_days", direction="desc")["rows"][0]["claim"], "222")
         self.assertEqual(self.data(age_band="10-20")["amount_summary"]["mismatched"], 0)
+
+    def test_search_filters_counts_chart_and_csv(self):
+        for number, day in (("ABC111", 1), ("ABC222", 15), ("OTHER", 1)):
+            self.add("837", number, "100", day=day)
+            self.add("835", number, "99")
+        self.add("837", "ABC333", "100")
+        self.add("835", "ABC333", "100")
+        self.add("837", "ABC444", "100", client=self.client_b)
+        self.add("835", "ABC444", "99", client=self.client_b)
+        result = self.data(search=" abc ", page_size=1)
+        self.assertEqual(result["count"], 2)
+        self.assertEqual(result["age_summary"]["total"], 2)
+        self.assertEqual(self.data(search="ABC", age_band="10-20")["count"], 1)
+        self.assertEqual(self.data(search="i12345")["count"], 3)
+        self.assertEqual(self.data(search="abc111.837")["count"], 1)
+        self.assertEqual(self.data(search="%_")["count"], 0)
+        response = self.request(search="abc", format="csv", page_size=1)
+        rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
+        self.assertEqual({r["Claim"] for r in rows}, {"ABC111", "ABC222"})
+
+    def test_search_cannot_hide_duplicate_occurrences(self):
+        first = self.add("837", "111")
+        EDI837File.objects.filter(pk=first.edi_file_id).update(original_filename="find-me.837")
+        self.add("837", "111")
+        self.add("835", "111", "90")
+        self.assertEqual(self.data(search="find-me")["count"], 0)
+        self.assertEqual(self.data(search="find-me")["ambiguous_claims"], 1)
+        self.add("837", "MISSING", "100")
+        self.assertEqual(self.data(category="837-only", search="missing")["count"], 1)
+        self.assertEqual(self.data(category="837-only", search="no-such-file")["count"], 0)
+
+    def test_sql_pairing_across_batch_boundary(self):
+        for index in range(101):
+            number = str(1000 + index)
+            self.add("837", number, "100")
+            self.add("835", number, "90" if index == 100 else "100", internal="DIFFERENT")
+        with CaptureQueriesContext(connection) as queries:
+            result = self.data()
+        self.assertEqual([r["claim"] for r in result["rows"]], ["1100"])
+        self.assertLessEqual(len(queries), 7, "Batch pairing must not issue a query per claim")
 
     def test_837_only_keeps_missing_amounts_unknown_and_repeated_arrivals(self):
         self.add("837", "111", "0")
@@ -165,7 +216,7 @@ class Client835837Tests(TestCase):
 
     def test_invalid_filters_rejected(self):
         for params in ({"category": "all"}, {"age_band": "negative"}, {"sort": "paid_mir"},
-                       {"direction": "bad"}, {"format": "html"}, {"page": "bad"}):
+                       {"direction": "bad"}, {"format": "html"}, {"page": "bad"}, {"search": "x" * 101}):
             self.assertEqual(self.request(**params).status_code, 400)
 
     def test_csv_escapes_source_filename(self):
