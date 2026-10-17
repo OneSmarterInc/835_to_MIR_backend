@@ -12,6 +12,7 @@ from django.test.utils import CaptureQueriesContext
 from accounts.models import Client, User
 from .client_portal_analysis import analysis_upload, parse_analysis
 from .models import AnalysisClaim, AnalysisUpload
+from project835.middleware import AdminAccessMiddleware
 
 
 def envelope(kind="837", segments=None, element="*", terminator="~"):
@@ -139,6 +140,23 @@ class AnalysisUploadTests(TestCase):
             response = self.request("837", raw=raw, filename="INVALID_SOURCE")
             self.assertEqual(response.status_code, 400)
         self.assertEqual(AnalysisUpload.objects.count(), count)
+
+    def test_client_user_upload_through_role_middleware(self):
+        other = Client.objects.create(name="Other", client_code="OTHER-UPLOAD", email="other-upload@example.com")
+        middleware = AdminAccessMiddleware(analysis_upload)
+        for kind in ("837", "835"):
+            request = self.factory.post("/edi835/api/client-portal/analysis/", {
+                "kind": kind, "client_id": str(other.pk),
+                "file": SimpleUploadedFile(f"CLAIMS_{kind}", envelope(kind).encode()),
+            })
+            request.user = self.user
+            request.session = {}
+            request._dont_enforce_csrf_checks = True
+            response = middleware(request)
+            self.assertEqual(response.status_code, 200, response.content)
+            self.assertTrue(json.loads(response.content)["saved"])
+        self.assertEqual(AnalysisUpload.objects.filter(client=self.tenant).count(), 2)
+        self.assertFalse(AnalysisUpload.objects.filter(client=other).exists())
 
     def test_saved_data_survives_get_and_contains_both_sources(self):
         self.request()

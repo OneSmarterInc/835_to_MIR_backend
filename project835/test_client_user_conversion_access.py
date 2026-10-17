@@ -39,6 +39,47 @@ class ClientUserConversionAccessTests(TestCase):
         result = self.post("/api/validate/", {"client_id": str(self.a.pk)})
         self.assertEqual(result.status_code, 200, result.content)
 
+    def test_client_ui_reads_are_allowed(self):
+        paths = [
+            "/edi835/api/client-portal/overview/",
+            "/edi835/api/client-portal/comparison/",
+            "/edi835/api/client-portal/comparison-835-837/",
+            "/edi835/api/client-portal/history/",
+            "/edi835/api/client-portal/actions/",
+            "/edi835/api/client-portal/analysis/",
+            "/edi835/api/client-portal/claim/1/",
+            "/edi835/api/client-portal/claim/1/source/835/",
+            "/edi835/api/client-portal/claim/1/download/",
+            "/edi835/api/tracked-files/",
+            f"/api/file-content/{self.own.pk}/",
+            "/api/start-batch-conversion/?job_id=test",
+            "/accounts/api/webauthn/credentials/",
+        ]
+        for path in paths:
+            with self.subTest(path=path):
+                request = self.factory.get(path)
+                request.user = self.viewer
+                self.assertEqual(self.middleware(request).status_code, 200)
+
+    def test_client_ui_writes_allowed_without_admin_operations(self):
+        for path in (
+            "/edi835/api/client-portal/analysis/",
+            "/edi835/api/client-portal/actions/",
+            "/edi835/api/client-portal/convert/",
+            "/accounts/api/webauthn/register/options/",
+            "/accounts/api/webauthn/register/verify/",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, {}).status_code, 200)
+        for path in (
+            "/admin-panel/api/users/create/",
+            "/edi835/api/client-portal/actions/1/review/",
+            "/edi835/api/sftp/save/",
+            "/edi835/api/837/upload-process/",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(self.post(path, {}).status_code, 403)
+
     def test_validate_other_tenant_is_denied(self):
         result = self.post("/api/validate/", {"client_id": str(self.b.pk)})
         self.assertEqual(result.status_code, 403)

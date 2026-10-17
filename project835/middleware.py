@@ -111,6 +111,7 @@ class AdminAccessMiddleware:
                     normalized_path in {
                         "/edi835/api/client-portal/actions/",
                         "/edi835/api/client-portal/convert/",
+                        "/edi835/api/client-portal/analysis/",
                     } and request.method == "POST"
                 )
                 or (normalized_path in read_paths and request.method == "GET")
