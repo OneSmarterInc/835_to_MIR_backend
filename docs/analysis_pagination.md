@@ -21,6 +21,14 @@ All reads use the existing authenticated, client-scoped
   metadata and accepted/rejected counts. Clinical records and rejection arrays
   are omitted. The legacy GET/POST response remains available for older clients.
 
+Duplicate uploads return HTTP 409 without storing another file. The check is
+client/type scoped: identical bytes from a previously accepted upload, or all
+valid claims already present by full business fingerprint, are duplicates even
+when filenames or envelope controls differ. Mixed new/duplicate files still
+save the new claims and report duplicate claims. Same-name files with changed
+claims remain separate records with the original filename. Failed database
+writes roll back so a retry can save normally.
+
 ## Query behavior
 
 The list uses two queries after authorization: file counts, then a common-table
@@ -38,6 +46,9 @@ Signed billed and allowed comparisons use integer cents derived from PostgreSQL
 NUMERIC columns. Null values remain unknown. Both-match groups are excluded from
 the mismatch view. The browser receives only counts and single values for summary
 cells; filenames and occurrence arrays are fetched on opening a claim.
+The Internal claim column and CSV use only 835 CLP07 references. Submission
+references remain in stored source records but are not presented as 835 internal
+claim numbers, including for existing uploads. 837 detail tables omit the column.
 
 Search uses bound, escaped LIKE parameters and matches claim, internal reference
 or source filename without narrowing the occurrences inside a matched group.

@@ -89,8 +89,8 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
             SUM(CASE WHEN kind = '835' THEN 1 ELSE 0 END) AS n835,
             MIN(CASE WHEN kind = '837' THEN billed END) AS a837,
             MIN(CASE WHEN kind = '835' THEN billed END) AS a835,
-            COALESCE(MIN(NULLIF(internal_number, '')), '') AS internal_number,
-            COUNT(DISTINCT NULLIF(internal_number, '')) AS reference_count,
+            COALESCE(MIN(CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END), '') AS internal_number,
+            COUNT(DISTINCT CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END) AS reference_count,
             MIN(CASE WHEN kind = '837' THEN filename END) AS filename,
             MAX({search_sql}) AS search_match,
             {', '.join(amount_columns)}
@@ -204,7 +204,8 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
         result.setdefault(record["number"], []).append({
             "key": f"{record['upload_id']}:{record['sequence']}", "record_id": record["id"],
             "file_id": str(record["upload_id"]), "source_type": kind, "filename": filename,
-            "received_at": record["upload__uploaded_at"].isoformat(), "internal_number": record["internal_number"],
+            "received_at": record["upload__uploaded_at"].isoformat(),
+            "internal_number": record["internal_number"] if kind == "835" else "",
             "claim_sequence": record["sequence"],
             "billed_837": amount("billed") if kind == "837" else None,
             "billed_835": amount("billed") if kind == "835" else None,

@@ -431,15 +431,22 @@ def persist_analysis_result(record: AnalysisUpload, claims: list[dict], rejected
 
 
 def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict], rejected: list[dict]):
-    # An identical retry returns the same persisted outcome, including rejections.
+    # Serialize duplicate checks and persistence; a rejected duplicate must not
+    # create another upload, raw blob, or set of claim/rejection records.
     with transaction.atomic():
         Client.objects.select_for_update().get(pk=client.pk)
+        digest = hashlib.sha256(raw).hexdigest()
+        if AnalysisUpload.objects.filter(client=client, kind=kind, content_sha256=digest,
+                                         accepted_count__gt=0).exists():
+            raise ValueError("Duplicate file: this content has already been processed for this client. No new file was saved.")
         record, created = AnalysisUpload.objects.get_or_create(
             client=client, kind=kind, filename=upload.name.replace("\\", "/").rsplit("/", 1)[-1],
-            content_sha256=hashlib.sha256(raw).hexdigest(),
+            content_sha256=digest,
             defaults={"uploaded_by": user, "raw_content": raw},
         )
         record = persist_analysis_result(record, claims, rejected)
+        if claims and not rejected and record.accepted_count == 0:
+            raise ValueError("Duplicate file: every claim is an exact duplicate already stored for this client. No new file was saved.")
     return record, created
 
 

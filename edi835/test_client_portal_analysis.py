@@ -207,13 +207,14 @@ class AnalysisUploadTests(TestCase):
 
     def test_identical_upload_is_idempotent_but_changed_content_is_preserved(self):
         first = json.loads(self.request().content)
-        retry = json.loads(self.request().content)
-        self.assertEqual(first["file"]["id"], retry["file"]["id"])
-        self.assertTrue(retry["reused"])
+        retry = self.request()
+        self.assertEqual(retry.status_code, 409)
+        self.assertIn("Duplicate file", json.loads(retry.content)["error"])
+        self.assertTrue(AnalysisUpload.objects.filter(pk=first["file"]["id"]).exists())
         self.assertEqual(AnalysisClaim.objects.count(), 1)
-        self.request(raw=envelope(segments=["CLM*CHANGED*101"]))
-        self.request(filename="other.837")
-        self.assertEqual(AnalysisUpload.objects.count(), 3)
+        self.assertEqual(self.request(raw=envelope(segments=["CLM*CHANGED*101"])).status_code, 200)
+        self.assertEqual(self.request(filename="other.837").status_code, 409)
+        self.assertEqual(AnalysisUpload.objects.count(), 2)
 
     def test_failure_rolls_back_source_and_claims_and_can_retry(self):
         with patch("edi835.client_portal_analysis.AnalysisClaim.objects.bulk_create", side_effect=DatabaseError("storage failure")):
@@ -268,9 +269,8 @@ class AnalysisUploadTests(TestCase):
                 upload = AnalysisUpload.objects.get(pk=result["id"])
                 model = Analysis837Claim if kind == "837" else Analysis835Claim
                 self.assertEqual(model.objects.filter(edi_file=upload).count(), 2)
-                repeat = json.loads(self.request(kind, raw=raw, filename=f"partial.{kind}").content)
-                self.assertTrue(repeat["reused"])
-                self.assertEqual(repeat["file"], result)
+                repeat = self.request(kind, raw=raw, filename=f"partial.{kind}")
+                self.assertEqual(repeat.status_code, 409)
         self.assertEqual(AnalysisClaim.objects.count(), 4)
         self.assertEqual(AnalysisClaimRejection.objects.count(), 2)
 
@@ -370,8 +370,9 @@ class AnalysisUploadTests(TestCase):
         first = json.loads(self.request(raw=raw, filename="first.837").content)["file"]
         self.assertEqual((first["accepted_count"], first["rejected_count"]), (1, 1))
         self.assertIn("exact duplicate", first["rejections"][0]["reason"])
-        second = json.loads(self.request(raw=raw, filename="second.837").content)["file"]
-        self.assertEqual((second["accepted_count"], second["rejected_count"]), (0, 2))
+        second = self.request(raw=raw, filename="second.837")
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(AnalysisUpload.objects.count(), 1)
         self.assertEqual(AnalysisClaim.objects.count(), 1)
         self.assertEqual(Analysis837Claim.objects.count(), 1)
 
@@ -379,7 +380,8 @@ class AnalysisUploadTests(TestCase):
         first = envelope(segments=["BHT*0019*00*FILE-A*20261001*1200*CH", "CLM*EXACT*100", "DTP*434*D8*20260901"])
         second = first.replace("FILE-A*20261001*1200", "FILE-B*20261002*1300").replace("000000001", "000000002")
         self.assertEqual(json.loads(self.request(raw=first, filename="a.837").content)["file"]["accepted_count"], 1)
-        self.assertEqual(json.loads(self.request(raw=second, filename="b.837").content)["file"]["rejected_count"], 1)
+        self.assertEqual(self.request(raw=second, filename="b.837").status_code, 409)
+        self.assertEqual(AnalysisUpload.objects.count(), 1)
 
     def test_changed_dates_services_names_and_amounts_are_not_duplicates(self):
         base = ["HL*1**20*1", "NM1*85*2*CLINIC*****XX*1234567890", "HL*2*1*22*0", "NM1*IL*1*DOE*JANE****MI*MEMBER",
@@ -407,9 +409,29 @@ class AnalysisUploadTests(TestCase):
         base = ["BPR*I*80*C*CHK************20261001", "CLP*EXACT*1*100*80*20", "CAS*PR*1*20"]
         for index, segments in enumerate([base, base, [value.replace("20261001", "20261002") for value in base],
                                          [value.replace("CAS*PR*1", "CAS*PR*2") for value in base]]):
-            result = json.loads(self.request("835", raw=envelope("835", segments), filename=f"payer-{index}.835").content)["file"]
-            self.assertEqual(result["accepted_count"], 0 if index == 1 else 1)
+            response = self.request("835", raw=envelope("835", segments), filename=f"payer-{index}.835")
+            if index == 1:
+                self.assertEqual(response.status_code, 409)
+            else:
+                self.assertEqual(json.loads(response.content)["file"]["accepted_count"], 1)
         self.assertEqual(Analysis835Claim.objects.count(), 3)
+
+    def test_mixed_duplicate_and_new_claims_save_only_new_claims(self):
+        for kind, old, new in [("837", "CLM*OLD*100", "CLM*NEW*200"),
+                               ("835", "CLP*OLD*1*100*80*20", "CLP*NEW*1*200*150*50")]:
+            with self.subTest(kind=kind):
+                name = f"original, unchanged.{kind}"
+                self.assertEqual(self.request(kind, raw=envelope(kind, [old]), filename=name).status_code, 200)
+                response = self.request(kind, raw=envelope(kind, [old, new]), filename=name)
+                result = json.loads(response.content)["file"]
+                self.assertEqual(result["filename"], name)
+                self.assertEqual((result["accepted_count"], result["rejected_count"]), (1, 1))
+                count = AnalysisUpload.objects.count()
+                # Different bytes/name/order still cannot reinsert existing business claims.
+                duplicate = envelope(kind, [new, old]).replace("000000001", "000000009")
+                response = self.request(kind, raw=duplicate, filename=f"renamed.{kind}")
+                self.assertEqual(response.status_code, 409)
+                self.assertEqual(AnalysisUpload.objects.count(), count)
 
 
 class AnalysisIntakeRegressionTests(SimpleTestCase):

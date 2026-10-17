@@ -85,6 +85,21 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(self.page(search="' OR 1=1 --")["total"], 0)
         self.assertEqual(self.page(search="%%%%")["total"], 0)
 
+    def test_internal_claim_is_from_835_only_in_list_detail_and_export(self):
+        self.upload("837", [("X", "100", None, None, "SUBMISSION-REF")])
+        self.upload("835", [("X", "80", "50", "0", "PAYER-REF")])
+        row = self.page()["rows"][0]
+        self.assertEqual((row["internal_number"], row["reference_count"]), ("PAYER-REF", 1))
+        detail = claim_detail(self.client_record, "X")
+        self.assertEqual([item["internal_number"] for item in detail["occurrences"] if item["source_type"] == "837"], [""])
+        records = list(csv.reader(StringIO("".join(comparison_csv(self.client_record, query_options({"category": "both"}))))))
+        self.assertEqual(records[1][5], "PAYER-REF")
+        self.upload("837", [("MISSING", "100", None, None, "SUBMISSION-ONLY")])
+        missing = self.page(category="837-only")["rows"][0]
+        self.assertEqual((missing["internal_number"], missing["reference_count"]), ("", 0))
+        self.upload("835", [("X", "80", "50", "0", "OTHER-PAYER-REF")])
+        self.assertEqual(self.page()["rows"][0]["reference_count"], 2)
+
     def test_constant_queries_bounded_payload_paging_sort_and_full_csv(self):
         self.upload("837", [(f"C{i:03}", str(i)) for i in range(51)])
         self.upload("835", [(f"C{i:03}", "99", "90", "0") for i in range(51)])
