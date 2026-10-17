@@ -126,6 +126,23 @@ class AnalysisUploadTests(TestCase):
         self.assertEqual(record.claims.count(), 1)
         self.assertIn("no-store", response["Cache-Control"])
 
+    def test_compact_upload_returns_run_counts_without_claim_or_rejection_arrays(self):
+        raw = envelope("837", ["CLM*VALID*100", "CLM*BAD*NaN"])
+        request = self.factory.post("/edi835/api/client-portal/analysis/?compact=1", {
+            "kind": "837", "file": SimpleUploadedFile("compact.837", raw.encode()),
+        })
+        request.user = self.user
+        request._dont_enforce_csrf_checks = True
+        response = analysis_upload(request)
+        self.assertEqual(response.status_code, 200)
+        payload = json.loads(response.content)["file"]
+        self.assertEqual(payload["accepted_count"], 1)
+        self.assertEqual(payload["rejected_count"], 1)
+        self.assertNotIn("claims", payload)
+        self.assertNotIn("rejections", payload)
+        self.assertEqual(AnalysisClaim.objects.count(), 1)
+        self.assertEqual(AnalysisClaimRejection.objects.count(), 1)
+
     def test_extensionless_sources_validate_and_save_by_content(self):
         for kind in ("837", "835"):
             with self.subTest(kind=kind):

@@ -1,6 +1,7 @@
 import uuid
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
+from django.db.models.functions import Trim, Upper
 from django.utils import timezone
 
 
@@ -42,6 +43,7 @@ class AnalysisClaim(models.Model):
     class Meta:
         db_table = "client_analysis_claim"
         ordering = ["sequence"]
+        indexes = [models.Index(models.F("upload"), Upper(Trim("claim_number")), name="analysis_upload_number_idx")]
         constraints = [models.UniqueConstraint(fields=["upload", "sequence"], name="analysis_claim_sequence")]
 
 

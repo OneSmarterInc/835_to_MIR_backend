@@ -344,7 +344,11 @@ def analysis_claim_fingerprint(kind, values, services, context, element, termina
                                     separators=(",", ":"), ensure_ascii=True, default=str).encode()).hexdigest()
 
 
-def upload_payload(upload: AnalysisUpload) -> dict:
+def upload_payload(upload: AnalysisUpload, *, compact: bool = False) -> dict:
+    if compact:
+        return {"id": str(upload.pk), "filename": upload.filename, "kind": upload.kind,
+                "uploaded_at": upload.uploaded_at.isoformat(), "status": upload.status,
+                "accepted_count": upload.accepted_count, "rejected_count": upload.rejected_count}
     claims = []
     for claim in upload.claims.all():
         row = {"claim": claim.claim_number, "internal_number": claim.internal_number,
@@ -447,7 +451,16 @@ def analysis_upload(request):
     client, denied = only_client_user(request)
     if denied:
         return denied
-    if request.method == "GET":
+    if request.method == "GET" and request.GET.get("view"):
+        from .analysis_read_api import analysis_read
+        try:
+            response = analysis_read(request, client)
+        except ValueError as exc:
+            response = JsonResponse({"success": False, "error": str(exc)}, status=400)
+        except DatabaseError:
+            logger.error("Analysis comparison read failed for client_id=%s", client.pk)
+            response = JsonResponse({"success": False, "error": "Unable to load Analysis results. Please retry."}, status=503)
+    elif request.method == "GET":
         payload = {"success": True, "csrf_token": get_token(request)}
         if request.GET.get("csrf_only") != "1":
             cursor = request.GET.get("after", "0")
@@ -481,7 +494,7 @@ def analysis_upload(request):
                 try:
                     record, created = save_upload(client, request.user, upload, kind, raw, claims, rejected)
                     response = JsonResponse({"success": True, "saved": True,
-                                             "reused": not created, "file": upload_payload(record)})
+                                             "reused": not created, "file": upload_payload(record, compact=request.GET.get("compact") == "1")})
                 except ValueError as exc:
                     response = JsonResponse({"success": False, "error": str(exc)}, status=409)
                 except DatabaseError:
