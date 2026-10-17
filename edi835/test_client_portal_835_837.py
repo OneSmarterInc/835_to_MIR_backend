@@ -40,7 +40,7 @@ class Client835837Tests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         return json.loads(response.content)
 
-    def test_only_billed_mismatches_in_both(self):
+    def test_billed_matches_and_mismatches_with_mismatches_first(self):
         self.add("837", "111", "100")
         paid = self.add("835", "111", "90")
         paid.paid_amount = 100
@@ -50,10 +50,29 @@ class Client835837Tests(TestCase):
         self.add("837", "333", "0")
         self.add("835", "333", "0")
         data = self.data()
-        self.assertEqual(data["count"], 1)
+        self.assertEqual(data["count"], 3)
         self.assertEqual(data["rows"][0]["difference"], "10.00")
+        self.assertEqual(data["rows"][0]["status"], "Billed amounts differ")
+        self.assertEqual([r["difference"] for r in data["rows"][1:]], ["0.00", "0.00"])
+        self.assertTrue(all(r["status"] == "Billed amounts match" for r in data["rows"][1:]))
         self.assertEqual(data["rows"][0]["waiting_days"], 15)
-        self.assertEqual(data["age_summary"]["counts"]["10-20"], 1)
+        self.assertEqual(data["age_summary"]["counts"]["10-20"], 3)
+        self.assertEqual(data["amount_summary"], {"matched": 2, "mismatched": 1, "missing_835": 0})
+
+    def test_priority_across_pages_and_csv_with_older_matches(self):
+        self.add("837", "111", "100", day=1)
+        self.add("835", "111", "100")
+        self.add("837", "222", "100", day=15)
+        self.add("835", "222", "99.99")
+        self.assertEqual(self.data(page_size=1)["rows"][0]["claim"], "222")
+        self.assertEqual(self.data(page_size=1, page=2)["rows"][0]["claim"], "111")
+        response = self.request(format="csv", page_size=1)
+        rows = list(csv.DictReader(io.StringIO(b"".join(response.streaming_content).decode("utf-8-sig"))))
+        self.assertEqual([r["Claim"] for r in rows], ["222", "111"])
+        self.assertEqual(rows[1]["835/837 status"], "Billed amounts match")
+        self.assertEqual(rows[1]["Billed difference"], "0.00")
+        self.assertEqual(self.data(sort="waiting_days", direction="desc")["rows"][0]["claim"], "111")
+        self.assertEqual(self.data(age_band="10-20")["amount_summary"]["mismatched"], 0)
 
     def test_837_only_keeps_missing_amounts_unknown_and_repeated_arrivals(self):
         self.add("837", "111", "0")
@@ -73,15 +92,36 @@ class Client835837Tests(TestCase):
         self.assertEqual(self.data(**filters)["count"], 1)
         self.assertEqual(self.data(category="837-only", **filters)["count"], 0)
 
-    def test_internal_identity_and_missing_internal_fallback(self):
+    def test_unique_claim_number_matches_despite_different_internal_references(self):
         self.add("837", "111", internal="A12345")
         self.add("835", "111", "90", internal="B12345")
         self.add("837", "222", internal="")
         self.add("835", "222", "90", internal="ZZ:C12345")
         self.add("837", "333", internal="D12345")
         self.add("835", "333", "90", internal="ZZ:D12345")
-        self.assertEqual({r["claim"] for r in self.data()["rows"]}, {"222", "333"})
-        self.assertEqual(self.data(category="837-only")["rows"][0]["claim"], "111")
+        self.assertEqual({r["claim"] for r in self.data()["rows"]}, {"111", "222", "333"})
+        self.assertEqual(self.data(category="837-only")["count"], 0)
+
+    def test_parser_identifiers_can_differ_for_the_same_claim(self):
+        from .edi837_service import _837_claim_numbers
+        from .edi835_claim_service import normalized_835_claims
+        submitted = _837_claim_numbers("123456789QYN071", "H100001346867370")
+        received = normalized_835_claims("CLP*123456789*1*90*40*0*ZZ*QYN071~")[0]
+        self.assertNotEqual(submitted["internal_claim_number"], received["internal_claim_number"])
+        self.add("837", submitted["highmark_claim_number"], "100", internal=submitted["internal_claim_number"])
+        self.add("835", received["highmark_claim_number"], "90", internal=received["internal_claim_number"])
+        result = self.data()
+        self.assertEqual(result["count"], 1)
+        self.assertEqual(result["rows"][0]["difference"], "10.00")
+        self.assertEqual(self.data(category="837-only")["count"], 0)
+
+    def test_conflicting_occurrences_are_ambiguous_not_missing(self):
+        self.add("837", "111", internal="A12345")
+        self.add("837", "111", internal="B12345")
+        self.add("835", "111", "90", internal="C12345")
+        self.assertEqual(self.data()["ambiguous_claims"], 2)
+        self.assertEqual(self.data()["count"], 0)
+        self.assertEqual(self.data(category="837-only")["count"], 0)
 
     def test_duplicates_and_ambiguous_missing_internal_are_explained(self):
         self.add("837", "111")

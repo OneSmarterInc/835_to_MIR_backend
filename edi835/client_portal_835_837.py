@@ -1,4 +1,4 @@
-"""Client-scoped billed-charge exceptions for an 837 arrival cohort."""
+"""Client-scoped billed-charge comparisons for an 837 arrival cohort."""
 from collections import defaultdict
 import csv
 import json
@@ -71,12 +71,14 @@ def exception_rows(client, period: dict) -> tuple[list[dict], int]:
     for key, submitted in submissions.items():
         candidates = remittances.get(key[0], [])
         exact = [row for match, row in candidates if match == key]
-        possible = [(match, row) for match, row in candidates if match == key or not match[1] or not key[1]]
         if exact:
             matches = exact
-        elif possible and len(all_submission_keys[key[0]]) == 1:
-            matches = [row for _, row in possible]
-        elif possible:
+        elif candidates and len(all_submission_keys[key[0]]) == 1:
+            # REF*9C in 837 and the internal reference in 835 need not agree.
+            # Only fall back to the exact external claim number when unique;
+            # multiple 835 occurrences remain ambiguous below.
+            matches = [row for _, row in candidates]
+        elif candidates:
             ambiguous += 1
             continue
         else:
@@ -90,15 +92,14 @@ def exception_rows(client, period: dict) -> tuple[list[dict], int]:
             billed_837 = claim["total_charge_amount"]
             billed_835 = matches[0]["total_charge_amount"] if matches else None
             difference = abs(billed_837 - billed_835) if billed_835 is not None else None
-            if difference == 0:
-                continue
             output.append({
                 "key": json.dumps((*key, claim["id"])), "claim": key[0], "internal_number": key[1],
                 "record_837_id": claim["id"], "record_835_id": matches[0]["id"] if matches else None,
                 "waiting_days": max(0, (period["today"] - timezone.localtime(received, zone).date()).days),
                 "billed_837": billed_837, "billed_835": billed_835, "difference": difference,
                 "category": "both" if matches else "837-only",
-                "status": "Billed amounts differ" if matches else "835 not received",
+                "status": ("Billed amounts match" if difference == 0 else
+                           "Billed amounts differ" if matches else "835 not received"),
                 "source_837": claim["edi_file__original_filename"],
                 "source_835": matches[0]["edi_file__original_filename"] if matches else "",
             })
@@ -119,11 +120,11 @@ def comparison_835_837(request):
         return JsonResponse({"success": False, "error": str(exc)}, status=400)
     category = request.GET.get("category", "both")
     band = request.GET.get("age_band", "all")
-    sort = request.GET.get("sort", "waiting_days")
+    sort = request.GET.get("sort", "priority")
     direction = request.GET.get("direction", "desc")
     output_format = request.GET.get("format", "json")
     if (category not in {"both", "837-only"} or (band != "all" and band not in AGE_RANGES)
-            or sort not in dict(COLUMNS) or direction not in {"asc", "desc"}
+            or sort not in {*dict(COLUMNS), "priority"} or direction not in {"asc", "desc"}
             or output_format not in {"json", "csv"}):
         return JsonResponse({"success": False, "error": "Invalid comparison filter."}, status=400)
     rows, ambiguous = exception_rows(client, period)
@@ -131,10 +132,20 @@ def comparison_835_837(request):
     if band != "all":
         low, high = AGE_RANGES[band]
         rows = [row for row in rows if row["waiting_days"] >= low and (high is None or row["waiting_days"] < high)]
-    rows = sorted((row for row in rows if row[sort] is not None),
-                  key=lambda row: (row[sort], row["key"]), reverse=direction == "desc") + sorted(
-                      (row for row in rows if row[sort] is None), key=lambda row: row["key"])
+    if sort == "priority":
+        # Sort the full result before pagination so matches remain below all
+        # mismatches, even when the two groups span multiple pages.
+        rows.sort(key=lambda row: (row["difference"] == 0, -row["waiting_days"], row["key"]))
+    else:
+        rows = sorted((row for row in rows if row[sort] is not None),
+                      key=lambda row: (row[sort], row["key"]), reverse=direction == "desc") + sorted(
+                          (row for row in rows if row[sort] is None), key=lambda row: row["key"])
     summary = age_summary(rows)
+    amount_summary = {
+        "matched": sum(row["difference"] == 0 for row in rows),
+        "mismatched": sum(row["difference"] is not None and row["difference"] != 0 for row in rows),
+        "missing_835": sum(row["difference"] is None for row in rows),
+    }
     for row in rows:
         for field in MONEY_FIELDS:
             row[field] = format(row[field], ".2f") if row[field] is not None else None
@@ -152,6 +163,7 @@ def comparison_835_837(request):
         page = min(page, pages)
         response = JsonResponse({"success": True, "period": period_payload(period),
             "category": category, "age_band": band, "age_summary": summary,
+            "amount_summary": amount_summary,
             "count": len(rows), "page": page, "pages": pages, "page_size": page_size,
             "ambiguous_claims": ambiguous, "rows": rows[(page - 1) * page_size:page * page_size]})
     response["Cache-Control"] = "private, no-store, max-age=0"
