@@ -121,6 +121,25 @@ class AnalysisUploadTests(TestCase):
         self.assertEqual(record.claims.count(), 1)
         self.assertIn("no-store", response["Cache-Control"])
 
+    def test_extensionless_sources_validate_and_save_by_content(self):
+        for kind in ("837", "835"):
+            with self.subTest(kind=kind):
+                filename = f"CLAIMS_{kind}_20261017"
+                response = self.request(kind, filename=filename)
+                self.assertEqual(response.status_code, 200)
+                body = json.loads(response.content)
+                self.assertTrue(body["saved"])
+                self.assertEqual(body["file"]["filename"], filename)
+                record = AnalysisUpload.objects.get(filename=filename)
+                self.assertEqual(record.kind, kind)
+                self.assertEqual(bytes(record.raw_content), envelope(kind).encode())
+                self.assertEqual(record.claims.count(), 1)
+        count = AnalysisUpload.objects.count()
+        for raw in ("not X12", envelope("835")):
+            response = self.request("837", raw=raw, filename="INVALID_SOURCE")
+            self.assertEqual(response.status_code, 400)
+        self.assertEqual(AnalysisUpload.objects.count(), count)
+
     def test_saved_data_survives_get_and_contains_both_sources(self):
         self.request()
         self.request("835", raw=envelope("835", ["CLP*123456789*1*657*0*657*ZZ*ID"]))
