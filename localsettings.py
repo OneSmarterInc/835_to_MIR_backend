@@ -64,6 +64,32 @@ elif DEBUG:
 
 if OSIVAULT_AUDIT_PREVIOUS_KEY:
     os.environ["OSIVAULT_AUDIT_PREVIOUS_KEY"] = OSIVAULT_AUDIT_PREVIOUS_KEY
+
+# ============================================================
+# OSIVAULT FIELD ENCRYPTION (AES-256-GCM Envelope Encryption)
+# ============================================================
+OSIVAULT_FIELD_KEY = os.getenv("OSIVAULT_FIELD_KEY", "").strip()
+OSIVAULT_SEARCH_SALT = os.getenv("OSIVAULT_SEARCH_SALT", "").strip()
+
+if not DEBUG and not OSIVAULT_FIELD_KEY:
+    raise ImproperlyConfigured(
+        "OSIVAULT_FIELD_KEY environment variable is required and must not be empty (fail-closed policy)."
+    )
+
+if OSIVAULT_FIELD_KEY:
+    os.environ["OSIVAULT_FIELD_KEY"] = OSIVAULT_FIELD_KEY
+elif DEBUG:
+    _DEV_FIELD_KEY = "dev_field_key_32bytes_minimum_secret_debug!"
+    OSIVAULT_FIELD_KEY = _DEV_FIELD_KEY
+    os.environ["OSIVAULT_FIELD_KEY"] = _DEV_FIELD_KEY
+
+if OSIVAULT_SEARCH_SALT:
+    os.environ["OSIVAULT_SEARCH_SALT"] = OSIVAULT_SEARCH_SALT
+elif DEBUG:
+    _DEV_SEARCH_SALT = "dev_search_salt_32bytes_minimum_secret_debug!"
+    OSIVAULT_SEARCH_SALT = _DEV_SEARCH_SALT
+    os.environ["OSIVAULT_SEARCH_SALT"] = _DEV_SEARCH_SALT
+
 # Authentication is valid for one fixed hour. Activity does not silently
 # extend the session; after expiry the user must sign in and verify MFA again.
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "3600"))

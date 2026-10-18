@@ -35,45 +35,86 @@ def _fernet(setting_name):
         ) from exc
 
 
-def encrypt_field(value, setting_name):
-    """Encrypt a string and return URL-safe base64 ciphertext for DB storage."""
+import osivault.fields
+from osivault.fields.crypto import FieldEncryptionError as OSIVaultFieldEncryptionError
+
+
+def encrypt_field(value, setting_name="OSIVAULT_FIELD_KEY", context=None):
+    """Encrypt a string and return OSIVault AES-256-GCM self-describing envelope."""
     if value in (None, ""):
         return ""
     if not isinstance(value, str):
         value = str(value)
-    return _fernet(setting_name).encrypt(value.encode("utf-8")).decode("utf-8")
+    return osivault.fields.encrypt(value, context=context)
 
 
-def decrypt_field(value, setting_name):
-    """Decrypt database ciphertext. Empty values remain empty."""
+def decrypt_field(value, setting_name=None, context=None):
+    """Decrypt database ciphertext. Empty values remain empty.
+    
+    Supports dual-mode:
+    1. OSIVault AES-256-GCM envelope (starting with 'OSV1$AES-256-GCM$').
+    2. Legacy Fernet tokens (for backward compatibility during migration window).
+    """
     if value in (None, ""):
         return ""
     if not isinstance(value, str):
         value = str(value)
-    try:
-        return _fernet(setting_name).decrypt(
-            value.encode("utf-8")
-        ).decode("utf-8")
-    except InvalidToken as exc:
-        raise CredentialDecryptionError(
-            f"Unable to decrypt credential with {setting_name}"
-        ) from exc
+
+    # 1. Primary: OSIVault AES-256-GCM envelope
+    if value.startswith("OSV1$AES-256-GCM$"):
+        try:
+            return osivault.fields.decrypt(value, context=context)
+        except OSIVaultFieldEncryptionError:
+            # Fallback retry without context if context mismatch
+            if context is not None:
+                try:
+                    return osivault.fields.decrypt(value, context=None)
+                except OSIVaultFieldEncryptionError as exc:
+                    raise CredentialDecryptionError(
+                        f"OSIVault envelope decryption failed: {str(exc)}"
+                    ) from exc
+            raise
+
+    # 2. Backward compatibility: Legacy Fernet decryption
+    if setting_name:
+        try:
+            return _fernet(setting_name).decrypt(
+                value.encode("utf-8")
+            ).decode("utf-8")
+        except InvalidToken as exc:
+            raise CredentialDecryptionError(
+                f"Unable to decrypt credential with {setting_name}"
+            ) from exc
+
+    # Try default SFTP / SMTP Fernet keys if setting_name was not provided
+    for fallback_setting in ("SFTP_FIELD_ENCRYPTION_KEY", "SMTP_FIELD_ENCRYPTION_KEY"):
+        try:
+            return _fernet(fallback_setting).decrypt(
+                value.encode("utf-8")
+            ).decode("utf-8")
+        except Exception:
+            continue
+
+    raise CredentialDecryptionError(
+        "Unable to decrypt credential: unrecognized ciphertext format or invalid key"
+    )
 
 
 def encrypt_smtp_password(value):
-    return encrypt_field(value, "SMTP_FIELD_ENCRYPTION_KEY")
+    return encrypt_field(value, "SMTP_FIELD_ENCRYPTION_KEY", context="smtp:password")
 
 
 def decrypt_smtp_password(value):
-    return decrypt_field(value, "SMTP_FIELD_ENCRYPTION_KEY")
+    return decrypt_field(value, "SMTP_FIELD_ENCRYPTION_KEY", context="smtp:password")
 
 
 def encrypt_sftp_field(value):
-    return encrypt_field(value, "SFTP_FIELD_ENCRYPTION_KEY")
+    return encrypt_field(value, "SFTP_FIELD_ENCRYPTION_KEY", context="sftp:secret")
 
 
 def decrypt_sftp_field(value):
-    return decrypt_field(value, "SFTP_FIELD_ENCRYPTION_KEY")
+    return decrypt_field(value, "SFTP_FIELD_ENCRYPTION_KEY", context="sftp:secret")
+
 
 
 def _decrypt_sftp_secret(value, label):

@@ -2,6 +2,8 @@ import uuid
 from django.contrib.postgres.indexes import GinIndex
 from django.db import models
 from django.utils import timezone
+from osivault.fields import EncryptedTextField
+
 
 
 class EDI835File(models.Model):
@@ -70,8 +72,9 @@ class EDI835Claim(models.Model):
     paid_amount = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     service_count = models.PositiveIntegerField(default=0)
-    raw_claim = models.TextField(blank=True, default="")
+    raw_claim = EncryptedTextField(blank=True, default="")
     segment_data = models.JSONField(default=dict, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -124,8 +127,9 @@ class SFTPConfig(models.Model):
     host = models.CharField(max_length=255, blank=True, null=True, default="sftp.example.com")
     port = models.IntegerField(default=22)
     username = models.CharField(max_length=255, blank=True, null=True)
-    password = models.CharField(max_length=255, blank=True, null=True)
+    password = models.TextField(blank=True, null=True)
     ssh_key = models.TextField(blank=True, null=True)
+
     auth_method = models.CharField(max_length=50, default="Password")
     trust_unknown_key = models.BooleanField(default=True)
     inbound_837_folder = models.CharField(max_length=500, blank=True, null=True, default="/relay/abc-health/in/837/")

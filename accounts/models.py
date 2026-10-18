@@ -6,6 +6,8 @@ from django.contrib.auth.models import (
     BaseUserManager,
 )
 from django.db import models
+from osivault.fields import EncryptedCharField
+
 
 
 class Client(models.Model):
@@ -201,8 +203,9 @@ class User(AbstractBaseUser, PermissionsMixin):
     name = models.CharField(max_length=150)
     mobile = models.CharField(max_length=20, unique=True)
     client = models.ForeignKey(Client, on_delete=models.SET_NULL, null=True, blank=True, related_name="users")
-    totp_secret = models.CharField(max_length=64, blank=True, null=True)
+    totp_secret = EncryptedCharField(max_length=255, blank=True, null=True)
     totp_enabled = models.BooleanField(default=False)
+
     recovery_codes = models.JSONField(default=list, blank=True)
     last_totp_counter = models.BigIntegerField(null=True, blank=True)
     is_active = models.BooleanField(default=True)
