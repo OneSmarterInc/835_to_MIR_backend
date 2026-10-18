@@ -37,4 +37,4 @@ jobs:
           DEBUG: "1"
           OSIVAULT_AUDIT_CURRENT_KEY: "ci_throwaway_audit_key_32bytes_minimum_secret!"
         run: |
-          python manage.py test admin_panel.test_audit
+          python manage.py test
