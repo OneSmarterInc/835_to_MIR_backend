@@ -4,12 +4,10 @@ Authorization is enforced by the transfer service itself. Never modify a
 user's role to reuse an administrator code path.
 """
 
-from django.views.decorators.csrf import csrf_exempt
-
 from .edi837_naming_views import edi837_sftp_transfer_named
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def edi837_sftp_transfer_for_search(request):
     """Delegate Search rename requests without re-enabling Django CSRF checks.
 

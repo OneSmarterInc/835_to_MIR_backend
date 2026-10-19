@@ -20,7 +20,7 @@ if not SECRET_KEY or SECRET_KEY.startswith("django-insecure-"):
 ALLOWED_HOSTS = [host.strip() for host in os.getenv("ALLOWED_HOSTS",
         "127.0.0.1,localhost,mir.onesmarter.com,50.17.152.89,api.onesmarter.com").split(",") if host.strip()]
 
-CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:8000,http://127.0.0.1:8000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://mir.onesmarter.com,https://835-to-mir-frontend.vercel.app,https://filex.onesmarter.com").split(",") if origin.strip()]
+# 2026-09-25 - Yash: Task 6b - Duplicate CSRF_TRUSTED_ORIGINS removed from line 23; defined near line 305 with fail-closed checks
 
 SECURE_SSL_REDIRECT = not DEBUG
 SECURE_HSTS_SECONDS = 31536000 if not DEBUG else 0
@@ -186,6 +186,15 @@ if DATABASES["default"]["ENGINE"] not in {
     )
 
 
+if DATABASES["default"]["ENGINE"] == "django.db.backends.sqlite3":
+    try:
+        from django.contrib.postgres.operations import AddIndexConcurrently, RemoveIndexConcurrently
+        from django.db.migrations.operations.models import AddIndex, RemoveIndex
+        AddIndexConcurrently.database_forwards = AddIndex.database_forwards
+        RemoveIndexConcurrently.database_forwards = RemoveIndex.database_forwards
+    except Exception:
+        pass
+
 # ============================================================
 # CUSTOM USER MODEL
 # ============================================================
@@ -267,22 +276,36 @@ LOGOUT_REDIRECT_URL = "/accounts/login/"
 # SESSION & CORS SECURITY
 # ============================================================
 
+# 2026-09-23 - Yash: Updated CSRF security settings, cookie policy, and CORS header configuration
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG  # False in local dev (HTTP), True in production (HTTPS)
 CSRF_COOKIE_SECURE = not DEBUG     # False in local dev (HTTP), True in production (HTTPS)
+CSRF_COOKIE_HTTPONLY = False       # Ensure JavaScript can read the csrftoken cookie
 
 # For cross-origin requests between Vercel and AWS, cookie SameSite must be "None" if Secure is enabled
 # In local dev over HTTP, SameSite=None requires Secure=True which we don't set, so fall back to "Lax"
 SESSION_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 CSRF_COOKIE_SAMESITE = "None" if not DEBUG else "Lax"
 
+# 2026-09-25 - Yash: Task 6b - Fail-closed CORS and CSRF trusted origins configuration
 CORS_ALLOWED_ORIGINS = [
-    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://835-to-mir-frontend.vercel.app,https://filex.onesmarter.com").split(",") if origin.strip()
+    origin.strip() for origin in os.getenv("CORS_ALLOWED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://835-to-mir-frontend.vercel.app,https://filex.onesmarter.com" if DEBUG else "").split(",") if origin.strip()
 ]
+if not DEBUG and not CORS_ALLOWED_ORIGINS:
+    raise ImproperlyConfigured("Set a valid CORS_ALLOWED_ORIGINS environment variable in production.")
+
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = [
+    origin.strip() for origin in os.getenv("CSRF_TRUSTED_ORIGINS", "http://localhost:3000,http://127.0.0.1:3000,https://835-to-mir-frontend-88miukawd-1smarterincs-projects.vercel.app,https://835-to-mir-frontend.vercel.app,https://filex.onesmarter.com" if DEBUG else "").split(",") if origin.strip()
+]
+if not DEBUG and not CSRF_TRUSTED_ORIGINS:
+    raise ImproperlyConfigured("Set a valid CSRF_TRUSTED_ORIGINS environment variable in production.")
+
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
+    "x-csrftoken",
     "x-file-name",
     "x-filename",
     "x-expiration-date",

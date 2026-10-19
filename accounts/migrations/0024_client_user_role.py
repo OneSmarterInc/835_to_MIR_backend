@@ -3,7 +3,7 @@ from django.db import migrations, models
 
 class Migration(migrations.Migration):
     dependencies = [
-        ("accounts", "0023_merge_20260921_1832"),
+        ("accounts", "0022_user_login_lockout_fields"),
     ]
 
     operations = [

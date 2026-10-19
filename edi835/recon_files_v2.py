@@ -10,8 +10,6 @@ from django.conf import settings
 from django.db.models import Q
 from django.http import FileResponse, HttpResponse, JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
-
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from project835.decorators import authenticated_api_required, json_api_errors
 
@@ -109,9 +107,6 @@ def _search_filter(search):
         except ValueError:
             continue
     return query
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_files(request):
@@ -165,9 +160,6 @@ def recon_files(request):
         "total": total,
         "total_pages": total_pages,
     })
-
-
-@csrf_exempt
 @authenticated_api_required
 @json_api_errors
 def recon_download(request, file_id):

@@ -2,7 +2,6 @@ import json
 import logging
 
 from django.http import JsonResponse
-from django.views.decorators.csrf import csrf_exempt
 
 from edi835.models import EDI835File
 
@@ -18,7 +17,7 @@ from .views import (
 logger = logging.getLogger("converter")
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_validate(request):
     """Validate one or more EDI 835 files with the existing local validation engine."""
     if request.method != "POST":

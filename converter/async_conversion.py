@@ -13,7 +13,6 @@ import uuid
 
 from django.http import JsonResponse
 from django.utils import timezone
-from django.views.decorators.csrf import csrf_exempt
 
 from admin_panel.access_control import can_access_client
 from edi835.batch_jobs import active_job_for, read_job, write_job
@@ -48,7 +47,7 @@ def _public_job(job: dict) -> dict:
     }
 
 
-@csrf_exempt
+# 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 def api_convert_async(request):
     user = getattr(request, "user", None)
 
