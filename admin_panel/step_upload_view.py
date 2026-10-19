@@ -10,7 +10,7 @@ from accounts.models import Client
 from validation import validate_step_upload
 
 from .document_registry import document_definition
-from .models import AuditLog, ClientDocument, ClientStepStatus, OnboardingStepDefinition
+from .models import AuditLog, ClientDocument, ClientStepStatus, OnboardingStepDefinition, log_audit_event
 from .views import _offboarded_workflow_lock, update_client_onboarding_stats
 
 
@@ -136,24 +136,21 @@ def api_admin_step_upload(request, client_id, step_key):
         step_status.save()
         update_client_onboarding_stats(client_obj)
 
-        try:
-            actor = "System"
-            if request.user and getattr(request.user, "name", ""):
-                actor = request.user.name
-            elif request.user and getattr(request.user, "email", ""):
-                actor = request.user.email
-            AuditLog.objects.create(
-                module="ONBOARDING",
-                action="STEP_UPLOAD",
-                details=(
-                    f"Step {step_num} ('{step_def.title}') document uploaded for "
-                    f"client '{client_obj.name}'. File: {filename}."
-                ),
-                performed_by=actor,
-                client=client_obj,
-            )
-        except Exception:
-            pass
+        actor = "System"
+        if request.user and getattr(request.user, "name", ""):
+            actor = request.user.name
+        elif request.user and getattr(request.user, "email", ""):
+            actor = request.user.email
+        log_audit_event(
+            module="ONBOARDING",
+            action="STEP_UPLOAD",
+            details=(
+                f"Step {step_num} ('{step_def.title}') document uploaded for "
+                f"client '{client_obj.name}'. File: {filename}."
+            ),
+            performed_by=actor,
+            client=client_obj,
+        )
 
         try:
             from admin_panel.email_service import send_client_email

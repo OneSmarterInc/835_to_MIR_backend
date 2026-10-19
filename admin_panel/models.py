@@ -1,6 +1,7 @@
 from django.db import models
 from accounts.models import Client
 from edi835.storage import client_document_upload_to
+from osivault.audit.models import OSIVaultAuditLog, OSIVaultAuditManager
 
 class OnboardingStepDefinition(models.Model):
     step_number = models.IntegerField(unique=True)
@@ -144,6 +145,8 @@ class AuditLog(models.Model):
 
         with transaction.atomic():
             previous = type(self).objects.select_for_update().order_by("-id").first()
+            if self.id is None:
+                self.id = (previous.id + 1) if (previous and previous.id) else 1
             self.previous_hash = previous.entry_hash if previous else ""
             payload = "|".join((self.previous_hash, self.module, self.action, self.details, self.performed_by))
             self.entry_hash = hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -151,6 +154,39 @@ class AuditLog(models.Model):
 
     def delete(self, *args, **kwargs):
         raise PermissionError("Audit log entries cannot be deleted.")
+
+
+class MIRMasterAuditLog(OSIVaultAuditLog):
+    """
+    OSIVault Master Cryptographic Audit Ledger for OneSmarter MIR Portal.
+    Implements:
+    - HMAC-SHA-256 hash chain
+    - Structured JSON field diffs (old_values, new_values)
+    - Envelope metadata (RFC algorithm, key_id, version)
+    - Immutable database trigger locks & periodic signed checkpoints
+    - Direct integration with HIPAA § 164.312(b) audit trail requirements
+    """
+    module = models.CharField(max_length=100, db_index=True, default="SYSTEM")
+    details = models.TextField(blank=True, default="")
+    client = models.ForeignKey(
+        Client,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="master_audit_logs",
+    )
+
+    class Meta:
+        db_table = "mir_master_audit_log"
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["client", "-timestamp"]),
+            models.Index(fields=["module", "-timestamp"]),
+            models.Index(fields=["action", "-timestamp"]),
+        ]
+
+    def __str__(self):
+        return f"[{self.module}] {self.action} on {self.resource_type}:{self.resource_id} by {self.actor}"
 
 
 class AdminClientAccessGrant(models.Model):
@@ -278,15 +314,45 @@ class ClientSmtpConfig(models.Model):
         return f"SMTP for {self.client.name if self.client else 'Default/Global'} ({self.smtp_host})"
 
 
-def log_audit_event(module, action, details, performed_by="System", client=None):
-    try:
-        AuditLog.objects.create(
-            module=module.upper(),
-            action=action.upper(),
-            details=details,
-            performed_by=performed_by,
-            client=client
-        )
-    except Exception as e:
-        import logging
-        logging.getLogger(__name__).error(f"Failed to log audit event: {e}")
+def log_audit_event(
+    module,
+    action,
+    details="",
+    performed_by="System",
+    client=None,
+    resource_type=None,
+    resource_id=None,
+    old_values=None,
+    new_values=None,
+):
+    """
+    Authoritative audit event logger for OneSmarter MIR Portal.
+    Appends directly to MIRMasterAuditLog via osivault.audit.append under HMAC-SHA-256 hash chaining.
+    Fail-closed: Does not swallow exceptions.
+    Details text is included in new_values to ensure full HMAC MAC coverage.
+    """
+    import osivault.audit
+
+    tenant_str = str(client.pk) if client else "SYSTEM"
+
+    res_type = str(resource_type or module).upper()
+    res_id = str(resource_id or (getattr(client, "id", None) or "SYSTEM"))
+
+    vals_new = dict(new_values or {})
+    if details:
+        vals_new["details"] = str(details)
+
+    return osivault.audit.append(
+        model_class=MIRMasterAuditLog,
+        actor=str(performed_by or "System"),
+        tenant=tenant_str,
+        resource_type=res_type,
+        resource_id=res_id,
+        action=str(action).upper(),
+        old_values=old_values or {},
+        new_values=vals_new,
+        module=str(module).upper(),
+        details=str(details or ""),
+        client=client,
+    )
+

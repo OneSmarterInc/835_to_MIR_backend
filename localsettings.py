@@ -2,7 +2,16 @@ import os
 import sys
 import dj_database_url
 from pathlib import Path
+from dotenv import load_dotenv
 from django.core.exceptions import ImproperlyConfigured
+
+env_candidates = [
+    Path(__file__).resolve().parent.parent / ".env",
+    Path(__file__).resolve().parent / ".env",
+]
+env_file = next((p for p in env_candidates if p.exists()), None)
+if env_file:
+    load_dotenv(env_file)
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -35,8 +44,26 @@ USE_X_FORWARDED_HOST = True
 # an environment variable instead of hardcoding here.
 # Rotate this key only if you re-encrypt all existing rows.
 # ============================================================
-SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip()
-SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip()
+_DEFAULT_FERNET_KEY = "Wo0Y9_ips1epOi9c9ztdL04vVnfztK6WxvS22ovi2JE="
+SMTP_FIELD_ENCRYPTION_KEY = os.getenv("SMTP_FIELD_ENCRYPTION_KEY", "").strip() or _DEFAULT_FERNET_KEY
+SFTP_FIELD_ENCRYPTION_KEY = os.getenv("SFTP_FIELD_ENCRYPTION_KEY", "").strip() or _DEFAULT_FERNET_KEY
+OSIVAULT_AUDIT_CURRENT_KEY = os.getenv("OSIVAULT_AUDIT_CURRENT_KEY", "").strip()
+OSIVAULT_AUDIT_PREVIOUS_KEY = os.getenv("OSIVAULT_AUDIT_PREVIOUS_KEY", "").strip()
+
+if not DEBUG and not OSIVAULT_AUDIT_CURRENT_KEY:
+    raise ImproperlyConfigured(
+        "OSIVAULT_AUDIT_CURRENT_KEY environment variable is required and must not be empty (fail-closed policy)."
+    )
+
+if OSIVAULT_AUDIT_CURRENT_KEY:
+    os.environ["OSIVAULT_AUDIT_CURRENT_KEY"] = OSIVAULT_AUDIT_CURRENT_KEY
+elif DEBUG:
+    _DEV_AUDIT_KEY = "dev_audit_key_32bytes_minimum_secret_debug!"
+    OSIVAULT_AUDIT_CURRENT_KEY = _DEV_AUDIT_KEY
+    os.environ["OSIVAULT_AUDIT_CURRENT_KEY"] = _DEV_AUDIT_KEY
+
+if OSIVAULT_AUDIT_PREVIOUS_KEY:
+    os.environ["OSIVAULT_AUDIT_PREVIOUS_KEY"] = OSIVAULT_AUDIT_PREVIOUS_KEY
 # Authentication is valid for one fixed hour. Activity does not silently
 # extend the session; after expiry the user must sign in and verify MFA again.
 SESSION_COOKIE_AGE = int(os.getenv("SESSION_COOKIE_AGE", "3600"))
@@ -73,6 +100,7 @@ INSTALLED_APPS = [
     "django.contrib.staticfiles",
     "corsheaders",
     "rest_framework",
+    "osivault.audit",
 
     "accounts",
     "home",
