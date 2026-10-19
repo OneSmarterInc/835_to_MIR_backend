@@ -7,7 +7,7 @@ from django.db import migrations, models
 class Migration(migrations.Migration):
 
     dependencies = [
-        ('accounts', '0023_merge_20260921_1832'),
+        ('accounts', '0025_demo_role'),
         ('admin_panel', '0016_clientdocument_signed_or_sent_at'),
     ]
 
