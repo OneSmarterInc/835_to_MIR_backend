@@ -63,9 +63,14 @@ def dashboard_files(request):
             return JsonResponse({"success": False, "error": "Access denied"}, status=403)
         qs = qs.filter(**{f"{timestamp}__date": selected}).order_by(f"-{timestamp}")
         if kind == "MIR":
-            qs = qs.select_related("source_835")
-        result[kind] = {"count": qs.count(), "files": [_file_data(kind, item) for item in qs[:500]],
-                        "truncated": qs.count() > 500}
+            qs = qs.select_related("source_835").defer(
+                "source_835__input_file_content", "source_835__conversion_findings"
+            )
+        content_field = "input_file_content" if kind == "835" else "file_content"
+        qs = qs.defer(content_field)
+        count = qs.count()
+        result[kind] = {"count": count, "files": [_file_data(kind, item) for item in qs[:500]],
+                        "truncated": count > 500}
     return JsonResponse({"success": True, "date": selected.isoformat(), "groups": result})
 
 
