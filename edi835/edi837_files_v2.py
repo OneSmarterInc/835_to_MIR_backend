@@ -142,7 +142,7 @@ def edi837_files(request):
         return _queue_pending_outbound(request, client)
 
     query = str(request.GET.get("q") or "").strip()
-    files = EDI837File.objects.filter(client=client)
+    files = EDI837File.objects.filter(client=client).defer("file_content")
 
     if query:
         status_query = query.upper().replace(" ", "_")

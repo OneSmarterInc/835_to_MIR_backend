@@ -67,10 +67,10 @@ def overview(request):
     zone = ZoneInfo(period["timezone"])
     today = period["today"]
     inbound = apply_period(
-        EDI835File.objects.filter(client=client), "uploaded_at", period
+        EDI835File.objects.filter(client=client).defer("input_file_content"), "uploaded_at", period
     )
     converted = apply_period(
-        MIRFile.objects.filter(client=client), "converted_at", period
+        MIRFile.objects.filter(client=client).defer("file_content"), "converted_at", period
     )
     sent = apply_period(
         MIRFile.objects.filter(client=client, status="PUSHED"), "updated_at", period
@@ -101,7 +101,7 @@ def overview(request):
         })
         if len(claims) >= 200 or not findings:
             continue
-        for claim in EDI835Claim.objects.filter(edi_file=source).order_by("claim_sequence")[:500]:
+        for claim in EDI835Claim.objects.filter(edi_file=source).defer("raw_claim", "segment_data").order_by("claim_sequence")[:500]:
             finding = finding_for(claim, findings)
             if finding:
                 reason = finding.get("reason") or finding.get("detail") or finding.get("rule_code") or "Conversion hold"
@@ -132,7 +132,9 @@ def overview(request):
         {"id": str(m.pk), "filename": m.mir_filename,
          "date": m.converted_at.isoformat(), "count": m.claim_count,
          "status": m.status, "source_filename": m.source_835.original_filename}
-        for m in converted.select_related("source_835").order_by("-converted_at", "-pk")[:5]
+        for m in converted.select_related("source_835").defer(
+            "source_835__input_file_content", "source_835__conversion_findings"
+        ).order_by("-converted_at", "-pk")[:5]
     ]
     oldest_days = max(0, (today - timezone.localtime(oldest, zone).date()).days) if oldest else 0
     return JsonResponse({
@@ -174,8 +176,10 @@ def history(request):
     except InvalidPeriod as exc:
         return JsonResponse({"success": False, "error": str(exc)}, status=400)
     pages = Paginator(
-        apply_period(MIRFile.objects.filter(client=client), "converted_at", period)
-        .select_related("source_835").order_by("-converted_at", "-pk"),
+        apply_period(MIRFile.objects.filter(client=client).defer("file_content"), "converted_at", period)
+        .select_related("source_835").defer(
+            "source_835__input_file_content", "source_835__conversion_findings"
+        ).order_by("-converted_at", "-pk"),
         page_size,
     )
     page = pages.get_page(number)

@@ -20,7 +20,7 @@ from project835.field_crypto import (
 from django.http import JsonResponse
 from django.contrib.auth.decorators import login_required
 from django.utils import timezone
-from django.db.models import Sum
+from django.db.models import Count, Q, Sum
 from admin_panel.access_control import can_access_client
 
 from .models import SFTPConfig, EDI835File, MIRFile
@@ -274,34 +274,37 @@ def api_get_metrics(request):
     else:
         base_qs = EDI835File.objects.filter(client=client)
 
-    # Archived / Completed files (SFTP or Manual)
-    archived_qs = base_qs.filter(status__in=["ARCHIVED", "COMPLETED"])
-
-    # Calculate total claims & files converted today
-    files_today = archived_qs.filter(uploaded_at__date=today)
-    claims_today_val = files_today.aggregate(total=Sum("claims_count"))["total"]
-
-    if claims_today_val is not None and claims_today_val > 0:
-        total_claims_converted_today = claims_today_val
-        converted_today_file_count = files_today.count()
+    # Calculate the dashboard counters in one tenant-scoped database pass.
+    archived = Q(status__in=["ARCHIVED", "COMPLETED"])
+    archived_today = archived & Q(uploaded_at__date=today)
+    totals = base_qs.aggregate(
+        claims_today=Sum("claims_count", filter=archived_today),
+        files_today=Count("pk", filter=archived_today),
+        claims_archived=Sum("claims_count", filter=archived),
+        files_archived=Count("pk", filter=archived),
+        processing=Count("pk", filter=Q(status="PROCESSING")),
+        errors=Count("pk", filter=Q(status="ERROR")),
+        in_archive=Count("pk", filter=Q(present_in_archive_folder=True)),
+        total=Count("pk"),
+        validated=Count("pk", filter=~Q(status="ERROR")),
+        waiting_failed=Count("pk", filter=Q(status__in=["PROCESSING", "ERROR"])),
+    )
+    # Preserve the existing fallback when today's converted claim count is zero.
+    if (totals["claims_today"] or 0) > 0:
+        total_claims_converted_today = totals["claims_today"]
+        converted_today_file_count = totals["files_today"]
     else:
-        # Fallback to total converted files count to ensure metrics reflect active pipeline activity
-        total_claims_converted_today = archived_qs.aggregate(total=Sum("claims_count"))["total"] or 0
-        converted_today_file_count = archived_qs.count()
-
-    validated_waiting_count = base_qs.filter(status="PROCESSING").count()
-    runs_needing_attention_count = base_qs.filter(status="ERROR").count()
+        total_claims_converted_today = totals["claims_archived"] or 0
+        converted_today_file_count = totals["files_archived"]
+    validated_waiting_count = totals["processing"]
+    runs_needing_attention_count = totals["errors"]
     mir_outputs_today_count = converted_today_file_count
-
-    archive_folder_files_count = base_qs.filter(
-        present_in_archive_folder=True
-    ).count()
-
-    total_conversion_sets = base_qs.count()
-    validated_sets_count = base_qs.exclude(status="ERROR").count()
-    processed_sets_count = archived_qs.count()
-    waiting_failed_count = base_qs.filter(status__in=["PROCESSING", "ERROR"]).count()
-    val_failed_count = base_qs.filter(status="ERROR").count()
+    archive_folder_files_count = totals["in_archive"]
+    total_conversion_sets = totals["total"]
+    validated_sets_count = totals["validated"]
+    processed_sets_count = totals["files_archived"]
+    waiting_failed_count = totals["waiting_failed"]
+    val_failed_count = totals["errors"]
 
     return JsonResponse({
         "total_claims_converted_today": total_claims_converted_today,
@@ -330,8 +333,8 @@ def api_archive_files_list(request):
     # Build a lookup from the physical archived 835 filename to the canonical
     # MIR filename persisted in MIRFile. The archive directory itself contains
     # the original 835 inputs, not the generated MIR output.
-    archive_records = EDI835File.objects.select_related("mir_file").defer(
-        "input_file_content", "mir_file__file_content"
+    archive_records = EDI835File.objects.select_related("client", "mir_file").defer(
+        "input_file_content", "conversion_findings", "mir_file__file_content"
     )
     if request.user.is_staff and not request.user.is_superuser:
         from admin_panel.access_control import active_client_grant_ids
@@ -340,8 +343,11 @@ def api_archive_files_list(request):
         archive_records = archive_records.filter(
             client=getattr(request.user, "client", None)
         )
+    archive_dirs = {}
     for record in archive_records:
-        archive_dir = get_edi835_storage_dirs(record.client)["archive"]
+        if record.client_id not in archive_dirs:
+            archive_dirs[record.client_id] = get_edi835_storage_dirs(record.client)["archive"]
+        archive_dir = archive_dirs[record.client_id]
         mir_record = getattr(record, "mir_file", None)
         filename = os.path.basename(record.archive_path or record.stored_filename or record.original_filename or "")
         file_path = Path(settings.BASE_DIR) / record.archive_path if record.archive_path else archive_dir / filename
