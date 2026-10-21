@@ -193,6 +193,7 @@ def logout_view(request):
 from django.http import JsonResponse
 from django.views.decorators.csrf import ensure_csrf_cookie
 from django.middleware.csrf import get_token
+from django.views.decorators.cache import never_cache
 import json
 
 def portal_role_name(user):
@@ -205,10 +206,15 @@ def portal_role_name(user):
 
 # 2026-09-25 - Yash: Task 6b - Clean api_user_info, rely on @ensure_csrf_cookie for CSRF cookie issuance
 @ensure_csrf_cookie
+@never_cache
 def api_user_info(request):
+    # Separate frontend origins cannot read the API's host-only CSRF cookie.
+    # Return Django's masked token while retaining the matching cookie.
+    csrf_token = get_token(request)
     if not request.user.is_authenticated:
         return JsonResponse({
             "authenticated": False,
+            "csrf_token": csrf_token,
             "user": None
         })
 
@@ -236,6 +242,7 @@ def api_user_info(request):
 
     return JsonResponse({
         "authenticated": True,
+        "csrf_token": csrf_token,
         "offboarded": is_offboarded,
         "offboarded_message": f"ACCESS DENIED: {client_str} has been offboarded. Contact the administrator for assistance." if is_offboarded else None,
         "user": {
