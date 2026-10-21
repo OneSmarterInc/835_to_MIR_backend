@@ -54,13 +54,15 @@ def _atomic_write(path, content, binary=False):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     mode = "wb" if binary else "w"
-    kwargs = {} if binary else {"encoding": "utf-8"}
+    kwargs = {} if binary else {"encoding": "utf-8", "newline": ""}
     try:
         with open(temporary, mode, **kwargs) as stream:
             stream.write(content)
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
+        from .intake_storage import _sync_directory
+        _sync_directory(path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()
@@ -103,7 +105,11 @@ def write_mir_copies(client, stored_filename, content):
     temporary = out_path.with_name(f".{out_path.name}.{uuid.uuid4().hex}.tmp")
     try:
         shutil.copy2(archive_path, temporary)
+        with open(temporary, "rb+") as stream:
+            os.fsync(stream.fileno())
         os.replace(temporary, out_path)
+        from .intake_storage import _sync_directory
+        _sync_directory(out_path.parent)
     finally:
         if temporary.exists():
             temporary.unlink()

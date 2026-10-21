@@ -75,51 +75,55 @@ def process_recon_incoming(client, actor):
                     receipts, _ = register_sources(client=client, actor=actor, channel="SFTP",
                         workflow="RECON", sources=[(name, handle)],
                         max_bytes=getattr(settings, "RECON_MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
-                raw = read_verified(receipts[0])
-                if not raw:
-                    raise ValueError("RECON file is empty")
-                text = _decode_recon(raw)
-                if "\x00" in text:
-                    raise ValueError("RECON file contains binary/NUL data")
+                from .intake_lifecycle import execution, record_validation, begin_effects
+                with execution(receipts[0].dispatch.payload):
+                    raw = read_verified(receipts[0])
+                    record_validation(receipts[0], raw)
+                    begin_effects()
+                    if not raw:
+                        raise ValueError("RECON file is empty")
+                    text = _decode_recon(raw)
+                    if "\x00" in text:
+                        raise ValueError("RECON file contains binary/NUL data")
 
-                file_hash = hashlib.sha256(raw).hexdigest()
-                existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
-                if existing is not None:
-                    recon = existing
-                else:
-                    stored = f"{getattr(client, 'client_code', 'CLIENT')}_{uuid.uuid4()}_{os.path.basename(name)}"[:255]
-                    try:
-                        with transaction.atomic():
-                            recon = RECONFile.objects.create(
-                                client=client,
-                                uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
-                                original_filename=os.path.basename(name)[:255],
-                                stored_filename=stored,
-                                file_content=text,
-                                file_hash=file_hash,
-                                file_size=len(raw),
-                                import_mode="SFTP",
-                            )
-                            stage_inbound(client, "recon", stored, raw, binary=True)
-                    except IntegrityError:
-                        recon = RECONFile.objects.get(client=client, file_hash=file_hash)
+                    file_hash = hashlib.sha256(raw).hexdigest()
+                    existing = RECONFile.objects.filter(client=client, file_hash=file_hash).first()
+                    if existing is not None:
+                        recon = existing
+                    else:
+                        stored = f"{getattr(client, 'client_code', 'CLIENT')}_{uuid.uuid4()}_{os.path.basename(name)}"[:255]
+                        try:
+                            with transaction.atomic():
+                                recon = RECONFile.objects.create(
+                                    client=client,
+                                    uploaded_by=actor if getattr(actor, "is_authenticated", False) else None,
+                                    original_filename=os.path.basename(name)[:255],
+                                    stored_filename=stored,
+                                    file_content=text,
+                                    file_hash=file_hash,
+                                    file_size=len(raw),
+                                    import_mode="SFTP",
+                                )
+                                stage_inbound(client, "recon", stored, raw, binary=True)
+                        except IntegrityError:
+                            recon = RECONFile.objects.get(client=client, file_hash=file_hash)
 
-                if recon.status not in {"PROCESSED", "COMPLETED"}:
-                    process_recon_file(recon, actor)
-                    recon.refresh_from_db()
+                    if recon.status not in {"PROCESSED", "COMPLETED"}:
+                        process_recon_file(recon, actor)
+                        recon.refresh_from_db()
 
-                if recon.status in {"PROCESSED", "COMPLETED"}:
-                    finish_inline(receipts, True, source_id=recon.pk)
-                    deleted, delete_error = _remove_with_retry(sftp, remote_path)
-                    if not deleted:
-                        errors.append(f"{name}: processed but inbound delete failed: {delete_error}")
+                    if recon.status in {"PROCESSED", "COMPLETED"}:
+                        finish_inline(receipts, True, source_id=recon.pk)
+                        deleted, delete_error = _remove_with_retry(sftp, remote_path)
+                        if not deleted:
+                            errors.append(f"{name}: processed but inbound delete failed: {delete_error}")
+                            retained.append(name)
+                            continue
+                        processed.append(name)
+                    else:
+                        finish_inline(receipts, False, source_id=recon.pk)
+                        errors.append(f"{name}: RECON processing ended with status {recon.status}")
                         retained.append(name)
-                        continue
-                    processed.append(name)
-                else:
-                    finish_inline(receipts, False, source_id=recon.pk)
-                    errors.append(f"{name}: RECON processing ended with status {recon.status}")
-                    retained.append(name)
             except Exception as exc:
                 if receipts:
                     finish_inline(receipts, False)

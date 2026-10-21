@@ -430,6 +430,10 @@ def persist_analysis_result(record: AnalysisUpload, claims: list[dict], rejected
     return record
 
 
+class DuplicateAnalysisFile(ValueError):
+    """A validated upload contains no new business claims."""
+
+
 def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict], rejected: list[dict]):
     # Serialize duplicate checks and persistence; a rejected duplicate must not
     # create another upload, raw blob, or set of claim/rejection records.
@@ -438,7 +442,7 @@ def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict],
         digest = hashlib.sha256(raw).hexdigest()
         if AnalysisUpload.objects.filter(client=client, kind=kind, content_sha256=digest,
                                          accepted_count__gt=0).exists():
-            raise ValueError("Duplicate file: this content has already been processed for this client. No new file was saved.")
+            raise DuplicateAnalysisFile("Duplicate file: this content has already been processed for this client. No new file was saved.")
         record, created = AnalysisUpload.objects.get_or_create(
             client=client, kind=kind, filename=upload.name.replace("\\", "/").rsplit("/", 1)[-1],
             content_sha256=digest,
@@ -446,7 +450,7 @@ def save_upload(client, user, upload, kind: str, raw: bytes, claims: list[dict],
         )
         record = persist_analysis_result(record, claims, rejected)
         if claims and not rejected and record.accepted_count == 0:
-            raise ValueError("Duplicate file: every claim is an exact duplicate already stored for this client. No new file was saved.")
+            raise DuplicateAnalysisFile("Duplicate file: every claim is an exact duplicate already stored for this client. No new file was saved.")
     return record, created
 
 
@@ -507,7 +511,8 @@ def analysis_upload(request):
                     response = JsonResponse({"success": True, "saved": True,
                                              "reused": not created, "file": upload_payload(record, compact=request.GET.get("compact") == "1")})
                 except ValueError as exc:
-                    response = JsonResponse({"success": False, "error": str(exc)}, status=409)
+                    response = JsonResponse({"success": False, "error": str(exc),
+                                             "code": "DUPLICATE_FILE" if isinstance(exc, DuplicateAnalysisFile) else "VALIDATION_REJECTED"}, status=409)
                 except DatabaseError:
                     # Do not log uploaded data or database exception parameters.
                     logger.error("Analysis staging save failed for client_id=%s", client.pk)

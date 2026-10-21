@@ -1,5 +1,8 @@
 # Phase 2 — shared intake implementation and rollout
 
+The follow-up [execution recovery implementation](phase2_recovery.md) adds
+leases, processing attempts, reconciliation and durable output checkpoints.
+
 This change closes the database/queue handoff gap for the existing batch worker
 and introduces a shared source-registration boundary. It does not change MIR
 financial rules, claim mapping, Analysis comparison rules, or tenant access.

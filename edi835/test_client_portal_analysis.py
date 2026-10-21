@@ -121,7 +121,7 @@ class AnalysisUploadTests(TestCase):
         writes = [q["sql"] for q in queries if q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
         self.assertTrue(writes)
         self.assertTrue(all(any(table in sql for table in (
-            "client_analysis_", '"edi835_inboundtransfer"', '"edi835_batchdispatch"',
+            "client_analysis_", '"edi835_inboundtransfer"', '"edi835_batchdispatch"', '"edi835_processingattempt"',
         )) for sql in writes))
         self.assertFalse(EDI835Claim.objects.exists())
         self.assertFalse(EDI837Claim.objects.exists())

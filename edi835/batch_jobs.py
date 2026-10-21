@@ -91,7 +91,20 @@ def _fields(job):
 
 
 def write_job(job: dict) -> None:
-    BatchDispatch.objects.update_or_create(id=uuid.UUID(str(job["id"])), defaults=_fields(job))
+    from .intake_lifecycle import LeaseLost, finish_attempt
+    with transaction.atomic():
+        record = BatchDispatch.objects.select_for_update().filter(pk=job["id"]).first()
+        if record is None:
+            if job.get("attempt_id"):
+                raise LeaseLost("Dispatch no longer exists.")
+            BatchDispatch.objects.create(id=uuid.UUID(str(job["id"])), **_fields(job))
+            return
+        if record.attempts.exists() and not job.get("attempt_id"):
+            raise LeaseLost("An execution token is required to update this dispatch.")
+        finish_attempt(record, job)
+        for key, value in _fields(job).items():
+            setattr(record, key, value)
+        record.save(update_fields=["state", "scope_key", "priority", "payload", "updated_at"])
 
 
 def claim_job(job_id: str) -> dict | None:
@@ -101,8 +114,19 @@ def claim_job(job_id: str) -> dict | None:
         if record is None:
             return None
         job = dict(record.payload)
+        if job.get("not_before"):
+            try:
+                due = datetime.fromisoformat(job["not_before"])
+                if timezone.is_naive(due):
+                    due = timezone.make_aware(due)
+                if due > timezone.now():
+                    return None
+            except (ValueError, TypeError):
+                return None
         job.update(state="RUNNING", attempt_count=int(job.get("attempt_count") or 0) + 1,
                    worker_started_at=timezone.now().isoformat())
+        from .intake_lifecycle import start_attempt
+        start_attempt(record, job)
         record.state, record.payload = "RUNNING", job
         record.save(update_fields=["state", "payload", "updated_at"])
         return job
@@ -136,7 +160,7 @@ def prune_finished_jobs(max_age_days: int = 7) -> int:
     # Receipts and dispatch history need an approved retention policy.
     # Do not prune referenced dispatches or resurrect legacy JSON entries.
     legacy_ids = [p.stem for p in jobs_dir().glob("*.json") if _valid_uuid(p.stem)]
-    records = BatchDispatch.objects.filter(state__in=["COMPLETED", "FAILED"], updated_at__lt=cutoff, transfers__isnull=True).exclude(pk__in=legacy_ids)
+    records = BatchDispatch.objects.filter(state__in=["COMPLETED", "FAILED"], updated_at__lt=cutoff, transfers__isnull=True, attempts__isnull=True).exclude(pk__in=legacy_ids)
     count, _ = records.delete()
     return count
 
@@ -151,8 +175,9 @@ def _valid_uuid(value):
 
 def recover_interrupted_jobs() -> int:
     import_legacy_jobs()
-    recovered = 0
-    for job in BatchDispatch.objects.filter(state="RUNNING").values_list("payload", flat=True).iterator():
+    from .intake_lifecycle import recover_expired
+    recovered = recover_expired(apply=True)["expired"]
+    for job in BatchDispatch.objects.filter(state="RUNNING", attempts__isnull=True).values_list("payload", flat=True).iterator():
         # Inline processing belongs to web/SFTP callers, not this worker.
         if job.get("job_type") == "INLINE_INTAKE":
             continue

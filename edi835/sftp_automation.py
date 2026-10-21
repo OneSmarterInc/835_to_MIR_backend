@@ -284,13 +284,15 @@ def finish_automation_run(job):
 
 
 def recover_interrupted_automation_runs():
+    from .models import BatchDispatch
+    active_jobs = BatchDispatch.objects.filter(state__in=["QUEUED", "RUNNING"]).values_list("id", flat=True)
     interrupted = list(SFTPAutomationRun.objects.filter(
         status="RUNNING", finished_at__isnull=True
-    ).values_list("id", flat=True))
+    ).exclude(job_id__in=active_jobs).values_list("id", flat=True))
     recovered = SFTPAutomationRun.objects.filter(id__in=interrupted).update(
         status="FAILED",
         finished_at=timezone.now(),
-        error_message="The automation worker restarted before this run completed. Inbound files were retained for a safe retry.",
+        error_message="Execution was interrupted. Verify delivery before retrying; source files were retained.",
     )
     for run in SFTPAutomationRun.objects.select_related("client", "schedule").filter(id__in=interrupted):
         _send_run_notice_safely(run)

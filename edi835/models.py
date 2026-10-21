@@ -54,14 +54,68 @@ class InboundTransfer(models.Model):
     received_started_at = models.DateTimeField()
     received_at = models.DateTimeField(default=timezone.now)
     dispatch = models.ForeignKey(BatchDispatch, on_delete=models.PROTECT, related_name="transfers")
+    state = models.CharField(max_length=20, default="RECEIVED", db_index=True)
+    validation_outcome = models.CharField(max_length=20, default="PENDING")
+    safe_error_code = models.CharField(max_length=64, blank=True)
+    transaction_set_count = models.PositiveIntegerField(null=True)
+    converter_version = models.CharField(max_length=64, blank=True)
+    source_reference = models.CharField(max_length=100, blank=True)
+    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         indexes = [models.Index(fields=["client", "-received_at"], name="intake_client_received_idx")]
         constraints = [
+            models.CheckConstraint(condition=models.Q(state__in=["RECEIVED", "VALIDATING", "QUEUED", "PROCESSING", "COMPLETED", "REJECTED", "FAILED", "DUPLICATE"]), name="intake_lifecycle_state"),
             models.CheckConstraint(condition=models.Q(byte_count__gt=0), name="intake_nonempty_source"),
             models.CheckConstraint(condition=models.Q(channel__in=["STAFF", "SFTP", "PARTNER", "ANALYSIS", "SYSTEM"]), name="intake_valid_channel"),
             models.CheckConstraint(condition=models.Q(workflow__in=["835", "837", "VALIDATE_835", "ANALYSIS_835", "ANALYSIS_837", "RECON"]), name="intake_valid_workflow"),
         ]
+
+
+class ProcessingAttempt(models.Model):
+    """A fenced execution lease. History is retained when the job is retried."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dispatch = models.ForeignKey(BatchDispatch, on_delete=models.CASCADE, related_name="attempts")
+    sequence = models.PositiveIntegerField()
+    parent = models.ForeignKey("self", null=True, on_delete=models.SET_NULL)
+    owner = models.UUIDField(default=uuid.uuid4, editable=False)
+    state = models.CharField(max_length=20, default="RUNNING")
+    started_at = models.DateTimeField(default=timezone.now)
+    heartbeat_at = models.DateTimeField(default=timezone.now)
+    lease_expires_at = models.DateTimeField(db_index=True)
+    finished_at = models.DateTimeField(null=True)
+    effects_started_at = models.DateTimeField(null=True)
+    retry_reason = models.CharField(max_length=64, blank=True)
+    safe_error_code = models.CharField(max_length=64, blank=True)
+    converter_version = models.CharField(max_length=64)
+    result = models.JSONField(default=dict)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(fields=["dispatch", "sequence"], name="attempt_sequence_unique"),
+            models.UniqueConstraint(fields=["dispatch"], condition=models.Q(state="RUNNING"), name="attempt_one_running"),
+            models.CheckConstraint(condition=models.Q(state__in=["RUNNING", "COMPLETED", "FAILED", "ABANDONED"]), name="attempt_valid_state"),
+        ]
+
+
+class IntakeOutput(models.Model):
+    """Immutable durable output checkpoint, independent of mutable delivery state."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    dispatch = models.ForeignKey(BatchDispatch, on_delete=models.CASCADE, related_name="outputs")
+    attempt = models.ForeignKey(ProcessingAttempt, null=True, on_delete=models.SET_NULL)
+    source_835 = models.ForeignKey("EDI835File", on_delete=models.CASCADE)
+    mir_file = models.ForeignKey("MIRFile", null=True, on_delete=models.SET_NULL)
+    storage_key = models.CharField(max_length=255, unique=True)
+    checksum = models.CharField(max_length=64)
+    byte_count = models.PositiveBigIntegerField()
+    converter_version = models.CharField(max_length=64)
+    created_at = models.DateTimeField(default=timezone.now)
+    delivery_state = models.CharField(max_length=20, default="NOT_STARTED")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["dispatch", "source_835"], name="intake_output_identity")]
 
 
 class AnalysisUpload(models.Model):

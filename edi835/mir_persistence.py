@@ -60,6 +60,17 @@ def store_mir_file(
 ) -> MIRFile:
     """Atomically replace the structured MIR output for one 835 conversion."""
     encoded = mir_text.encode("utf-8")
+    # Serialize regeneration per source. Identical crash replay must retain the
+    # normalized row IDs and prior delivery status.
+    EDI835File.objects.select_for_update().get(pk=source_835.pk)
+    existing = MIRFile.objects.filter(source_835=source_835).first()
+    if existing:
+        digest = hashlib.sha256(encoded).hexdigest()
+        if existing.file_hash == digest and existing.mir_filename == mir_filename and existing.file_content == mir_text:
+            return existing
+        from .models import IntakeOutput
+        if IntakeOutput.objects.filter(mir_file=existing).exists():
+            raise ValueError("A checkpointed MIR cannot be overwritten; create an explicit new conversion.")
     rows = mir_text.splitlines()
     fields = get_mappings(source_835.client)
 

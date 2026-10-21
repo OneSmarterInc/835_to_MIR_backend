@@ -38,7 +38,7 @@ class Command(BaseCommand):
     def _run_loop(self, options):
         recovered = recover_interrupted_jobs()
         if recovered:
-            self.stderr.write(f"Marked {recovered} interrupted batch job(s) as failed.")
+            self.stderr.write(f"Reconciled {recovered} interrupted batch job(s).")
         pruned = prune_finished_jobs()
         if pruned:
             self.stdout.write(f"Pruned {pruned} old completed batch job file(s).")
@@ -50,6 +50,7 @@ class Command(BaseCommand):
         last_long_hold_alert_scan = None
         last_missing_reference_alert_scan = None
         last_queue_prune = timezone.now()
+        last_lease_scan = timezone.now()
 
         def stop(*_args):
             nonlocal stopping
@@ -66,6 +67,11 @@ class Command(BaseCommand):
                 continue
 
             now = timezone.now()
+            if (now - last_lease_scan).total_seconds() >= 30:
+                from edi835.intake_lifecycle import recover_expired
+                recover_expired(apply=True)
+                recover_interrupted_automation_runs()
+                last_lease_scan = now
             if (now - last_queue_prune).total_seconds() >= 3600:
                 try:
                     pruned = prune_finished_jobs()
@@ -244,6 +250,14 @@ class Command(BaseCommand):
         job = claim_job(job["id"])
         if job is None:
             return
+        from edi835.intake_lifecycle import execution, LeaseLost
+        try:
+            with execution(job):
+                return self._process_claimed(job)
+        except LeaseLost:
+            self.stderr.write("Execution lost its lease; its stale result was not committed.")
+
+    def _process_claimed(self, job):
         mark_automation_running(job)
         try:
             user = None
@@ -271,6 +285,8 @@ class Command(BaseCommand):
                 write_job(job)
                 return
 
+            from edi835.intake_lifecycle import begin_effects
+            begin_effects()
             if job.get("job_type") == "MANUAL_CONVERSION":
                 status_code, payload = self._manual_conversion(job, user, client)
                 job["state"] = "COMPLETED" if payload.get("success") else "FAILED"
@@ -303,7 +319,7 @@ class Command(BaseCommand):
                 job["state"] = "COMPLETED" if directional.get("success") else "FAILED"
                 job["status_code"] = 200 if directional.get("success") else 400
                 job["result"] = directional
-                if job["state"] == "FAILED" and job["attempt_count"] <= int(job.get("retry_count") or 0):
+                if job["state"] == "FAILED" and self._safe_retry(job):
                     from datetime import timedelta
                     job["state"] = "QUEUED"
                     job["not_before"] = (timezone.now() + timedelta(minutes=max(1, int(job.get("retry_delay_minutes") or 5)))).isoformat()
@@ -327,16 +343,22 @@ class Command(BaseCommand):
             job["status_code"] = response.status_code
             job["result"] = payload
         except Exception as exc:
+            from django.db import DatabaseError
+            from edi835.intake_lifecycle import LeaseLost
+            if isinstance(exc, LeaseLost):
+                raise
             job["state"] = "FAILED"
             job["status_code"] = 500
             job["result"] = {"success": False, "error": f"Batch worker failed: {exc}"}
             if job.get("job_type") == "INTAKE":
                 job["result"] = {"success": False, "error": "Intake processing failed. Review authorization, source integrity and processing records before retrying."}
                 job["intake_result"] = job["result"]
+                job["safe_error_code"] = "DEPENDENCY_UNAVAILABLE" if isinstance(exc, (OSError, DatabaseError)) else "INTAKE_PROCESSING_FAILED"
+                job["retryable"] = isinstance(exc, (OSError, DatabaseError))
             if job.get("job_type") == "MANUAL_CONVERSION":
                 job["stage"] = "FAILED"
                 job["progress_updated_at"] = timezone.now().isoformat()
-        if job.get("state") == "FAILED" and job["attempt_count"] <= int(job.get("retry_count") or 0):
+        if job.get("state") == "FAILED" and self._safe_retry(job):
             from datetime import timedelta
             job["state"] = "QUEUED"
             job["not_before"] = (timezone.now() + timedelta(minutes=max(1, int(job.get("retry_delay_minutes") or 5)))).isoformat()
@@ -346,3 +368,18 @@ class Command(BaseCommand):
         job["finished_at"] = timezone.now().isoformat()
         write_job(job)
         finish_automation_run(job)
+
+    @staticmethod
+    def _safe_retry(job):
+        from django.conf import settings
+        from edi835.intake_lifecycle import owned_attempt
+        attempt = owned_attempt(job)
+        if attempt is None or attempt.effects_started_at is not None:
+            return False
+        if job.get("job_type") == "INTAKE":
+            allowed = bool(job.get("retryable")) and attempt.sequence < int(getattr(settings, "INTAKE_MAX_ATTEMPTS", 3))
+        else:
+            allowed = attempt.sequence <= int(job.get("retry_count") or 0)
+        if allowed:
+            job["retry_reason"] = job.get("safe_error_code") or "TRANSIENT_FAILURE"
+        return allowed

@@ -96,15 +96,36 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
             channel=channel, workflow=workflow, original_filename=name,
             storage_key=source.key, checksum=source.checksum, byte_count=source.size,
             idempotency_digest=key_digest, received_started_at=started, dispatch=dispatch,
+            state="QUEUED" if asynchronous else "RECEIVED",
         ) for name, source in stored]
+        if not asynchronous:
+            from .intake_lifecycle import start_attempt
+            start_attempt(dispatch, job)
+            dispatch.payload = job
+            dispatch.save(update_fields=["payload", "updated_at"])
     return receipts, False
 
 
-def finish_inline(receipts, success: bool, *, source_id=None):
+@transaction.atomic
+def finish_inline(receipts, success: bool, *, source_id=None, outcome=None, code=""):
     if not receipts:
         return
     from .batch_jobs import write_job
     job = dict(receipts[0].dispatch.payload)
+    BatchDispatch.objects.select_for_update().get(pk=job["id"])
+    from .models import ProcessingAttempt
+    if job.get("attempt_id") and ProcessingAttempt.objects.filter(
+        pk=job["attempt_id"], owner=job["lease_owner"], state__in=["COMPLETED", "FAILED"],
+    ).exists():
+        return
+    from .intake_lifecycle import owned_attempt
+    owned_attempt(job, lock=True)
+    job["receipt_state"] = outcome or ("COMPLETED" if success else "FAILED")
+    job["safe_error_code"] = code or ({"DUPLICATE": "DUPLICATE_FILE", "REJECTED": "VALIDATION_REJECTED"}.get(outcome)
+                                       or ("" if success else "PROCESSING_FAILED"))
+    InboundTransfer.objects.filter(pk__in=[r.pk for r in receipts], validation_outcome="PENDING").update(
+        validation_outcome="VALID" if success or outcome == "DUPLICATE" else ("REJECTED" if outcome == "REJECTED" else "UNRESOLVED"),
+    )
     job.update(state="COMPLETED" if success else "FAILED", finished_at=timezone.now().isoformat(),
                result={"success": bool(success), "source_id": str(source_id or "")},
                status_code=200 if success else 400)

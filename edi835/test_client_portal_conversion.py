@@ -44,7 +44,7 @@ class ClientUserConversionTests(TestCase):
     @patch("edi835.client_portal_conversion.process_edi835_file_content")
     def test_conversion_receives_only_authenticated_tenant(self, process):
         processed = SimpleNamespace(
-            pk="source-id", original_filename="input.835",
+            pk="79acffcf-b0ae-4f51-a943-4be883a03e60", original_filename="input.835",
             delivered_claims_count=2, held_claims_count=1,
             mir_file=SimpleNamespace(
                 mir_filename="out.mir", status="PUSHED"

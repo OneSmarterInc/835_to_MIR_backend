@@ -61,6 +61,15 @@ def _handle(request, partner=None):
         return _response({"receipt_id": str(receipt.pk), "state": receipt.dispatch.state,
                           "workflow": receipt.workflow, "byte_count": receipt.byte_count,
                           "received_at": receipt.received_at.isoformat(),
+                          "lifecycle_state": receipt.state,
+                          "validation_outcome": receipt.validation_outcome,
+                          "safe_error_code": receipt.safe_error_code,
+                          "transaction_set_count": receipt.transaction_set_count,
+                          "converter_version": receipt.converter_version,
+                          "outputs": list(receipt.dispatch.outputs.values("id", "checksum", "byte_count", "delivery_state")),
+                          "attempts": list(receipt.dispatch.attempts.order_by("-sequence").values(
+                              "id", "sequence", "parent_id", "state", "started_at", "finished_at",
+                              "heartbeat_at", "lease_expires_at", "retry_reason", "safe_error_code", "converter_version")[:20]),
                           "result": payload.get("intake_result")})
     workflow = request.POST.get("workflow")
     upload = request.FILES.get("file")

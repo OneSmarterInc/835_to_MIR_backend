@@ -18,6 +18,8 @@ from datetime import datetime, timezone
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = [
     "edi835.test_intake",
+    "edi835.test_intake_recovery",
+    "edi835.test_intake_postgres",
     "edi835.test_phase1_baseline", "edi835.test_phase1_controls",
     "project835.tests_csrf", "project835.test_release_requests",
     "project835.test_release_configuration", "project835.test_database_guard",

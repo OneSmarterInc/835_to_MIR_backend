@@ -2599,6 +2599,7 @@ def api_start_batch_conversion(request):
             }, status=403)
         job_data.pop("owner_user_id", None)
         job_data.pop("client_id", None)
+        job_data.pop("lease_owner", None)
         return JsonResponse({"success": True, "job": job_data})
 
     if request.method != "POST":

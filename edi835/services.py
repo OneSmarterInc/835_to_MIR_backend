@@ -6,7 +6,7 @@ import logging
 from pathlib import Path
 from django.conf import settings
 from django.utils import timezone
-from django.db import models
+from django.db import models, transaction
 from project835.field_crypto import (
     get_sftp_runtime_credentials,
     SFTPCredentialError,
@@ -395,10 +395,32 @@ def upload_835_to_sftp(local_file_path, filename):
 
 
 from .intake_adapters import tracked_processing
+from .intake_outputs import checkpoint_output, conversion_identity, delivery_checkpoint, replay_output
+
+
+def _persist_checkpointed_mir(source, filename, text, archive_path, out_path):
+    # The immutable manifest and the normalized MIR rows commit together.
+    # Private objects left by a failed transaction are reconciliation candidates.
+    with transaction.atomic():
+        from .intake_lifecycle import current_attempt, owned_attempt
+        from .intake_service import current_transfer
+        from .models import BatchDispatch
+        receipt = current_transfer.get()
+        if receipt:
+            # Use the same dispatch -> source lock order as recovery.
+            BatchDispatch.objects.select_for_update().get(pk=receipt.dispatch_id)
+        if current_attempt.get():
+            owned_attempt(current_attempt.get())
+        mir = store_mir_file(source_835=source, mir_filename=filename, mir_text=text)
+        checkpoint_output(source, mir, archive_path, out_path)
+        return mir
 
 
 @tracked_processing("835")
 def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12", file_id=None, ingestion_source="MANUAL", client=None):
+    replayed = replay_output()
+    if replayed is not None:
+        return replayed
     if not has_valid_file_extension(original_filename, "835"):
         return {"success": False, "error": file_extension_error("835"), "db_record": None}
     edi_text = (edi_text or "").lstrip("\ufeff").strip()
@@ -412,13 +434,21 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
     6. Archive the source 835 on success or failure.
     """
     db_record = None
-    file_uuid = uuid.uuid4()
+    file_uuid = conversion_identity(uuid.uuid4())
+    original_processing_started_at = None
     if file_id:
         try:
             db_record = EDI835File.objects.select_related("client").get(id=file_id)
             file_uuid = db_record.id
             if db_record.client:
                 client = db_record.client
+            from .models import IntakeOutput
+            if IntakeOutput.objects.filter(source_835=db_record).exists():
+                # An explicit new conversion retains the old checkpoint and
+                # normalized rows instead of rewriting a delivered artifact.
+                original_processing_started_at = db_record.processing_started_at
+                file_uuid = conversion_identity(uuid.uuid4())
+                db_record = None
         except (EDI835File.DoesNotExist, ValueError):
             db_record = None
 
@@ -478,7 +508,7 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
     # A retry/regeneration must retain the date of the original processing
     # attempt so date-based MIR fields remain deterministic.
-    processing_started_at = db_record.processing_started_at or timezone.now()
+    processing_started_at = db_record.processing_started_at or original_processing_started_at or timezone.now()
     db_record.status = "PROCESSING"
     db_record.processing_started_at = processing_started_at
     db_record.save()
@@ -535,18 +565,28 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
 
         # The database is the system of record. Persist the exact file and its
         # claim/chunk/service structure before attempting any external push.
-        stored_mir = store_mir_file(
-            source_835=db_record,
-            mir_filename=delivery_mir_filename,
-            mir_text=mir_text,
+        # Save the conversion checkpoint before any network delivery.
+        db_record.claims_count = res["claims_count"]
+        db_record.services_count = res["services_count"]
+        db_record.records_count = res["records_count"]
+        db_record.delivered_claims_count = delivered_claims
+        db_record.held_claims_count = held_claims
+        db_record.conversion_findings = findings
+        db_record.output_path = rel_output_path
+        db_record.archive_path = rel_archive_path
+        db_record.save()
+        stored_mir = _persist_checkpointed_mir(
+            db_record, delivery_mir_filename, mir_text, archived_mir_path, output_mir_path,
         )
 
         # Step 4b: Upload converted .mir file directly to configured SFTP outbound folder if active config exists
+        delivery_checkpoint(stored_mir, "SENDING")
         sftp_uploaded = upload_mir_to_sftp(
             output_mir_path,
             delivery_mir_filename,
             client=client,
         )
+        delivery_checkpoint(stored_mir, "CONFIRMED" if sftp_uploaded else "UNCONFIRMED")
         set_mir_push_status(stored_mir, sftp_uploaded)
         if sftp_uploaded:
             remove_delivered_outbound(client, "mir", output_mir_path)
@@ -578,6 +618,9 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         }
 
     except Exception as err:
+        from .intake_lifecycle import LeaseLost
+        if isinstance(err, LeaseLost):
+            raise
         err_str = str(err)
         logger.exception(f"EDI 835 processing failed for file '{stored_filename}': {err_str}")
 
@@ -613,6 +656,9 @@ def process_multiple_edi835_files(
     """
     from admin_panel.mir_mapper_logic.edi835_parser import parse_835
     from admin_panel.mir_mapper_logic.mir_generator import generate_mir_text
+    replayed = replay_output()
+    if replayed is not None:
+        return replayed
     if client and str(getattr(client, "stage", "") or "").lower() == "offboarded":
         return {
             "success": False,
@@ -677,6 +723,8 @@ def process_multiple_edi835_files(
                         }],
                     }
 
+        from .intake_lifecycle import record_batch_validation
+        record_batch_validation(fname, content, not bool(refusal_reasons))
         if refusal_reasons:
             findings = (report or {}).get("findings") or [
                 {"severity": "REFUSE", "decision": "REFUSE", "message": str(reason)}
@@ -727,7 +775,7 @@ def process_multiple_edi835_files(
             "warnings": warning_findings,
         }
 
-    file_uuid = uuid.uuid4()
+    file_uuid = conversion_identity(uuid.uuid4())
     for idx, (item, fname, content, parsed_claims) in enumerate(normalized_items):
         file_names.append(fname)
         input_contents.append(content)
@@ -865,19 +913,19 @@ def process_multiple_edi835_files(
         processing_completed_at=timezone.now()
     )
 
-    stored_mir = store_mir_file(
-        source_835=db_rec,
-        mir_filename=delivery_mir_filename,
-        mir_text=mir_text,
+    stored_mir = _persist_checkpointed_mir(
+        db_rec, delivery_mir_filename, mir_text, archived_mir_path, output_mir_path,
     )
     sftp_uploaded = False
     if deliver_outbound:
+        delivery_checkpoint(stored_mir, "SENDING")
         sftp_uploaded = upload_mir_to_sftp(
             output_mir_path,
             delivery_mir_filename,
             client=client,
             sftp_config=outbound_config,
         )
+        delivery_checkpoint(stored_mir, "CONFIRMED" if sftp_uploaded else "UNCONFIRMED")
     set_mir_push_status(stored_mir, sftp_uploaded)
     if not deliver_outbound:
         stored_mir.status = "GENERATED"

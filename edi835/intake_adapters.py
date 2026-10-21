@@ -7,6 +7,15 @@ from .intake_service import current_transfer, finish_inline, register_sources, t
 from .intake_storage import StoredSource, read_verified
 
 
+def _execute(receipts, function, *args, **kwargs):
+    from .intake_lifecycle import begin_effects, execution, record_validation
+    with execution(receipts[0].dispatch.payload):
+        for receipt in receipts:
+            record_validation(receipt, read_verified(receipt))
+        begin_effects()
+        return function(*args, **kwargs)
+
+
 def track_upload_request(kind):
     """Persist intake before legacy synchronous parsing; preserve response shape."""
     def decorate(function):
@@ -76,10 +85,16 @@ def track_upload_request(kind):
                 upload.seek(0)
             token = current_transfer.set(receipts[0]) if workflow == "835" else None
             try:
-                response = function(request, *args, **kwargs)
+                response = _execute(receipts, function, request, *args, **kwargs)
                 body = json.loads(response.content)
                 success = response.status_code < 400 and body.get("success", True) and body.get("is_valid", body.get("report", {}).get("is_valid", True))
-                finish_inline(receipts, success, source_id=body.get("file_id") or body.get("file", {}).get("id"))
+                duplicate = body.get("duplicate") or body.get("reused") or body.get("code") == "DUPLICATE_FILE"
+                file_status = body.get("file", {}).get("status")
+                if file_status in {"PARTIAL", "REJECTED"}:
+                    from .models import InboundTransfer
+                    InboundTransfer.objects.filter(pk__in=[r.pk for r in receipts]).update(validation_outcome=file_status)
+                finish_inline(receipts, success, source_id=body.get("file_id") or body.get("file", {}).get("id"),
+                              outcome="DUPLICATE" if duplicate else ("REJECTED" if file_status == "REJECTED" or not success and response.status_code < 500 else None))
                 return response
             except Exception:
                 finish_inline(receipts, False)
@@ -138,14 +153,15 @@ def tracked_processing(workflow: str, *, multiple: bool = False):
                 values["raw"] = read_verified(receipts[0])
             token = current_transfer.set(receipts[0])
             try:
-                result = function(*bound.args, **bound.kwargs)
+                result = _execute(receipts, function, *bound.args, **bound.kwargs)
                 if workflow == "RECON":
                     source = result.get("file", {})
                     finish_inline(receipts, source.get("status") in {"PROCESSED", "COMPLETED", "PARTIAL"}, source_id=source.get("id"))
                     return result
                 record = result[0] if workflow == "837" else result.get("db_record")
                 success = True if workflow == "837" else bool(result.get("success"))
-                finish_inline(receipts, success, source_id=getattr(record, "pk", None))
+                finish_inline(receipts, success, source_id=getattr(record, "pk", None),
+                              outcome="DUPLICATE" if workflow == "837" and result[1] else None)
                 return result
             except Exception:
                 finish_inline(receipts, False)

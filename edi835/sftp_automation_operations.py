@@ -77,35 +77,39 @@ def ingest_835_incoming(client, actor):
                 with sftp.open(remote_path, "rb") as handle:
                     receipts, _ = register_sources(client=client, actor=actor, channel="SFTP",
                         workflow="VALIDATE_835", sources=[(name, handle)])
-                raw = read_verified(receipts[0])
-                text = raw.decode("utf-8-sig", errors="replace").strip()
-                valid, report = validate_835_content(text)
-                if not valid:
-                    detail = _serialize_validation_error(report)
+                from .intake_lifecycle import execution, record_validation, begin_effects
+                with execution(receipts[0].dispatch.payload):
+                    raw = read_verified(receipts[0])
+                    record_validation(receipts[0], raw)
+                    begin_effects()
+                    text = raw.decode("utf-8-sig", errors="replace").strip()
+                    valid, report = validate_835_content(text)
+                    if not valid:
+                        detail = _serialize_validation_error(report)
+                        stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
+                        inbound = stage_inbound(client, "835", stored, raw, binary=True)
+                        archived = archive_inbound(client, "835", inbound)
+                        EDI835File.objects.create(
+                            client=client, original_filename=name, stored_filename=stored,
+                            input_file_content=text, status="ERROR", archive_path=relative_media_path(archived),
+                            present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
+                            error_message=detail, processing_completed_at=timezone.now(),
+                        )
+                        finish_inline(receipts, False)
+                        sftp.remove(remote_path)
+                        errors.append(f"{name}: 835 validation failed")
+                        continue
                     stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
                     inbound = stage_inbound(client, "835", stored, raw, binary=True)
                     archived = archive_inbound(client, "835", inbound)
                     EDI835File.objects.create(
                         client=client, original_filename=name, stored_filename=stored,
-                        input_file_content=text, status="ERROR", archive_path=relative_media_path(archived),
+                        input_file_content=text, status="UPLOADED", archive_path=relative_media_path(archived),
                         present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
-                        error_message=detail, processing_completed_at=timezone.now(),
                     )
-                    finish_inline(receipts, False)
+                    finish_inline(receipts, True)
                     sftp.remove(remote_path)
-                    errors.append(f"{name}: 835 validation failed")
-                    continue
-                stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
-                inbound = stage_inbound(client, "835", stored, raw, binary=True)
-                archived = archive_inbound(client, "835", inbound)
-                EDI835File.objects.create(
-                    client=client, original_filename=name, stored_filename=stored,
-                    input_file_content=text, status="UPLOADED", archive_path=relative_media_path(archived),
-                    present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
-                )
-                finish_inline(receipts, True)
-                sftp.remove(remote_path)
-                taken.append(name)
+                    taken.append(name)
             except Exception as exc:
                 if receipts:
                     finish_inline(receipts, False)

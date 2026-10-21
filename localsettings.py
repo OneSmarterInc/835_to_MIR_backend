@@ -333,6 +333,8 @@ INTAKE_STORAGE_ROOT = Path(os.environ.get("INTAKE_STORAGE_ROOT", str(BASE_DIR / 
 INTAKE_MAX_BYTES = int(os.environ.get("INTAKE_MAX_BYTES", str(100 * 1024 * 1024)))
 INTAKE_PARTNER_ENABLED = os.environ.get("INTAKE_PARTNER_ENABLED", "false").lower() == "true"
 INTAKE_MAX_PENDING_PER_CLIENT = int(os.environ.get("INTAKE_MAX_PENDING_PER_CLIENT", "1000"))
+INTAKE_LEASE_SECONDS = max(30, int(os.environ.get("INTAKE_LEASE_SECONDS", "300")))
+INTAKE_MAX_ATTEMPTS = max(1, int(os.environ.get("INTAKE_MAX_ATTEMPTS", "3")))
 
 
 # ============================================================

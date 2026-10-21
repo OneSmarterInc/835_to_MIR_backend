@@ -74,12 +74,13 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
 
     name = client.name
     with transaction.atomic():
-        from edi835.models import BatchDispatch, InboundTransfer, IntakePartner
+        from edi835.models import BatchDispatch, InboundTransfer, IntakePartner, IntakeOutput
         client = Client.objects.select_for_update().get(pk=client.pk)
         dispatches = BatchDispatch.objects.filter(payload__client_id=str(client.pk))
         if dispatches.filter(state__in=["QUEUED", "RUNNING"]).exists():
             raise ClientDeletionError("Finish or review active intake jobs before permanently deleting this client.", 409)
         private_keys = list(InboundTransfer.objects.filter(client=client).values_list("storage_key", flat=True))
+        private_keys += list(IntakeOutput.objects.filter(dispatch__in=dispatches).values_list("storage_key", flat=True))
         dispatch_ids = list(dispatches.values_list("id", flat=True))
         # Client users use SET_NULL so they must be explicitly removed. Never
         # silently delete another super administrator account.
