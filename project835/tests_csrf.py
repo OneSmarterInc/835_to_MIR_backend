@@ -43,6 +43,8 @@ class CSRFProtectionTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("csrftoken", response.cookies)
         self.assertTrue(len(response.cookies["csrftoken"].value) > 0)
+        self.assertEqual(len(response.json()["csrf_token"]), 64)
+        self.assertIn("no-store", response.headers["Cache-Control"])
 
     def test_api_login_without_token_returns_403(self):
         """Verify POST to api_login without CSRF token returns 403 Forbidden."""
@@ -56,7 +58,8 @@ class CSRFProtectionTests(TestCase):
     def test_api_login_with_bootstrap_token_succeeds(self):
         """Verify POST to api_login with bootstrap CSRF token proceeds."""
         bootstrap_res = self.client.get("/accounts/api/user/")
-        csrf_token = bootstrap_res.cookies["csrftoken"].value
+        # Cross-origin frontends can read JSON, but not the API host's cookie.
+        csrf_token = bootstrap_res.json()["csrf_token"]
 
         response = self.client.post(
             "/accounts/api/login/",
@@ -76,6 +79,21 @@ class CSRFProtectionTests(TestCase):
             content_type="application/json",
         )
         self.assertEqual(response.status_code, 403)
+
+    def test_admin_login_with_json_token_reaches_mfa_and_refreshes_token(self):
+        token = self.client.get('/accounts/api/user/').json()['csrf_token']
+        response = self.client.post(
+            '/accounts/api/login/',
+            data=json.dumps({'email': self.admin_user.email, 'password': 'TestPassword123!', 'isAdminRoute': True}),
+            content_type='application/json', HTTP_X_CSRFTOKEN=token,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()['success'])
+        self.assertIn(response.json()['next'], ('totp_setup', 'totp_verify'))
+        refreshed = self.client.get('/accounts/api/user/')
+        self.assertTrue(refreshed.json()['authenticated'])
+        self.assertEqual(len(refreshed.json()['csrf_token']), 64)
+        self.assertIn('no-store', refreshed.headers['Cache-Control'])
 
     def test_all_state_changing_endpoints_reject_tokenless_post(self):
         """Iterate all URL patterns and assert zero offenders for tokenless state-changing requests."""
