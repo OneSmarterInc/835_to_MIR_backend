@@ -59,6 +59,8 @@ def ingest_835_incoming(client, actor):
     """Validate, persist and archive inbound 835 files without converting them."""
     _config, credentials = _connected(client, "835_IN")
     import paramiko
+    from .intake_service import register_sources, finish_inline
+    from .intake_storage import read_verified
     ssh = sftp = None
     taken, errors = [], []
     try:
@@ -70,9 +72,12 @@ def ingest_835_incoming(client, actor):
             if stat.S_ISDIR(entry.st_mode) or name.startswith(".") or not has_valid_file_extension(name, "835"):
                 continue
             remote_path = posixpath.join(folder, name)
+            receipts = []
             try:
                 with sftp.open(remote_path, "rb") as handle:
-                    raw = handle.read()
+                    receipts, _ = register_sources(client=client, actor=actor, channel="SFTP",
+                        workflow="VALIDATE_835", sources=[(name, handle)])
+                raw = read_verified(receipts[0])
                 text = raw.decode("utf-8-sig", errors="replace").strip()
                 valid, report = validate_835_content(text)
                 if not valid:
@@ -86,6 +91,7 @@ def ingest_835_incoming(client, actor):
                         present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
                         error_message=detail, processing_completed_at=timezone.now(),
                     )
+                    finish_inline(receipts, False)
                     sftp.remove(remote_path)
                     errors.append(f"{name}: 835 validation failed")
                     continue
@@ -97,9 +103,12 @@ def ingest_835_incoming(client, actor):
                     input_file_content=text, status="UPLOADED", archive_path=relative_media_path(archived),
                     present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
                 )
+                finish_inline(receipts, True)
                 sftp.remove(remote_path)
                 taken.append(name)
             except Exception as exc:
+                if receipts:
+                    finish_inline(receipts, False)
                 errors.append(f"{name}: {exc}")
     finally:
         if sftp: sftp.close()

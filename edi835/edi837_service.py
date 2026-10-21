@@ -266,6 +266,10 @@ def service_837_values(service, parsed):
     )
 
 
+from .intake_adapters import tracked_processing
+
+
+@tracked_processing("837")
 @transaction.atomic
 def ingest_837(
     client, actor, filename, raw, text=None, import_mode="MANUAL",

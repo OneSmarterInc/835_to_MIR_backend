@@ -12,6 +12,7 @@ import json
 import uuid
 
 from django.http import JsonResponse
+from django.db import transaction
 from django.utils import timezone
 
 from admin_panel.access_control import can_access_client
@@ -48,6 +49,7 @@ def _public_job(job: dict) -> dict:
 
 
 # 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
+@transaction.atomic
 def api_convert_async(request):
     user = getattr(request, "user", None)
 
@@ -80,7 +82,7 @@ def api_convert_async(request):
         }, status=400)
 
     try:
-        record = EDI835File.objects.select_related("client").get(id=file_id)
+        record = EDI835File.objects.select_for_update(of=("self",)).select_related("client").get(id=file_id)
     except (EDI835File.DoesNotExist, ValueError):
         return JsonResponse({"success": False, "error": "Validated 835 file was not found."}, status=404)
 

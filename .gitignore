@@ -66,3 +66,4 @@ project835.log
 # Data dumps and temp files
 datadump.json
 verify_migration.py
+private_intake/

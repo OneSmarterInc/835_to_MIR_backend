@@ -1,4 +1,5 @@
 from django.urls import path
+from .intake_api import staff_intake, partner_intake
 from .claims_dashboard_views import dashboard_files, dashboard_file_claims
 from .client_portal_views import overview as client_portal_overview, history as client_portal_history
 from .client_portal_claim import detail as client_portal_claim_detail
@@ -95,6 +96,8 @@ mpl_analysis_review = authenticated_api(mpl_analysis_review)
 mpl_claim_workflow_status = authenticated_api(mpl_claim_workflow_status)
 
 urlpatterns = [
+    path("api/intake/", staff_intake, name="staff_intake"),
+    path("api/intake/partner/", partner_intake, name="partner_intake"),
     path("api/mpl-notices/", mpl_notices, name="mpl_notices"),
     path("api/mpl-notices/<uuid:notice_id>/", mpl_notice_detail, name="mpl_notice_detail"),
     path("api/mpl-notices/<uuid:notice_id>/analyze/", mpl_notice_analyze, name="mpl_notice_analyze"),

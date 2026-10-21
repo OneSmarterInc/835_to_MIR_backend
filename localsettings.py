@@ -328,6 +328,11 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
 
 MEDIA_URL = "/media/"
 MEDIA_ROOT = BASE_DIR / "media"
+# Keep intake originals outside web-served media. Mount on durable private disk.
+INTAKE_STORAGE_ROOT = Path(os.environ.get("INTAKE_STORAGE_ROOT", str(BASE_DIR / "private_intake")))
+INTAKE_MAX_BYTES = int(os.environ.get("INTAKE_MAX_BYTES", str(100 * 1024 * 1024)))
+INTAKE_PARTNER_ENABLED = os.environ.get("INTAKE_PARTNER_ENABLED", "false").lower() == "true"
+INTAKE_MAX_PENDING_PER_CLIENT = int(os.environ.get("INTAKE_MAX_PENDING_PER_CLIENT", "1000"))
 
 
 # ============================================================

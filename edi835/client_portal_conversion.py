@@ -10,10 +10,12 @@ from project835.decorators import authenticated_api_required
 from .client_portal_views import only_client_user
 from .file_types import has_valid_file_extension, file_extension_error
 from .services import process_edi835_file_content
+from .intake_adapters import track_upload_request
 
 
 @csrf_exempt
 @authenticated_api_required
+@track_upload_request("CLIENT_CONVERT")
 def convert(request):
     client, denied = only_client_user(request)
     if denied:

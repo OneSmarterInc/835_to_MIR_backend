@@ -521,6 +521,10 @@ def process_recon_file(recon_file: RECONFile, actor=None) -> RECONProcessingRun:
         raise
 
 
+from .intake_adapters import tracked_processing
+
+
+@tracked_processing("RECON")
 def ingest_sftp_recon_file(*, client, actor, filename, remote_path, raw, text):
     """Persist and process a RECON fetched from the configured SFTP folder.
 

@@ -120,7 +120,11 @@ class AnalysisUploadTests(TestCase):
         self.assertEqual(set(body["file"]), {"id", "filename", "kind", "uploaded_at", "claims", "status", "accepted_count", "rejected_count", "rejections"})
         writes = [q["sql"] for q in queries if q["sql"].lstrip().upper().startswith(("INSERT", "UPDATE", "DELETE"))]
         self.assertTrue(writes)
-        self.assertTrue(all("client_analysis_" in sql for sql in writes))
+        self.assertTrue(all(any(table in sql for table in (
+            "client_analysis_", '"edi835_inboundtransfer"', '"edi835_batchdispatch"',
+        )) for sql in writes))
+        self.assertFalse(EDI835Claim.objects.exists())
+        self.assertFalse(EDI837Claim.objects.exists())
         record = AnalysisUpload.objects.get()
         self.assertEqual(bytes(record.raw_content), envelope().encode())
         self.assertEqual(record.uploaded_by, self.user)

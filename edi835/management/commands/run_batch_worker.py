@@ -8,7 +8,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 from filelock import FileLock, Timeout
 
-from edi835.batch_jobs import jobs_dir, prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
+from edi835.batch_jobs import claim_job, jobs_dir, prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
 from edi835.sftp_automation import (
     enqueue_due_automations, finish_automation_run, mark_automation_running,
     recover_interrupted_automation_runs,
@@ -241,10 +241,9 @@ class Command(BaseCommand):
         return 200, payload
 
     def _process(self, job):
-        job["state"] = "RUNNING"
-        job["attempt_count"] = int(job.get("attempt_count") or 0) + 1
-        job["worker_started_at"] = timezone.now().isoformat()
-        write_job(job)
+        job = claim_job(job["id"])
+        if job is None:
+            return
         mark_automation_running(job)
         try:
             user = None
@@ -260,7 +259,17 @@ class Command(BaseCommand):
                     client=None, client_id=None,
                 )
             from accounts.models import Client
-            client = Client.objects.get(id=job.get("client_id"))
+            client = Client.objects.get(id=job["client_id"]) if job.get("client_id") else None
+
+            if job.get("job_type") == "INTAKE":
+                from edi835.intake_worker import process_intake
+                result = process_intake(job, user, client)
+                job.update(state="COMPLETED" if result.get("success") else "FAILED",
+                           intake_result=result, result=result,
+                           status_code=200 if result.get("success") else 400,
+                           finished_at=timezone.now().isoformat())
+                write_job(job)
+                return
 
             if job.get("job_type") == "MANUAL_CONVERSION":
                 status_code, payload = self._manual_conversion(job, user, client)
@@ -321,6 +330,9 @@ class Command(BaseCommand):
             job["state"] = "FAILED"
             job["status_code"] = 500
             job["result"] = {"success": False, "error": f"Batch worker failed: {exc}"}
+            if job.get("job_type") == "INTAKE":
+                job["result"] = {"success": False, "error": "Intake processing failed. Review authorization, source integrity and processing records before retrying."}
+                job["intake_result"] = job["result"]
             if job.get("job_type") == "MANUAL_CONVERSION":
                 job["stage"] = "FAILED"
                 job["progress_updated_at"] = timezone.now().isoformat()

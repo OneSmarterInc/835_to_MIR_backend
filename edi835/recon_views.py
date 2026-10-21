@@ -230,8 +230,12 @@ def recon_download(request, file_id):
     response["Content-Disposition"] = f'attachment; filename="{safe_name}"'
     response["Content-Length"] = len(response.content)
     return response
+from .intake_adapters import track_upload_request
+
+
 @authenticated_api_required
 @json_api_errors
+@track_upload_request("RECON")
 def recon_upload(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
@@ -847,14 +851,10 @@ def sftp_837_ingest(request):
     try:
         ssh, sftp = _open_sftp(config)
         with sftp.open(remote_path, "rb") as remote:
-            raw = remote.read()
-        if not raw:
-            return JsonResponse({"success": False, "error": "The selected 837 file is empty."}, status=400)
-        text = raw.decode("utf-8-sig", errors="replace")
-        from .recon_service import ingest_837_reference
-        client = config.client or getattr(request.user, "client", None)
-        result = ingest_837_reference(client=client, actor=request.user, filename=filename,
-            remote_path=remote_path, raw=raw, text=text)
+            from .recon_service import ingest_837_reference
+            client = config.client or getattr(request.user, "client", None)
+            result = ingest_837_reference(client=client, actor=request.user, filename=filename,
+                remote_path=remote_path, raw=remote, text=None)
         from .views import _remove_sftp_file_with_retry
         deleted, delete_error = _remove_sftp_file_with_retry(sftp, remote_path)
         result["remote_deleted"] = deleted

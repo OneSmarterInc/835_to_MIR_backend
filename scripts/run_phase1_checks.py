@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = [
+    "edi835.test_intake",
     "edi835.test_phase1_baseline", "edi835.test_phase1_controls",
     "project835.tests_csrf", "project835.test_release_requests",
     "project835.test_release_configuration", "project835.test_database_guard",
@@ -64,6 +65,7 @@ def source_fingerprint() -> str:
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--report", type=Path)
+    parser.add_argument("--label", action="append", help="Run selected test labels instead of the full regression suite.")
     parser.add_argument("--temp-dir", type=Path, default=ROOT / ".test-temp")
     args = parser.parse_args()
     args.temp_dir.mkdir(parents=True, exist_ok=True)
@@ -94,9 +96,10 @@ def main() -> int:
         previous_temp = tempfile.tempdir
         tempfile.tempdir = directory
         settings.MEDIA_ROOT = str(Path(directory) / "media")
+        settings.INTAKE_STORAGE_ROOT = str(Path(directory) / "private-intake")
         try:
             runner = EvidenceRunner(verbosity=1, interactive=False)
-            failures = runner.run_tests(LABELS)
+            failures = runner.run_tests(args.label or LABELS)
         finally:
             tempfile.tempdir = previous_temp
     result = runner.result
@@ -106,7 +109,7 @@ def main() -> int:
         "git_head": git_output("rev-parse", "HEAD"),
         "working_tree_changed": bool(git_output("status", "--porcelain")),
         "source_fingerprint_sha256": source_fingerprint(),
-        "test_modules": LABELS,
+        "test_modules": args.label or LABELS,
         "tests_run": result.testsRun, "failures": len(result.failures),
         "errors": len(result.errors),
         "skipped": [{"test": test.id(), "reason": reason} for test, reason in result.skipped],

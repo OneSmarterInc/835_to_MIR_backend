@@ -4,6 +4,7 @@ import logging
 from django.http import JsonResponse
 
 from edi835.models import EDI835File
+from edi835.intake_adapters import track_upload_request
 
 from .views import (
     _invalid_835_batch_response,
@@ -18,6 +19,7 @@ logger = logging.getLogger("converter")
 
 
 # 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
+@track_upload_request("VALIDATE_835")
 def api_validate(request):
     """Validate one or more EDI 835 files with the existing local validation engine."""
     if request.method != "POST":
@@ -127,13 +129,14 @@ def api_validate(request):
         return JsonResponse({"error": "Please provide EDI content to validate."}, status=400)
 
     try:
-        from pathlib import Path
-        from edi835.services import get_edi835_storage_dirs
+        import uuid
+        from edi835.storage import archive_inbound, stage_inbound, relative_media_path
 
-        dirs = get_edi835_storage_dirs(client)
-        archive_file_path = dirs["archive"] / original_filename
-        archive_file_path.write_text(edi_text, encoding="utf-8")
-        rel_archive_path = (Path("media") / "edi835" / "archive" / original_filename).as_posix()
+        original_filename = str(original_filename).replace("\\", "/").rsplit("/", 1)[-1]
+        stored_name = f"{uuid.uuid4().hex}_{original_filename}"[:255]
+        inbound = stage_inbound(client, "835", stored_name, edi_text)
+        archive_file_path = archive_inbound(client, "835", inbound)
+        rel_archive_path = relative_media_path(archive_file_path)
         report = _validate_835_for_conversion(edi_text)
         is_valid = report.get("valid", report.get("is_valid", True))
         claims_found = report.get("claims", report.get("claims_found", 0))

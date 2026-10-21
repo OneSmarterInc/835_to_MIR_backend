@@ -223,7 +223,7 @@ def edi837_upload_process(request):
                 raise ValueError("File exceeds the 100 MB limit.")
             storage_name = f"{stem}_{index:03d}{extension}" if multiple else resolved_base
             edi_file, duplicate = ingest_837(
-                client, request.user, upload.name, upload.read(),
+                client, request.user, upload.name, upload,
                 import_mode="MANUAL", storage_filename=storage_name,
             )
             results.append({"id": str(edi_file.id), "name": edi_file.original_filename,

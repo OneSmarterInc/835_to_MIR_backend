@@ -46,6 +46,10 @@ def _remove_sftp_file_with_retry(sftp, remote_path, attempts=3):
         if attempt + 1 < attempts:
             time.sleep(0.2 * (attempt + 1))
     return False, str(last_error or "Unknown SFTP deletion error")
+from .intake_adapters import track_upload_request
+
+
+@track_upload_request("CONVERT_835")
 def api_process_tracked_file(request):
     """
     API Endpoint: Processes uploaded EDI 835 file through local/FTP directory structure
@@ -84,7 +88,12 @@ def api_process_tracked_file(request):
 
     client = None
     if request.user and request.user.is_authenticated:
-        client = getattr(request.user, "client", None)
+        from converter.views import _request_client
+        if request.content_type == "application/json":
+            body = json.loads(request.body or b"{}")
+        else:
+            body = request.POST
+        client = _request_client(request, body.get("client_id") or body.get("client"))
 
     if client and str(client.stage or "").lower() == "offboarded":
         return JsonResponse({
@@ -2142,7 +2151,9 @@ def _execute_batch_conversion(request):
                 remote_file_path = posixpath.join(remote_in_dir, fname)
                 try:
                     with sftp.open(remote_file_path, "rb") as rf:
-                        raw_bytes = rf.read()
+                        from .intake_storage import store_stream, source_path as private_path
+                        stored_source = store_stream(rf, getattr(client, "pk", None), max_bytes=settings.INTAKE_MAX_BYTES)
+                    raw_bytes = private_path(stored_source.key).read_bytes()
                     
                     # Keep SFTP ingestion byte-for-byte compatible with the manual
                     # upload path.  Manual uploads decode with errors="ignore" and do
@@ -2156,6 +2167,7 @@ def _execute_batch_conversion(request):
                         "filename": fname,
                         "content": edi_content,
                         "remote_path": remote_file_path,
+                        "_stored_source": stored_source,
                     })
                 except Exception as file_err:
                     errors.append(f"{fname}: {str(file_err)}")
@@ -2243,7 +2255,9 @@ def _execute_batch_conversion(request):
                     remote_path = posixpath.join(remote_reference_dir, filename)
                     try:
                         with sftp_837.open(remote_path, "rb") as remote_file:
-                            raw_reference = remote_file.read()
+                            from .intake_storage import store_stream, source_path as private_path
+                            stored_reference = store_stream(remote_file, getattr(client, "pk", None), max_bytes=settings.INTAKE_MAX_BYTES)
+                        raw_reference = private_path(stored_reference.key).read_bytes()
 
                         if not raw_reference:
                             raise ValueError("The file is empty.")
@@ -2262,7 +2276,7 @@ def _execute_batch_conversion(request):
                                 actor=request.user,
                                 filename=filename,
                                 remote_path=remote_path,
-                                raw=raw_reference,
+                                raw=stored_reference,
                                 text=text_reference,
                             )
                         else:
@@ -2271,7 +2285,7 @@ def _execute_batch_conversion(request):
                                 actor=request.user,
                                 filename=filename,
                                 remote_path=remote_path,
-                                raw=raw_reference,
+                                raw=stored_reference,
                                 text=text_reference,
                             )
 
@@ -2331,7 +2345,9 @@ def _execute_batch_conversion(request):
             if os.path.isfile(local_file_path) and not fname.startswith(".") and ext in ALLOWED_EXTENSIONS:
                 try:
                     with open(local_file_path, "rb") as lf:
-                        raw_bytes = lf.read()
+                        from .intake_storage import store_stream, source_path as private_path
+                        stored_source = store_stream(lf, getattr(client, "pk", None), max_bytes=settings.INTAKE_MAX_BYTES)
+                    raw_bytes = private_path(stored_source.key).read_bytes()
 
                     # Use the same normalization as manual uploads and SFTP.
                     # There must be one ingestion/conversion behavior regardless of
@@ -2344,6 +2360,7 @@ def _execute_batch_conversion(request):
                         "filename": fname,
                         "content": edi_content,
                         "local_path": local_file_path,
+                        "_stored_source": stored_source,
                     })
                 except Exception as local_err:
                     errors.append(f"{fname} (local): {str(local_err)}")
@@ -2356,6 +2373,7 @@ def _execute_batch_conversion(request):
                 combined_items,
                 client=client,
                 outbound_config=outbound_config,
+                ingestion_actor=request.user,
             )
         except Exception as batch_exc:
             logger.exception("Combined SFTP batch conversion failed")

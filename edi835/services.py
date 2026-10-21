@@ -394,6 +394,10 @@ def upload_835_to_sftp(local_file_path, filename):
     return False
 
 
+from .intake_adapters import tracked_processing
+
+
+@tracked_processing("835")
 def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12", file_id=None, ingestion_source="MANUAL", client=None):
     if not has_valid_file_extension(original_filename, "835"):
         return {"success": False, "error": file_extension_error("835"), "db_record": None}
@@ -592,12 +596,14 @@ def process_edi835_file_content(edi_text, original_filename="uploaded_file.x12",
         }
 
 
+@tracked_processing("835", multiple=True)
 def process_multiple_edi835_files(
     files_list,
     ingestion_source="SFTP",
     client=None,
     outbound_config=None,
     deliver_outbound=True,
+    ingestion_actor=None,
 ):
     """
     Takes a list of file items: [ {"filename": "f1.835", "content": "..."}, {"filename": "f2.835", "content": "..."} ]

@@ -105,7 +105,7 @@ class QueueObservationTests(SimpleTestCase):
         with tempfile.TemporaryDirectory() as directory, override_settings(MEDIA_ROOT=directory):
             output = StringIO()
             with self.assertRaises(CommandError):
-                call_command("phase1_queue_status", max_queue_age_seconds=60,
+                call_command("phase1_queue_status", legacy_files=True, max_queue_age_seconds=60,
                              fail_if_unhealthy=True, stdout=output)
             self.assertEqual(json.loads(output.getvalue())["assessment"], "unknown")
             self.assertFalse((Path(directory) / "edi835").exists())
@@ -115,12 +115,12 @@ class QueueObservationTests(SimpleTestCase):
             path = Path(directory) / "edi835" / "batch_jobs"
             path.mkdir(parents=True)
             output = StringIO()
-            call_command("phase1_queue_status", max_queue_age_seconds=60,
+            call_command("phase1_queue_status", legacy_files=True, max_queue_age_seconds=60,
                          fail_if_unhealthy=True, stdout=output)
             self.assertEqual(json.loads(output.getvalue())["assessment"], "within_queue_age_limit")
             self.put(path, "old.json", state="QUEUED", started_at="2000-01-01T00:00:00+00:00")
             with self.assertRaises(CommandError):
-                call_command("phase1_queue_status", max_queue_age_seconds=60,
+                call_command("phase1_queue_status", legacy_files=True, max_queue_age_seconds=60,
                              fail_if_unhealthy=True, stdout=StringIO())
 
     def test_strict_mode_requires_explicit_target(self):

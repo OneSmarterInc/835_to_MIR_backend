@@ -110,7 +110,10 @@ def _relay_837_for_test(request, client):
             temp_path = posixpath.join(resolved_outbound, f".{target_name}.{uuid.uuid4().hex}.uploading")
             try:
                 with inbound_sftp.open(source_path, "rb") as source_file:
-                    payload = source_file.read()
+                    from django.conf import settings
+                    from .intake_storage import store_stream, source_path as stored_path
+                    stored_source = store_stream(source_file, client.pk, max_bytes=settings.INTAKE_MAX_BYTES)
+                payload = stored_path(stored_source.key).read_bytes()
                 if not payload:
                     raise ValueError("file is empty")
 
@@ -118,7 +121,7 @@ def _relay_837_for_test(request, client):
                     client,
                     request.user,
                     source_name,
-                    payload,
+                    stored_source,
                     import_mode="SFTP",
                     remote_path=source_path,
                     storage_filename=target_name,

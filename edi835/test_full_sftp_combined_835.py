@@ -2,7 +2,8 @@ import io
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from django.test import SimpleTestCase
+from django.test import TestCase
+from accounts.models import Client
 
 from .full_sftp_pipeline import process_835_to_mir_sftp
 
@@ -33,9 +34,9 @@ class _FakeSFTP:
         pass
 
 
-class CombinedSFTP835ContractTests(SimpleTestCase):
+class CombinedSFTP835ContractTests(TestCase):
     def setUp(self):
-        self.client = SimpleNamespace(id="client-1")
+        self.client = Client.objects.create(name="Synthetic", client_code="SFTP-COMBINED")
         self.actor = SimpleNamespace(is_authenticated=True)
         self.credentials = {"remote_folder": "/in/835"}
 

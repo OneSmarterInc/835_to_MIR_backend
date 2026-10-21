@@ -13,6 +13,7 @@ class Command(BaseCommand):
     requires_system_checks = []
 
     def add_arguments(self, parser):
+        parser.add_argument("--legacy-files", action="store_true", help="Inspect only pre-migration JSON jobs.")
         parser.add_argument("--max-files", type=int, default=5000)
         parser.add_argument("--max-queue-age-seconds", type=int)
         parser.add_argument("--fail-if-unhealthy", action="store_true")
@@ -27,8 +28,17 @@ class Command(BaseCommand):
             raise CommandError("Supply an approved --max-queue-age-seconds threshold first.")
         now = timezone.now()
         # Do not use jobs_dir(): inspection must not create missing directories.
-        report = observe_queue(Path(settings.MEDIA_ROOT) / "edi835" / "batch_jobs",
-                               now, max_files=options["max_files"])
+        if options["legacy_files"]:
+            report = observe_queue(Path(settings.MEDIA_ROOT) / "edi835" / "batch_jobs",
+                                   now, max_files=options["max_files"])
+            report["backend"] = "legacy_files"
+        else:
+            from django.db.models import Count, Min
+            from edi835.models import BatchDispatch
+            counts = dict(BatchDispatch.objects.values("state").annotate(n=Count("id")).values_list("state", "n"))
+            oldest = BatchDispatch.objects.filter(state="QUEUED").aggregate(value=Min("created_at"))["value"]
+            report = {"backend": "database", "scan_complete": True, "counts": counts,
+                      "oldest_queued_seconds": (now - oldest).total_seconds() if oldest else None}
         oldest = report["oldest_queued_seconds"]
         if not report["scan_complete"]:
             assessment = "unknown"

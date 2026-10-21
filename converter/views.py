@@ -223,6 +223,10 @@ def _safe_mir_filename(value, fallback="output.mir"):
 
 
 # 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
+from edi835.intake_adapters import track_upload_request
+
+
+@track_upload_request("CONVERT_835")
 def api_convert(request):
     """
     API Endpoint: Convert EDI 835 text or uploaded file(s) to MIR format.

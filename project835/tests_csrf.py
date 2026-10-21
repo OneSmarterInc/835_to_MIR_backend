@@ -103,7 +103,9 @@ class CSRFProtectionTests(TestCase):
         session["totp_verified"] = True
         session.save()
 
-        EXEMPT_VIEW_NAMES = set()  # Documented exempt views if any
+        # This endpoint accepts expiring bearer credentials only, never a session.
+        # Its rejection of cookie-only requests is covered by the intake tests.
+        EXEMPT_VIEW_NAMES = {"partner_intake"}
 
         urls = []
 

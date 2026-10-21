@@ -17,6 +17,8 @@ import uuid
 from types import SimpleNamespace
 
 from django.db import IntegrityError, transaction
+from django.conf import settings
+from .intake_storage import store_stream, source_path as private_source_path
 
 from .admin_sftp_routes import resolve_admin_sftp_route
 from .batch_test_837_v3 import _relay_837_for_test
@@ -53,6 +55,8 @@ def process_recon_incoming(client, actor):
     """Process every RECON file one by one and delete only successful inputs."""
     _config, credentials, _folder = resolve_admin_sftp_route(client, "RECON_IN")
     import paramiko
+    from .intake_service import register_sources, finish_inline
+    from .intake_storage import read_verified
 
     ssh = sftp = None
     processed, errors, retained = [], [], []
@@ -65,9 +69,13 @@ def process_recon_incoming(client, actor):
             if stat.S_ISDIR(entry.st_mode) or name.startswith(".") or not has_valid_file_extension(name, "RECON"):
                 continue
             remote_path = posixpath.join(folder, name)
+            receipts = []
             try:
                 with sftp.open(remote_path, "rb") as handle:
-                    raw = handle.read()
+                    receipts, _ = register_sources(client=client, actor=actor, channel="SFTP",
+                        workflow="RECON", sources=[(name, handle)],
+                        max_bytes=getattr(settings, "RECON_MAX_UPLOAD_BYTES", 50 * 1024 * 1024))
+                raw = read_verified(receipts[0])
                 if not raw:
                     raise ValueError("RECON file is empty")
                 text = _decode_recon(raw)
@@ -101,6 +109,7 @@ def process_recon_incoming(client, actor):
                     recon.refresh_from_db()
 
                 if recon.status in {"PROCESSED", "COMPLETED"}:
+                    finish_inline(receipts, True, source_id=recon.pk)
                     deleted, delete_error = _remove_with_retry(sftp, remote_path)
                     if not deleted:
                         errors.append(f"{name}: processed but inbound delete failed: {delete_error}")
@@ -108,9 +117,12 @@ def process_recon_incoming(client, actor):
                         continue
                     processed.append(name)
                 else:
+                    finish_inline(receipts, False, source_id=recon.pk)
                     errors.append(f"{name}: RECON processing ended with status {recon.status}")
                     retained.append(name)
             except Exception as exc:
+                if receipts:
+                    finish_inline(receipts, False)
                 errors.append(f"{name}: {exc}")
                 retained.append(name)
     finally:
@@ -170,13 +182,15 @@ def process_835_to_mir_sftp(client, actor):
             remote_path = posixpath.join(folder, name)
             try:
                 with sftp.open(remote_path, "rb") as handle:
-                    raw = handle.read()
+                    stored_source = store_stream(handle, client.pk, max_bytes=settings.INTAKE_MAX_BYTES)
+                raw = private_source_path(stored_source.key).read_bytes()
                 if not raw:
                     raise ValueError("835 file is empty")
                 batch_items.append({
                     "filename": name,
                     "content": raw.decode("utf-8-sig", errors="replace").strip(),
                     "remote_path": remote_path,
+                    "_stored_source": stored_source,
                 })
             except Exception as exc:
                 errors.append(f"{name}: could not read inbound 835: {exc}")
@@ -217,6 +231,7 @@ def process_835_to_mir_sftp(client, actor):
             ingestion_source="SFTP",
             client=client,
             deliver_outbound=True,
+            ingestion_actor=actor,
         )
 
         accepted = list(result.get("accepted_files") or [])

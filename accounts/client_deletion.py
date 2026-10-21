@@ -74,6 +74,13 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
 
     name = client.name
     with transaction.atomic():
+        from edi835.models import BatchDispatch, InboundTransfer, IntakePartner
+        client = Client.objects.select_for_update().get(pk=client.pk)
+        dispatches = BatchDispatch.objects.filter(payload__client_id=str(client.pk))
+        if dispatches.filter(state__in=["QUEUED", "RUNNING"]).exists():
+            raise ClientDeletionError("Finish or review active intake jobs before permanently deleting this client.", 409)
+        private_keys = list(InboundTransfer.objects.filter(client=client).values_list("storage_key", flat=True))
+        dispatch_ids = list(dispatches.values_list("id", flat=True))
         # Client users use SET_NULL so they must be explicitly removed. Never
         # silently delete another super administrator account.
         linked_users = User.objects.filter(client=client)
@@ -84,12 +91,30 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
             )
         linked_users.delete()
 
+        # Only this explicitly authorized permanent deletion may remove receipts.
+        # Routine status pruning cannot erase their source or dispatch history.
+        InboundTransfer.objects.filter(client=client).delete()
+        IntakePartner.objects.filter(client=client).delete()
+        dispatches.filter(transfers__isnull=True).delete()
+
         # Audit history is retained. The FK's SET_NULL operation removes only
         # the live tenant reference while preserving the immutable event.
         client.delete()
 
         def cleanup_storage():
             _delete_local_paths(local_paths)
+            from edi835.intake_storage import source_path
+            from edi835.batch_jobs import jobs_dir
+            for key in private_keys:
+                try:
+                    source_path(key).unlink(missing_ok=True)
+                except (OSError, ValueError):
+                    pass
+            for identifier in dispatch_ids:
+                try:
+                    (jobs_dir() / f"{identifier}.json").unlink(missing_ok=True)
+                except OSError:
+                    pass
             if document_storage:
                 for stored_name in document_files:
                     try:

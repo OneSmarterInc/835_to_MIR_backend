@@ -5,6 +5,65 @@ from django.db.models.functions import Trim, Upper
 from django.utils import timezone
 
 
+class BatchDispatch(models.Model):
+    """Authoritative durable dispatch; payload retains the existing poll contract."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    scope_key = models.CharField(max_length=255, blank=True, db_index=True)
+    state = models.CharField(max_length=20, db_index=True)
+    priority = models.IntegerField(default=20)
+    payload = models.JSONField(default=dict)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["state", "priority", "created_at"], name="dispatch_pending_idx")]
+        constraints = [models.CheckConstraint(condition=models.Q(state__in=["QUEUED", "RUNNING", "COMPLETED", "FAILED"]), name="dispatch_valid_state")]
+
+
+class IntakePartner(models.Model):
+    """A revocable, expiring machine credential restricted to one client."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
+    name = models.CharField(max_length=100)
+    token_digest = models.CharField(max_length=64, editable=False)
+    workflows = models.JSONField(default=list)
+    active = models.BooleanField(default=True)
+    expires_at = models.DateTimeField()
+    created_at = models.DateTimeField(auto_now_add=True)
+
+
+class InboundTransfer(models.Model):
+    """Immutable source identity; processing state is held by its dispatch."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # Legacy super-admin/system operations may have no client. New APIs require one.
+    client = models.ForeignKey("accounts.Client", null=True, on_delete=models.PROTECT)
+    actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL)
+    actor_reference = models.CharField(max_length=100)
+    partner = models.ForeignKey(IntakePartner, null=True, on_delete=models.PROTECT)
+    channel = models.CharField(max_length=20)
+    workflow = models.CharField(max_length=30)
+    original_filename = models.CharField(max_length=255)
+    storage_key = models.CharField(max_length=255, unique=True)
+    checksum = models.CharField(max_length=64)
+    byte_count = models.PositiveBigIntegerField()
+    # A server-generated scope hash binds the supplied key to actor/client/workflow.
+    idempotency_digest = models.CharField(max_length=64, unique=True, null=True)
+    received_started_at = models.DateTimeField()
+    received_at = models.DateTimeField(default=timezone.now)
+    dispatch = models.ForeignKey(BatchDispatch, on_delete=models.PROTECT, related_name="transfers")
+
+    class Meta:
+        indexes = [models.Index(fields=["client", "-received_at"], name="intake_client_received_idx")]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(byte_count__gt=0), name="intake_nonempty_source"),
+            models.CheckConstraint(condition=models.Q(channel__in=["STAFF", "SFTP", "PARTNER", "ANALYSIS", "SYSTEM"]), name="intake_valid_channel"),
+            models.CheckConstraint(condition=models.Q(workflow__in=["835", "837", "VALIDATE_835", "ANALYSIS_835", "ANALYSIS_837", "RECON"]), name="intake_valid_workflow"),
+        ]
+
+
 class AnalysisUpload(models.Model):
     """Durable staging uploads, deliberately separate from production ingestion."""
 
