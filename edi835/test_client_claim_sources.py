@@ -123,6 +123,12 @@ class ClaimSourceTests(TestCase):
         self.assertEqual(self.request("mir", wrong_mir.pk).status_code, 404)
         mir, _ = self.addmir()
         first, second = self.add837(), self.add837()
+        # Fast test inserts can share a timestamp; UUID tie ordering is random.
+        # Establish the chronological ordering this assertion intends to test.
+        from datetime import timedelta
+        from django.utils import timezone
+        EDI837File.objects.filter(pk=first.edi_file_id).update(
+            uploaded_at=timezone.now() - timedelta(days=1))
         recon = self.addrecon()
         sources = available_sources(self.claim)
         self.assertEqual([s["kind"] for s in sources], ["835", "mir", "837", "recon"])

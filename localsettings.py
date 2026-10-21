@@ -3,8 +3,14 @@ import sys
 import dj_database_url
 from pathlib import Path
 from django.core.exceptions import ImproperlyConfigured
+from dotenv import load_dotenv
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+_settings_file = Path(__file__).resolve()
+BASE_DIR = (_settings_file.parent if _settings_file.name == "localsettings.py"
+            else _settings_file.parent.parent)
+# Use the same configuration for management commands, Gunicorn and workers.
+# Service-provided environment variables always take precedence over .env.
+load_dotenv(BASE_DIR / ".env", override=False)
 
 
 # ============================================================
@@ -281,6 +287,7 @@ SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SECURE = not DEBUG  # False in local dev (HTTP), True in production (HTTPS)
 CSRF_COOKIE_SECURE = not DEBUG     # False in local dev (HTTP), True in production (HTTPS)
 CSRF_COOKIE_HTTPONLY = False       # Ensure JavaScript can read the csrftoken cookie
+CSRF_FAILURE_VIEW = "project835.csrf.csrf_failure"
 
 # For cross-origin requests between Vercel and AWS, cookie SameSite must be "None" if Secure is enabled
 # In local dev over HTTP, SameSite=None requires Secure=True which we don't set, so fall back to "Lax"
@@ -305,7 +312,6 @@ if not DEBUG and not CSRF_TRUSTED_ORIGINS:
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
-    "x-csrftoken",
     "x-file-name",
     "x-filename",
     "x-expiration-date",

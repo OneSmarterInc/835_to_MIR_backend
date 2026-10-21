@@ -361,6 +361,8 @@ def export_single_claim(claim):
             prefix[index] = element.join(st)
             break
     body = [value for value in claim_parts if not value.startswith(("ISA" + element, "GS" + element, "ST" + element, "SE" + element, "GE" + element, "IEA" + element))]
-    se_count = 1 + len(body) + 1
+    # Count every transaction segment from ST (including BHT) through SE.
+    transaction_start = next(i for i, value in enumerate(prefix) if value.startswith("ST" + element))
+    se_count = len(prefix) - transaction_start + len(body) + 1
     output = prefix + body + [f"SE{element}{se_count}{element}{st02}", f"GE{element}1{element}{gs06}", f"IEA{element}1{element}{isa13}"]
     return separator.join(output) + separator

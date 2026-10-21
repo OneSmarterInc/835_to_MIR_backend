@@ -1,6 +1,6 @@
 # 2026-09-23 - Yash: Comprehensive CSRF protection test suite for Task 6
 import json
-from django.test import TestCase, Client
+from django.test import TestCase, Client, override_settings
 from django.urls import get_resolver, URLPattern, URLResolver
 from django.contrib.auth import get_user_model
 from accounts.models import Client as PortalClient
@@ -8,6 +8,7 @@ from accounts.models import Client as PortalClient
 User = get_user_model()
 
 
+@override_settings(ROOT_URLCONF="project835.urls", MFA_ENFORCEMENT_ENABLED=False)
 class CSRFProtectionTests(TestCase):
     """Test suite verifying CSRF enforcement across browser session and DRF endpoints."""
 

@@ -47,6 +47,8 @@ def compatible_exception_handler(exc, context):
         detail = response.data.get("detail") if isinstance(response.data, dict) else None
         message = str(detail or "Request failed")
     response.data = {"success": False, "error": message}
+    if isinstance(exc, PermissionDenied) and message.startswith("CSRF Failed:"):
+        response.data["code"] = "CSRF_FAILED"
     return response
 
 

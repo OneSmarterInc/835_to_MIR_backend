@@ -80,7 +80,8 @@ class EDI837ParsingTests(SimpleTestCase):
 
     def test_single_claim_export_has_valid_counts_and_no_sibling_claim(self):
         claim = SimpleNamespace(
-            pk=1, claim_control_number="123456789QYN071",
+            pk=1, id=1, claim_control_number="123456789QYN071",
+            raw_claim=parse_837(SAMPLE_837)["claims"][0]["raw_claim"],
             patient_control_number="123456789QYN071",
             edi_file=SimpleNamespace(file_content=SAMPLE_837),
         )
@@ -102,7 +103,8 @@ class EDI837ParsingTests(SimpleTestCase):
         self.assertEqual(data["claim_frequency_code"], "6")
         self.assertEqual(data["original_claim_number"], "08020260371453501")
         claim = SimpleNamespace(
-            pk=2, claim_control_number="08020260371453502",
+            pk=2, id=2, claim_control_number="08020260371453502",
+            raw_claim=data["raw_claim"],
             patient_control_number="08020260371453502",
             edi_file=SimpleNamespace(file_content=DEPENDENT_837),
         )
