@@ -22,7 +22,8 @@ from project835.middleware import AdminAccessMiddleware
 def envelope(kind="837", segments=None, element="*", terminator="~"):
     isa = "ISA*00*          *00*          *ZZ*SENDER         *ZZ*RECEIVER       *261017*1200*^*00501*000000001*0*P*:"
     segments = segments or (["CLM*123456789ABC001*100", "REF*9C*INTERNAL"] if kind == "837" else ["CLP*123456789*1*80*50*0*ZZ*ABC001"])
-    content = [isa, f"GS*{'HC' if kind == '837' else 'HP'}*SENDER*RECEIVER*20261017*1200*1*X*005010X222A1",
+    guide = "005010X222A1" if kind == "837" else "005010X221A1"
+    content = [isa, f"GS*{'HC' if kind == '837' else 'HP'}*SENDER*RECEIVER*20261017*1200*1*X*{guide}",
                f"ST*{kind}*0001", *segments, f"SE*{len(segments) + 2}*0001", "GE*1*1", "IEA*1*000000001"]
     return (terminator.join(content) + terminator).replace("*", element)
 

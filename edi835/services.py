@@ -945,7 +945,8 @@ def sync_folder_observer(client=None):
             existing_names = set()
             for orig, stored in EDI835File.objects.filter(
                 models.Q(original_filename__in=untracked_fnames)
-                | models.Q(stored_filename__in=untracked_fnames)
+                | models.Q(stored_filename__in=untracked_fnames),
+                client=client,
             ).values_list("original_filename", "stored_filename"):
                 if orig:
                     existing_names.add(orig)
