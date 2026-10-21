@@ -5,6 +5,11 @@ Reviewed 21 October 2026. Baseline before this change: backend `7c2d2ca`, fronte
 AWS configuration. Sources below are executable modules and URL registrations;
 older duplicate view functions are not assumed to be active.
 
+Follow-up package: [decisions, operating policy, migration plan and acceptance
+guide](phase1_readiness.md). It adds a singleton worker guard, queue observation,
+synthetic converter demonstration and reproducible local verification. Formal
+owner approvals and AWS/partner evidence remain pending.
+
 ## Result against the three requested items
 
 | Requirement | Repository deliverable | Remaining production evidence |
@@ -83,7 +88,7 @@ API paths are backend paths; frontend deployment may proxy these to the backend.
 |---|---|---|
 | Web backend | `mir.service` named by operator; repo worker drop-in in `deploy/mir-workers.conf` | Actual base unit, bind/socket and effective Gunicorn arguments must be inspected on AWS |
 | Batch worker | `deploy/mir-batch-worker.service`, `management/commands/run_batch_worker.py` | Separate process, two-second queue polling; template memory limits are 1 GiB high / 1200 MiB maximum, not a measured capacity result |
-| Job persistence | `batch_jobs.py`, `MEDIA_ROOT/edi835/batch_jobs/*.json` | Atomic file replacement; scope scans are not transactional worker leases. Keep one batch worker until claiming is redesigned |
+| Job persistence | `batch_jobs.py`, `MEDIA_ROOT/edi835/batch_jobs/*.json` | Atomic file replacement; updated worker acquires an exclusive OS lock before recovery/processing. One cooperating worker per local queue directory; no multi-host lease or atomic DB dispatch |
 | Crash recovery | `recover_interrupted_jobs` | Running jobs become failed on startup; this is not automatic exactly-once resume. Finished job files expire after seven days |
 | Core conversion | `converter/services/parser.py` -> `admin_panel/mir_mapper_logic/converter.py`, parser, mapper, generator | Shared conversion implementation exists; intake validation and dispatch are still separate |
 | Database | `localsettings.py`, models/migrations | PostgreSQL production; SQLite only behind explicit test guard. Source content stored alongside structured columns |
@@ -149,7 +154,7 @@ an assertion that someone has already approved a decision.
 | Fixed | Tenant-scoped observer filename check | Backend | Regression: same name in two clients and system scope is independently discovered; repeated scans add no new row |
 | Done locally | Baseline command, inventory, corrected 835 fixture guide | Backend / technical lead | Focused tests plus report artifacts; production gate remains below |
 | P1 | Verify deployed routes, credentials, pinned server trust and explicit sender/client mapping | Infrastructure + integration lead | Per-client matrix with no secrets; reject/hold ambiguous mappings before onboarding affected partners |
-| P1 | Atomic durable dispatch and one-worker enforcement/lease design | Backend | Crash at each enqueue/DB boundary; concurrent-worker test; no missing receipt or duplicate delivery |
+| P1 | Atomic durable dispatch and distributed lease design | Backend | Local singleton enforcement is now implemented; DB/queue crash boundaries and uncertain-delivery reconciliation remain Phase 2 work |
 | P1 | Unify validation and duplicate/retry contracts by intake route | Backend + QA | Same fixtures across manual, SFTP and Analysis with explicitly documented intentional differences |
 | P1 | Measure production baselines and isolated representative load | Infrastructure + QA | Volume, size, queue-age, latency percentiles, memory and error evidence; numeric acceptance thresholds agreed |
 | P1 | Backup consistency, restore exercise and key recovery | Infrastructure + security | Isolated restore evidence, measured RPO/RTO and approved retention; gates recovery claims |
@@ -157,9 +162,10 @@ an assertion that someone has already approved a decision.
 | P2 | Upload/retention/queue-age limits and capacity targets | Product + infrastructure | Numeric policy tied to measured workload, not arbitrary defaults |
 | P2 | Complete operation audit and health coverage | Backend + infrastructure | Correlation from intake through output; worker/disk/SFTP alerts; no PHI in telemetry |
 
-Sequence: finish AWS/partner evidence, agree decision owners and targets, then
-re-estimate Phase 2 using observed workloads. A defensible calendar estimate is
-pending those inputs; the original specification estimate is not a new commitment.
+Sequence: finish AWS/partner evidence and agree decision owners and targets. The
+[delivery plan](phase1_delivery_plan.md) now provides a scoped planning range and
+dependencies; revise it using observed workloads and team availability. It is not
+a production date commitment.
 
 ## Verification for this change
 
@@ -168,7 +174,7 @@ durations, aggregate byte counts, empty data, invalid options, read-only queries
 absence of source payload queries by default and same-name client isolation.
 The Analysis, listing and storage regression suites also run after the fixture fix.
 
-Local verification on 21 October 2026:
+Initial local verification on 21 October 2026 (before the follow-up readiness package):
 
 - Focused baseline, observer, Analysis, listing and storage suites: **57 passed**.
 - Broader release regression suite: **205 passed, 1 skipped** (206 discovered).

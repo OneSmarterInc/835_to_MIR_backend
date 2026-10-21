@@ -82,7 +82,7 @@ class HeldClaimGenerationTests(unittest.TestCase):
         self.assertEqual(len(duplicate_findings), 1)
         self.assertEqual(duplicate_findings[0]["claim_number"], "DUP100")
         self.assertEqual(duplicate_findings[0]["severity"], "HOLD")
-        self.assertIn("first occurrence was processed", duplicate_findings[0]["reason"])
+        self.assertEqual(duplicate_findings[0]["release_status"], "WAITING_FOR_FIRST_SEND")
 
     def test_single_claim_split_across_records_is_not_a_duplicate(self):
         service_count = config.MAX_SERVICE_LINES_PER_RECORD + 1
@@ -108,8 +108,10 @@ class HeldClaimGenerationTests(unittest.TestCase):
 
     def test_unknown_patient_responsibility_reason_is_retained_as_finding(self):
         claim = Claim(
-            claim_number="PR31",
-            services=[service("100", "0", [Adjustment("PR", "31", Decimal("100"))])],
+            claim_number="PR77",
+            status="1",
+            group_number="GROUP1",
+            services=[service("100", "50", [Adjustment("PR", "77", Decimal("50"))])],
         )
 
         records, summary = generate_mir_records([claim])
@@ -117,7 +119,8 @@ class HeldClaimGenerationTests(unittest.TestCase):
         self.assertEqual(records, [])
         self.assertEqual(summary["held_claims"], 1)
         self.assertEqual(summary["findings"][0]["rule_code"], "UNMAPPED_PR_REASON")
-        self.assertEqual(summary["findings"][0]["adjustment_amount"], "100")
+        self.assertEqual(summary["findings"][0]["adjustment_reason"], "PR77")
+        self.assertEqual(summary["findings"][0]["adjustment_amount"], "50")
 
     def test_pr_b11_denial_is_delivered_without_an_unmapped_reason_finding(self):
         claim = Claim(

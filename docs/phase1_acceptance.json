@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "approvals": {
+    "architecture": {"status": "pending", "owner_role": "Technical lead and infrastructure/security leads", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "operating_policy": {"status": "pending", "owner_role": "Product, infrastructure and legal/compliance owners", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "migration_plan": {"status": "pending", "owner_role": "Backend lead and release owner", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "converter_baseline": {"status": "pending", "owner_role": "QA lead and integration lead", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "phase1_acceptance": {"status": "pending", "owner_role": "Technical lead and product owner", "owner_name": null, "recorded_on": null, "evidence_reference": null}
+  },
+  "verification": {
+    "postgresql": {"status": "pending", "owner_role": "Backend and QA", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "capacity": {"status": "pending", "owner_role": "Infrastructure and QA", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "restore": {"status": "pending", "owner_role": "Infrastructure", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "partner_compatibility": {"status": "pending", "owner_role": "Integration lead", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "deployed_trust": {"status": "pending", "owner_role": "Security and infrastructure", "owner_name": null, "recorded_on": null, "evidence_reference": null},
+    "rollback_rehearsal": {"status": "pending", "owner_role": "Release owner and QA", "owner_name": null, "recorded_on": null, "evidence_reference": null}
+  },
+  "targets": {"max_queue_age_seconds": null, "rpo_seconds": null, "rto_seconds": null}
+}

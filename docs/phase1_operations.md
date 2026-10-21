@@ -76,8 +76,10 @@ privately; do not distribute full environment/unit output containing secrets.
 Confirm a single batch worker before testing recovery. Observe worker heartbeat
 and queue age from job metadata in a restricted operational session; current
 `/health/` checks DB/schema only. Do not export raw job JSON, which may contain
-source names and results. Capture load metrics over a real peak window, not just
-a one-time snapshot.
+source names and results. `python manage.py phase1_queue_status` now provides
+bounded counts and ages without exporting those payloads; see
+[the readiness guide](phase1_readiness.md) for explicit-threshold monitoring.
+Capture load metrics over a real peak window, not just a one-time snapshot.
 
 ## Representative load test — staging only
 

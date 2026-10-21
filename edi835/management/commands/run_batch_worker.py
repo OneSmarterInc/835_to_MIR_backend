@@ -4,10 +4,11 @@ import time
 from types import SimpleNamespace
 
 from django.contrib.auth import get_user_model
-from django.core.management.base import BaseCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
+from filelock import FileLock, Timeout
 
-from edi835.batch_jobs import prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
+from edi835.batch_jobs import jobs_dir, prune_finished_jobs, queued_jobs, recover_interrupted_jobs, write_job
 from edi835.sftp_automation import (
     enqueue_due_automations, finish_automation_run, mark_automation_running,
     recover_interrupted_automation_runs,
@@ -22,6 +23,19 @@ class Command(BaseCommand):
         parser.add_argument("--poll-seconds", type=float, default=2.0)
 
     def handle(self, *args, **options):
+        # Acquire before recovery: a second worker must never mark the first
+        # worker's RUNNING jobs failed or process the same queued file.
+        lock = FileLock(str(jobs_dir() / ".worker.lock"), timeout=0)
+        try:
+            lock.acquire()
+        except Timeout as exc:
+            raise CommandError("A batch worker already owns this queue directory.") from exc
+        try:
+            return self._run_loop(options)
+        finally:
+            lock.release()
+
+    def _run_loop(self, options):
         recovered = recover_interrupted_jobs()
         if recovered:
             self.stderr.write(f"Marked {recovered} interrupted batch job(s) as failed.")

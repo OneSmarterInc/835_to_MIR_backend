@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "fixed_process_date": true,
+    "no_held_claims": true,
+    "one_637_character_row": true,
+    "one_claim": true,
+    "one_delivered_claim": true,
+    "one_service": true,
+    "payment_150": true,
+    "responsibility_50": true,
+    "service_charge_200": true
+  },
+  "limitations": "Not partner certification, full guide validation, deployed client mappings or capacity evidence.",
+  "output_bytes": 639,
+  "output_sha256": "6f6e46203991f111a882777196fda8ee5c40fa91770395c7e8ad0ccf5b33136a",
+  "passed": true,
+  "scope": "Committed synthetic 835, default mappings, fixed process date; no database writes or delivery.",
+  "source_sha256": "ea09ab6ff6585da1930e5ee1a04b984d436441aa1a42c31cc58d1443745fe7e6"
+}
