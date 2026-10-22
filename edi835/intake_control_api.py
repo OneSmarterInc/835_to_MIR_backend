@@ -118,11 +118,19 @@ def mutate(request, data):
         return {"partner_id": str(partner.pk)}
     if action == "partner":
         operation = data.get("operation")
-        if operation not in {"SUSPEND", "ACTIVATE", "POLICY", "CLIENTS", "QUOTAS", "PERMISSIONS", "TOKEN", "CERTIFICATE", "RETIRE", "REVOKE", "ROUTE", "RETIRE_ROUTE"}:
+        if operation not in {"SUSPEND", "ACTIVATE", "POLICY", "CLIENTS", "QUOTAS", "PERMISSIONS", "TOKEN", "CERTIFICATE", "RETIRE", "REVOKE", "ROUTE", "ROUTES", "RETIRE_ROUTE"}:
             raise ValueError("Unknown partner operation.")
         payload = data.get("data", {})
         if not isinstance(payload, dict):
             raise ValueError("Invalid partner parameters.")
+        if operation == "ROUTES":
+            routes = payload.get("routes")
+            if not isinstance(routes, list) or not 1 <= len(routes) <= 100 or not all(isinstance(route, dict) for route in routes):
+                raise ValueError("Supply 1–100 reviewed envelope routes.")
+            # mutate is atomic: a failed route rolls back the entire approval and its audits.
+            approved = [change_partner(data.get("partner_id"), action="ROUTE", actor=actor,
+                reason=reason, data={**route, "client_id": payload.get("client_id")}) for route in routes]
+            return {"routes": approved, "message": f"Approved {len(approved)} envelope routes and recorded their audit history."}
         if operation == "CERTIFICATE":
             pem = payload.get("certificate")
             if not isinstance(pem, str) or len(pem) > 16384:
@@ -232,13 +240,23 @@ def intake_control(request):
         if request.method != "POST":
             return response({"error": "Use GET or POST."}, 405)
         if request.content_type == "multipart/form-data":
-            if (request.POST.get("action") != "route_preview" or len(request.FILES) != 1
-                    or len(request.FILES.getlist("file")) != 1):
-                raise ValueError("Choose one file to extract route fields.")
+            keys = set(request.FILES)
+            if (request.POST.get("action") != "route_preview" or not keys
+                    or not (keys == {"file"} or keys <= {"file_835", "file_837"})
+                    or any(len(request.FILES.getlist(key)) != 1 for key in keys)):
+                raise ValueError("Choose one 835 file, one 837 file, or both.")
             from .route_preview import extract_routes
             from .intake_access import audit_access
             partner = IntakePartner.objects.get(pk=request.POST.get("partner_id"))
-            result = extract_routes(request.FILES["file"], partner.workflows)
+            result = {"routes": [], "transaction_set_count": 0}
+            for key in sorted(keys):
+                preview = extract_routes(request.FILES[key], partner.workflows)
+                if key != "file" and any(route["workflow"] != key[-3:] for route in preview["routes"]):
+                    raise ValueError(f"Choose an actual {key[-3:]} file in the {key[-3:]} selection.")
+                result["routes"].extend(preview["routes"])
+                result["transaction_set_count"] += preview["transaction_set_count"]
+            if len(result["routes"]) > 100:
+                raise ValueError("The selected files contain more than 100 distinct routes. Review smaller samples.")
             audit_access(request, "ROUTE_PREVIEW", partner_id=str(partner.pk), route_count=len(result["routes"]))
             return response(result)
         if request.content_type != "application/json" or len(request.body) > 65536:

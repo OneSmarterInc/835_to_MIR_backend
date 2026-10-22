@@ -81,6 +81,43 @@ class IntakeControlTests(TestCase):
         response = self.preview(raw + raw.replace(b'TESTONLY', b'OTHERTEN'))
         self.assertEqual(len(response.json()['routes']), 2)
 
+    def test_preview_full_835_and_837_together_then_atomic_approval(self):
+        from django.conf import settings
+        from .models import PartnerRoute, BatchDispatch
+        self.partner.workflows = ['835', '837']
+        self.partner.save()
+        # Valid multi-interchange files larger than the JSON command-body limit.
+        payment = (settings.BASE_DIR / 'examples/synthetic_payment.835').read_bytes() * 150
+        claim = (settings.BASE_DIR / 'examples/synthetic_claim.837').read_bytes() * 150
+        self.assertGreater(len(payment), 65536)
+        self.assertGreater(len(claim), 65536)
+        result = self.client.post(self.url, {'action': 'route_preview', 'partner_id': str(self.partner.pk),
+            'file_835': SimpleUploadedFile('full-payment.835', payment),
+            'file_837': SimpleUploadedFile('full-claim.837', claim)})
+        self.assertEqual(result.status_code, 200, result.content)
+        routes = result.json()['routes']
+        self.assertEqual([r['workflow'] for r in routes], ['835', '837'])
+        self.assertEqual(result.json()['transaction_set_count'], 300)
+        self.assertFalse(PartnerRoute.objects.exists())
+        self.assertFalse(InboundTransfer.objects.exists())
+        self.assertFalse(BatchDispatch.objects.exists())
+        bad = self.post('partner', partner_id=str(self.partner.pk), operation='ROUTES',
+            data={'client_id': str(self.tenant.pk), 'routes': [routes[0], {**routes[1], 'workflow': '999'}]})
+        self.assertEqual(bad.status_code, 400)
+        self.assertFalse(PartnerRoute.objects.exists(), 'A failed batch must not partly approve routes')
+        good = self.post('partner', partner_id=str(self.partner.pk), operation='ROUTES',
+            data={'client_id': str(self.tenant.pk), 'routes': routes})
+        self.assertEqual(good.status_code, 200, good.content)
+        self.assertEqual(PartnerRoute.objects.count(), 2)
+
+    def test_preview_rejects_wrong_file_slot_and_duplicate_parts(self):
+        from django.conf import settings
+        raw = (settings.BASE_DIR / 'examples/synthetic_claim.837').read_bytes()
+        for files in [{'file_835': SimpleUploadedFile('wrong.835', raw)},
+                      {'file_837': [SimpleUploadedFile('a.837', raw), SimpleUploadedFile('b.837', raw)]}]:
+            response = self.client.post(self.url, {'action': 'route_preview', 'partner_id': str(self.partner.pk), **files})
+            self.assertEqual(response.status_code, 400, response.content)
+
     def test_route_preview_rejects_truncated_mixed_and_unsupported_workflows(self):
         from django.conf import settings
         raw = (settings.BASE_DIR / 'examples/synthetic_claim.837').read_bytes()
