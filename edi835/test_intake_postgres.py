@@ -17,6 +17,31 @@ from .models import ProcessingAttempt
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row locks and separate connections")
 class IntakePostgresConcurrencyTests(TransactionTestCase):
+    def test_simultaneous_cross_channel_submissions_have_one_canonical_job(self):
+        from .models import InboundTransfer, BatchDispatch
+        with tempfile.TemporaryDirectory() as directory, override_settings(
+            INTAKE_STORAGE_ROOT=Path(directory) / "private", MEDIA_ROOT=Path(directory) / "media",
+        ):
+            client = Client.objects.create(client_code="PG-DUP", name="Synthetic", status="ACTIVE")
+            barrier = threading.Barrier(3)
+
+            def submit(channel):
+                close_old_connections()
+                try:
+                    barrier.wait(timeout=10)
+                    receipt = register_sources(client=client, actor=None, channel=channel, workflow="837",
+                        sources=[(channel, io.BytesIO(b"same complete source"))], asynchronous=True)[0][0]
+                    return receipt.pk
+                finally:
+                    close_old_connections()
+
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                identifiers = list(pool.map(submit, ["STAFF", "PARTNER", "SFTP"]))
+            self.assertEqual(len(set(identifiers)), 3)
+            self.assertEqual(InboundTransfer.objects.filter(canonical_transfer__isnull=True).count(), 1)
+            self.assertEqual(InboundTransfer.objects.filter(state="DUPLICATE").count(), 2)
+            self.assertEqual(BatchDispatch.objects.filter(state="QUEUED").count(), 1)
+
     def test_manual_and_scheduled_adapters_share_one_source_claim(self):
         import uuid
         from datetime import timedelta

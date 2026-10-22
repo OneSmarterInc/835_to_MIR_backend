@@ -99,6 +99,7 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
         # Only this explicitly authorized permanent deletion may remove receipts.
         # Routine status pruning cannot erase their source or dispatch history.
         SFTPSourceClaim.objects.filter(client=client).delete()
+        InboundTransfer.objects.filter(client=client, canonical_transfer__isnull=False).delete()
         InboundTransfer.objects.filter(client=client).delete()
         IntakePartner.objects.filter(client=client).delete()
         dispatches.filter(transfers__isnull=True).delete()

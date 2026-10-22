@@ -46,11 +46,16 @@ def checkpoint_output(source, mir, archive_path, out_path) -> None:
             # The redundant random object remains for the reconciler. Never
             # delete an object on a transaction outcome that may be uncertain.
             return
-        IntakeOutput.objects.create(
+        output = IntakeOutput.objects.create(
             dispatch=dispatch, attempt=attempt, source_835=source, mir_file=mir,
             storage_key=stored.key, checksum=stored.checksum, byte_count=stored.size,
             converter_version=converter_version(),
         )
+        from .models import IntakeTransactionSet
+        output.source_transactions.add(*IntakeTransactionSet.objects.filter(
+            receipt__dispatch=dispatch, receipt__canonical_transfer__isnull=True,
+            transaction_type="835",
+        ).exclude(receipt__validation_outcome="REJECTED"))
 
 
 def verify_output(output: IntakeOutput) -> None:

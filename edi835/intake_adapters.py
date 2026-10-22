@@ -5,6 +5,7 @@ from inspect import signature
 from accounts.request_context import get_current_request
 from .intake_service import current_transfer, finish_inline, register_sources, text_source
 from .intake_storage import StoredSource, read_verified
+from .intake_receipts import DuplicateSubmission, duplicate_result, receipt_summary
 
 
 def _execute(receipts, function, *args, **kwargs):
@@ -83,6 +84,24 @@ def track_upload_request(kind):
                 return JsonResponse({"success": False, "error": "Unable to durably save the upload. Please retry."}, status=503)
             for upload in uploads:
                 upload.seek(0)
+            all_receipts = receipts
+            receipts = [item for item in receipts if not item.canonical_transfer_id]
+            if not receipts:
+                return JsonResponse(duplicate_result(all_receipts), status=409)
+            if len(receipts) != len(all_receipts):
+                # Remove duplicate inputs before the legacy combined converter is
+                # called. Retain empty inputs so its existing refusal report works.
+                if uploads:
+                    decisions = iter(all_receipts)
+                    retained = [item for item in uploads if not item.size or not next(decisions).canonical_transfer_id]
+                    for key in ("edi_files", "edi_file", "file", "recon_file"):
+                        if key in request.FILES:
+                            request.FILES.setlist(key, retained)
+                elif isinstance(body.get("files"), list):
+                    decisions = iter(all_receipts)
+                    body["files"] = [item for item in body["files"]
+                        if not item.get("content") or not next(decisions).canonical_transfer_id]
+                    request._body = json.dumps(body).encode("utf-8")
             token = current_transfer.set(receipts[0]) if workflow == "835" else None
             try:
                 response = _execute(receipts, function, request, *args, **kwargs)
@@ -95,6 +114,9 @@ def track_upload_request(kind):
                     InboundTransfer.objects.filter(pk__in=[r.pk for r in receipts]).update(validation_outcome=file_status)
                 finish_inline(receipts, success, source_id=body.get("file_id") or body.get("file", {}).get("id"),
                               outcome="DUPLICATE" if duplicate else ("REJECTED" if file_status == "REJECTED" or not success and response.status_code < 500 else None))
+                body["receipts"] = [receipt_summary(item) for item in all_receipts]
+                response.content = json.dumps(body)
+                response["Cache-Control"] = "private, no-store"
                 return response
             except Exception:
                 finish_inline(receipts, False)
@@ -149,6 +171,15 @@ def tracked_processing(workflow: str, *, multiple: bool = False):
                 sources = [(values["original_filename"], text_source(values["edi_text"]))]
             receipts, _ = register_sources(client=client, actor=actor, channel=channel,
                                            workflow=workflow, sources=sources)
+            all_receipts = receipts
+            receipts = [item for item in receipts if not item.canonical_transfer_id]
+            if not receipts:
+                raise DuplicateSubmission(all_receipts)
+            if multiple and len(receipts) != len(all_receipts):
+                decisions = iter(all_receipts)
+                values["files_list"] = [item for item in items
+                    if not (item.get("_stored_source") or item.get("content") or item.get("edi_text"))
+                    or not next(decisions).canonical_transfer_id]
             if workflow in {"837", "RECON"}:
                 values["raw"] = read_verified(receipts[0])
             token = current_transfer.set(receipts[0])
@@ -162,6 +193,8 @@ def tracked_processing(workflow: str, *, multiple: bool = False):
                 success = True if workflow == "837" else bool(result.get("success"))
                 finish_inline(receipts, success, source_id=getattr(record, "pk", None),
                               outcome="DUPLICATE" if workflow == "837" and result[1] else None)
+                if workflow == "835":
+                    result["receipts"] = [receipt_summary(item) for item in all_receipts]
                 return result
             except Exception:
                 finish_inline(receipts, False)

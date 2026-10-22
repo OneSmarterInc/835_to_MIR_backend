@@ -148,6 +148,8 @@ def record_validation(receipt, raw: bytes, *, outcome="PENDING", code="") -> Non
         transaction_set_count=count, validation_outcome=outcome, safe_error_code=code,
         converter_version=converter_version(), updated_at=timezone.now(),
     )
+    from .intake_provenance import record_transactions
+    record_transactions(receipt, raw)
 
 
 @transaction.atomic
@@ -198,6 +200,12 @@ def finish_attempt(record: BatchDispatch, job: dict) -> None:
         state=state, safe_error_code=attempt.safe_error_code,
         source_reference=attempt.result["source_id"][:100], updated_at=timezone.now(),
     )
+    if record.transfers.exists():
+        from .intake_receipts import receipt_summary
+        summaries = [receipt_summary(receipt) for receipt in record.transfers.all()]
+        job["receipts"] = summaries
+        if isinstance(job.get("result"), dict):
+            job["result"]["receipts"] = summaries
 
 
 def recover_expired(*, apply: bool = False) -> dict:

@@ -282,14 +282,15 @@ class IntakeRecoveryTests(TestCase):
                 write_job({**job, "state": "COMPLETED", "result": {"source_id": str(first["db_record"].pk)}})
         finally:
             current_transfer.reset(token)
-        # Explicit regeneration starts a new conversion and preserves the old
-        # committed artifact; it is distinct from replaying an execution.
-        with patch("edi835.services.parse_835_to_mir", return_value=parsed), patch("edi835.services.upload_mir_to_sftp", return_value=True):
-            regenerated = process_edi835_file_content("synthetic", "source.835", file_id=first["db_record"].pk, client=self.tenant)
-        self.assertTrue(regenerated["success"], regenerated)
-        self.assertNotEqual(regenerated["db_record"].pk, first["db_record"].pk)
-        self.assertEqual(MIRFile.objects.count(), 2)
-        self.assertEqual(IntakeOutput.objects.count(), 2)
+        # A separate submission of the same bytes is audited, never reconverted.
+        from .intake_receipts import DuplicateSubmission
+        with patch("edi835.services.parse_835_to_mir") as parse, patch("edi835.services.upload_mir_to_sftp") as send:
+            with self.assertRaises(DuplicateSubmission):
+                process_edi835_file_content("synthetic", "source.835", file_id=first["db_record"].pk, client=self.tenant)
+            parse.assert_not_called()
+            send.assert_not_called()
+        self.assertEqual(MIRFile.objects.count(), 1)
+        self.assertEqual(IntakeOutput.objects.count(), 1)
 
     def test_not_before_is_enforced_even_for_a_stale_queue_snapshot(self):
         receipt = self.register()

@@ -17,7 +17,9 @@ from django.utils import timezone
 
 from admin_panel.access_control import can_access_client
 from edi835.batch_jobs import active_job_for, read_job, write_job
-from edi835.models import EDI835File
+from edi835.models import EDI835File, InboundTransfer
+from edi835.intake_service import register_sources, text_source
+from edi835.intake_receipts import duplicate_result, receipt_summary
 
 
 def _can_access_record(user, record: EDI835File) -> bool:
@@ -45,6 +47,7 @@ def _public_job(job: dict) -> dict:
         "finished_at": job.get("finished_at"),
         "status_code": job.get("status_code"),
         "result": job.get("result") if job.get("state") in {"COMPLETED", "FAILED"} else None,
+        "receipts": job.get("receipts", []),
     }
 
 
@@ -109,9 +112,25 @@ def api_convert_async(request):
         payload["message"] = "This file is already queued or processing."
         return JsonResponse(payload, status=202)
 
+    receipt = None
+    if record.client_id:
+        from edi835.intake_storage import source_path
+        original = InboundTransfer.objects.filter(client=record.client, workflow="VALIDATE_835",
+            source_reference=str(record.pk), state="COMPLETED").order_by("-received_at").first()
+        # Preserve the exact uploaded bytes, including BOM and trailing newline,
+        # instead of hashing the normalized text used by the legacy parser.
+        with (source_path(original.storage_key).open("rb") if original else text_source(record.input_file_content)) as stream:
+            receipts, _ = register_sources(client=record.client, actor=user, channel="STAFF", workflow="835",
+                sources=[(record.original_filename or "validated.835", stream)], asynchronous=True)
+        if original and (receipts[0].checksum != original.checksum or receipts[0].byte_count != original.byte_count):
+            # The outer transaction rolls back the receipt and dispatch together.
+            raise ValueError("Stored validation source failed integrity verification.")
+        receipt = receipts[0]
+        if receipt.canonical_transfer_id:
+            return JsonResponse(duplicate_result(receipts), status=409)
     now = timezone.now()
     job = {
-        "id": str(uuid.uuid4()),
+        "id": str(receipt.dispatch_id if receipt else uuid.uuid4()),
         "job_type": "MANUAL_CONVERSION",
         "priority": 0,
         "scope_key": scope_key,
@@ -132,6 +151,7 @@ def api_convert_async(request):
         "result": None,
         "attempt_count": 0,
         "retry_count": 0,
+        "receipts": [receipt_summary(receipt)] if receipt else [],
     }
     write_job(job)
 

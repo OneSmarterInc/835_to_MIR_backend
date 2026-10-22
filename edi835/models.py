@@ -49,6 +49,9 @@ class InboundTransfer(models.Model):
     storage_key = models.CharField(max_length=255, unique=True)
     checksum = models.CharField(max_length=64)
     byte_count = models.PositiveBigIntegerField()
+    canonical_transfer = models.ForeignKey(
+        "self", null=True, on_delete=models.PROTECT, related_name="duplicate_submissions",
+    )
     # A server-generated scope hash binds the supplied key to actor/client/workflow.
     idempotency_digest = models.CharField(max_length=64, unique=True, null=True)
     received_started_at = models.DateTimeField()
@@ -63,8 +66,16 @@ class InboundTransfer(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
-        indexes = [models.Index(fields=["client", "-received_at"], name="intake_client_received_idx")]
+        indexes = [
+            models.Index(fields=["client", "-received_at"], name="intake_client_received_idx"),
+            models.Index(fields=["client", "workflow", "checksum"], name="intake_content_lookup_idx"),
+            models.Index(fields=["state", "updated_at"], name="intake_state_age_idx"),
+        ]
         constraints = [
+            models.UniqueConstraint(fields=["client", "workflow", "checksum"],
+                condition=models.Q(canonical_transfer__isnull=True, client__isnull=False)
+                & ~models.Q(workflow="VALIDATE_835")
+                & ~models.Q(state="FAILED"), name="intake_canonical_content"),
             models.CheckConstraint(condition=models.Q(state__in=["RECEIVED", "VALIDATING", "QUEUED", "PROCESSING", "COMPLETED", "REJECTED", "FAILED", "DUPLICATE"]), name="intake_lifecycle_state"),
             models.CheckConstraint(condition=models.Q(byte_count__gt=0), name="intake_nonempty_source"),
             models.CheckConstraint(condition=models.Q(channel__in=["STAFF", "SFTP", "PARTNER", "ANALYSIS", "SYSTEM"]), name="intake_valid_channel"),
@@ -116,6 +127,23 @@ class IntakeOutput(models.Model):
 
     class Meta:
         constraints = [models.UniqueConstraint(fields=["dispatch", "source_835"], name="intake_output_identity")]
+
+
+class IntakeTransactionSet(models.Model):
+    """Source transaction coordinates, without patient or claim payloads."""
+
+    receipt = models.ForeignKey(InboundTransfer, on_delete=models.CASCADE, related_name="transaction_sets")
+    sequence = models.PositiveIntegerField()
+    transaction_type = models.CharField(max_length=3)
+    control_number = models.CharField(max_length=100)
+    version = models.CharField(max_length=100, blank=True)
+    first_segment = models.PositiveIntegerField()
+    last_segment = models.PositiveIntegerField()
+    checksum = models.CharField(max_length=64)
+    outputs = models.ManyToManyField(IntakeOutput, related_name="source_transactions")
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["receipt", "sequence"], name="intake_transaction_sequence")]
 
 
 class SFTPSourceClaim(models.Model):

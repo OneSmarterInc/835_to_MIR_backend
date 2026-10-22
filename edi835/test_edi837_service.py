@@ -209,25 +209,22 @@ class EDI837LifecycleTests(TestCase):
         self.assertFalse(user.is_staff)
         self.assertFalse(user.is_superuser)
 
-    def test_identical_837_arrivals_are_each_persisted_and_indexed(self):
+    def test_identical_837_arrivals_are_audited_without_reindexing(self):
         client = Client.objects.create(
             name="Duplicate Intake Client", client_code="DUP837", email="duplicate@example.com"
         )
 
         first, first_duplicate = ingest_837(client, None, "claims", SAMPLE_837.encode())
-        second, second_duplicate = ingest_837(client, None, "claims", SAMPLE_837.encode())
-
-        self.assertNotEqual(first.pk, second.pk)
+        from .intake_receipts import DuplicateSubmission
+        from .models import InboundTransfer
+        with self.assertRaises(DuplicateSubmission):
+            ingest_837(client, None, "claims", SAMPLE_837.encode())
         self.assertFalse(first_duplicate)
-        self.assertFalse(second_duplicate)
-        self.assertEqual(EDI837File.objects.filter(client=client).count(), 2)
-        self.assertEqual(EDI837Claim.objects.filter(client=client).count(), 4)
-        self.assertEqual(first.file_hash, second.file_hash)
-        self.assertNotEqual(first.archive_path, second.archive_path)
+        self.assertEqual(EDI837File.objects.filter(client=client).count(), 1)
+        self.assertEqual(EDI837Claim.objects.filter(client=client).count(), 2)
+        self.assertEqual(InboundTransfer.objects.filter(client=client, state="DUPLICATE").count(), 1)
         self.assertEqual(first.stored_filename, "claims.837")
-        self.assertEqual(second.stored_filename, "claims_002.837")
         self.assertEqual(Path(first.archive_path).name, "claims.837")
-        self.assertEqual(Path(second.archive_path).name, "claims_002.837")
         self.assertNotRegex(first.stored_filename, r"^[0-9a-f]{32}_")
 
     def test_requested_rename_is_used_for_archive_and_local_outbound(self):

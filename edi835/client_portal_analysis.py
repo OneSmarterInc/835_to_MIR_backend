@@ -474,7 +474,18 @@ def analysis_upload(request):
     client, denied = only_client_user(request, allowed_roles=("CLIENT_USER", "DEMO"))
     if denied:
         return denied
-    if request.method == "GET" and request.GET.get("view"):
+    if request.method == "GET" and request.GET.get("view") == "receipt":
+        from .models import InboundTransfer
+        from .intake_receipts import receipt_detail
+        from django.core.exceptions import ValidationError
+        try:
+            receipt = InboundTransfer.objects.filter(client=client, workflow__in=["ANALYSIS_835", "ANALYSIS_837"],
+                pk=request.GET.get("receipt_id")).select_related("dispatch").first()
+        except (ValueError, ValidationError):
+            receipt = None
+        response = JsonResponse(receipt_detail(receipt) if receipt else {"error": "Receipt not found."},
+                                status=200 if receipt else 404)
+    elif request.method == "GET" and request.GET.get("view"):
         from .analysis_read_api import analysis_read
         try:
             response = analysis_read(request, client)

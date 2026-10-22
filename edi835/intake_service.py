@@ -39,6 +39,9 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
     actor_ref = f"partner:{partner.pk}" if partner else (f"user:{actor_id}" if actor_id else "system")
     stored = []
     owned_keys = set()
+    if len(sources) > getattr(settings, "INTAKE_MAX_FILES", 100):
+        raise ValueError("Too many files in one intake request.")
+    total_bytes = 0
     for filename, stream in sources:
         name = str(filename or "").replace("\\", "/").rsplit("/", 1)[-1].strip()
         if not name or name in {".", ".."} or len(name) > 255 or any(ord(c) < 32 for c in name):
@@ -53,6 +56,11 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
                                   max_bytes=max_bytes or settings.INTAKE_MAX_BYTES)
             owned_keys.add(source.key)
         stored.append((name, source))
+        total_bytes += source.size
+        if total_bytes > getattr(settings, "INTAKE_MAX_REQUEST_BYTES", 128 * 1024 * 1024):
+            raise ValueError("Intake request exceeds the total size limit.")
+        from .intake_upload_policy import check_source
+        check_source(name, source)
     if not stored:
         raise ValueError("No source files supplied.")
     key_digest = None
@@ -79,9 +87,6 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
         if asynchronous:
             if locked.status != "ACTIVE":
                 raise ValueError("The selected client is inactive.")
-            pending = InboundTransfer.objects.filter(client=client, dispatch__state__in=["QUEUED", "RUNNING"]).count()
-            if pending >= settings.INTAKE_MAX_PENDING_PER_CLIENT:
-                raise ValueError("Client intake queue is full. Retry later with the same idempotency key.")
         job_id = uuid.uuid4()
         state = "QUEUED" if asynchronous else "RUNNING"
         job = {"id": str(job_id), "job_type": "INTAKE" if asynchronous else "INLINE_INTAKE",
@@ -91,16 +96,51 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
                "worker_started_at": None if asynchronous else started.isoformat(),
                "finished_at": None, "result": None, "workflow": workflow}
         dispatch = BatchDispatch.objects.create(id=job_id, state=state, scope_key=job["scope_key"], priority=0, payload=job)
-        receipts = [InboundTransfer.objects.create(
-            client=client, actor_id=actor_id, actor_reference=actor_ref, partner=partner,
-            channel=channel, workflow=workflow, original_filename=name,
-            storage_key=source.key, checksum=source.checksum, byte_count=source.size,
-            idempotency_digest=key_digest, received_started_at=started, dispatch=dispatch,
-            state="QUEUED" if asynchronous else "RECEIVED",
-        ) for name, source in stored]
+        receipts = []
+        for name, source in stored:
+            canonical = None
+            # Validation is read-only and must return a fresh validation report.
+            # Unassigned legacy operations are never deduplicated across tenants.
+            if client and workflow != "VALIDATE_835":
+                candidates = InboundTransfer.objects.filter(
+                    client=client, workflow=workflow, checksum=source.checksum,
+                    canonical_transfer__isnull=True,
+                )
+                if workflow.startswith("ANALYSIS_"):
+                    from .models import AnalysisUpload
+                    # Analysis writes are atomic and have no external delivery.
+                    # A failed, rolled-back save may be submitted again safely.
+                    if not AnalysisUpload.objects.filter(client=client, kind=workflow[-3:],
+                                                         content_sha256=source.checksum).exists():
+                        candidates = candidates.exclude(state="FAILED")
+                canonical = (candidates.exclude(state="FAILED").order_by("received_at", "pk").first()
+                             or candidates.order_by("received_at", "pk").first())
+            target = dispatch
+            if canonical:
+                duplicate_id = uuid.uuid4()
+                duplicate_job = {**job, "id": str(duplicate_id), "state": "COMPLETED",
+                    "scope_key": f"intake:{duplicate_id}", "finished_at": timezone.now().isoformat(),
+                    "result": {"duplicate": True, "canonical_receipt_id": str(canonical.pk)}}
+                target = BatchDispatch.objects.create(id=duplicate_id, state="COMPLETED",
+                    scope_key=duplicate_job["scope_key"], priority=0, payload=duplicate_job)
+            receipts.append(InboundTransfer.objects.create(
+                client=client, actor_id=actor_id, actor_reference=actor_ref, partner=partner,
+                channel=channel, workflow=workflow, original_filename=name,
+                storage_key=source.key, checksum=source.checksum, byte_count=source.size,
+                idempotency_digest=key_digest, received_started_at=started, dispatch=target,
+                canonical_transfer=canonical,
+                state="DUPLICATE" if canonical else ("QUEUED" if asynchronous else "RECEIVED"),
+                safe_error_code="DUPLICATE_FILE" if canonical else "",
+            ))
+        if asynchronous and any(not item.canonical_transfer_id for item in receipts):
+            pending = InboundTransfer.objects.filter(client=client, dispatch__state__in=["QUEUED", "RUNNING"]).count()
+            if pending > settings.INTAKE_MAX_PENDING_PER_CLIENT:
+                raise ValueError("Client intake queue is full. Retry later with the same idempotency key.")
         from .sftp_intake import bind_receipts
         bind_receipts(receipts)
-        if not asynchronous:
+        if not dispatch.transfers.exists():
+            dispatch.delete()
+        elif not asynchronous:
             from .intake_lifecycle import start_attempt
             start_attempt(dispatch, job)
             dispatch.payload = job

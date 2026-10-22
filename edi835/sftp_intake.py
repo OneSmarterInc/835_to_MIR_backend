@@ -168,6 +168,8 @@ class GuardedSFTP:
             claim = SFTPSourceClaim.objects.select_for_update().get(pk=identity)
             self._assert_owner(claim)
             receipt = claim.receipt
+            if receipt and receipt.canonical_transfer_id:
+                raise SourceNotReady("Duplicate remote source retained; review its canonical receipt before disposition.")
             if not receipt or receipt.state not in {"COMPLETED", "DUPLICATE"}:
                 raise SourceNotReady("Remote source retained: no successful durable receipt.")
             if receipt.workflow == "VALIDATE_835":

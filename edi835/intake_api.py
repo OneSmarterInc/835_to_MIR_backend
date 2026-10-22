@@ -15,6 +15,7 @@ from accounts.models import Client
 from admin_panel.access_control import can_access_client
 from .intake_service import register_sources
 from .models import InboundTransfer, IntakePartner
+from .intake_receipts import receipt_detail, receipt_summary
 
 
 def _response(payload, status=200):
@@ -49,6 +50,26 @@ def _handle(request, partner=None):
     if not partner and not (user and user.is_authenticated and user.is_active and user.is_staff):
         return _response({"error": "Staff access required."}, 403)
     if request.method == "GET":
+        if not request.GET.get("receipt_id"):
+            from django.core.paginator import Paginator
+            try:
+                client = partner.client if partner else Client.objects.get(pk=request.GET.get("client_id"))
+                if not partner and not can_access_client(user, client.pk):
+                    return _response({"error": "Access denied."}, 403)
+                page_number = int(request.GET.get("page", "1"))
+                if page_number < 1:
+                    raise ValueError
+            except (Client.DoesNotExist, ValueError, TypeError, ValidationError):
+                return _response({"error": "Select an authorized client and a valid page."}, 400)
+            rows = InboundTransfer.objects.filter(client=client)
+            if partner:
+                rows = rows.filter(partner=partner)
+            if request.GET.get("state"):
+                rows = rows.filter(state=request.GET["state"])
+            page = Paginator(rows.order_by("-received_at", "-pk").values(
+                "id", "workflow", "channel", "state", "byte_count", "received_at", "canonical_transfer_id"), 50).get_page(page_number)
+            return _response({"receipts": list(page.object_list), "page": page.number,
+                              "pages": page.paginator.num_pages, "total": page.paginator.count})
         try:
             identifier = uuid.UUID(request.GET.get("receipt_id", ""))
         except ValueError:
@@ -57,20 +78,10 @@ def _handle(request, partner=None):
         allowed = receipt and (receipt.partner_id == partner.pk if partner else can_access_client(user, receipt.client_id))
         if not allowed:
             return _response({"error": "Receipt not found."}, 404)
-        payload = receipt.dispatch.payload
-        return _response({"receipt_id": str(receipt.pk), "state": receipt.dispatch.state,
-                          "workflow": receipt.workflow, "byte_count": receipt.byte_count,
-                          "received_at": receipt.received_at.isoformat(),
-                          "lifecycle_state": receipt.state,
-                          "validation_outcome": receipt.validation_outcome,
-                          "safe_error_code": receipt.safe_error_code,
-                          "transaction_set_count": receipt.transaction_set_count,
-                          "converter_version": receipt.converter_version,
-                          "outputs": list(receipt.dispatch.outputs.values("id", "checksum", "byte_count", "delivery_state")),
-                          "attempts": list(receipt.dispatch.attempts.order_by("-sequence").values(
-                              "id", "sequence", "parent_id", "state", "started_at", "finished_at",
-                              "heartbeat_at", "lease_expires_at", "retry_reason", "safe_error_code", "converter_version")[:20]),
-                          "result": payload.get("intake_result")})
+        result = receipt_detail(receipt)
+        if partner:
+            result["status_url"] = f"/edi835/api/intake/partner/?receipt_id={receipt.pk}"
+        return _response(result)
     workflow = request.POST.get("workflow")
     upload = request.FILES.get("file")
     key = request.headers.get("Idempotency-Key", "").strip()
@@ -95,10 +106,15 @@ def _handle(request, partner=None):
     except (DatabaseError, OSError):
         return _response({"error": "Intake could not be committed. Retry with the same idempotency key."}, 503)
     receipt = receipts[0]
-    return _response({"receipt_id": str(receipt.pk), "job_id": str(receipt.dispatch_id),
+    summary = receipt_summary(receipt)
+    if partner:
+        summary["status_url"] = f"/edi835/api/intake/partner/?receipt_id={receipt.pk}"
+    return _response({**summary, "job_id": str(receipt.dispatch_id),
         "state": receipt.dispatch.state, "reused": reused,
-        "message": "Existing receipt returned." if reused else "Received for processing; validation and conversion are pending."},
-        200 if reused and receipt.dispatch.state in {"COMPLETED", "FAILED"} else 202)
+        "duplicate": bool(receipt.canonical_transfer_id),
+        "message": ("Duplicate received; original processing is unchanged." if receipt.canonical_transfer_id else
+                    "Existing receipt returned." if reused else "Received for processing; validation and conversion are pending.")},
+        200 if receipt.canonical_transfer_id or reused and receipt.dispatch.state in {"COMPLETED", "FAILED"} else 202)
 
 
 @transaction.non_atomic_requests

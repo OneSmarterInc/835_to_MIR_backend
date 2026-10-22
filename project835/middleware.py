@@ -19,6 +19,23 @@ MFA_EXEMPT_PATHS = {
     "/accounts/api/signup/", "/accounts/api/totp/setup/", "/accounts/api/totp/verify/",
 }
 
+
+class IntakeBodyLimitMiddleware:
+    """Reject oversized declared bodies before multipart parsing or authentication."""
+
+    def __init__(self, get_response):
+        self.get_response = get_response
+
+    def __call__(self, request):
+        if request.method in {"POST", "PUT", "PATCH"} and request.path.startswith(("/api/", "/edi835/api/")):
+            try:
+                size = int(request.META.get("CONTENT_LENGTH") or 0)
+            except ValueError:
+                return JsonResponse({"error": "Invalid request length."}, status=400)
+            if size > settings.INTAKE_MAX_REQUEST_BYTES:
+                return JsonResponse({"error": "Upload request exceeds the configured size limit."}, status=413)
+        return self.get_response(request)
+
 ADMIN_SCREEN_PATHS = (
     ("/admin-panel/api/access/", "access"),
     ("/admin-panel/api/users", "access"),

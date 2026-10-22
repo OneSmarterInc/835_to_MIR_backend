@@ -288,7 +288,25 @@ class Command(BaseCommand):
             from edi835.intake_lifecycle import begin_effects
             begin_effects()
             if job.get("job_type") == "MANUAL_CONVERSION":
-                status_code, payload = self._manual_conversion(job, user, client)
+                from admin_panel.access_control import can_access_client
+                authorized = can_access_client(user, client.pk) if client else getattr(user, "is_superuser", False)
+                if not getattr(user, "is_active", False) or not authorized or getattr(user, "client_role", "") == "DEMO":
+                    raise ValueError("Conversion authorization has expired or was revoked.")
+                from edi835.intake_service import current_transfer
+                from edi835.intake_lifecycle import record_validation
+                from edi835.intake_storage import read_verified
+                from edi835.models import InboundTransfer
+                from edi835.intake_receipts import receipt_summary
+                receipt = InboundTransfer.objects.filter(dispatch_id=job["id"]).first()
+                token = current_transfer.set(receipt)
+                try:
+                    if receipt:
+                        record_validation(receipt, read_verified(receipt))
+                    status_code, payload = self._manual_conversion(job, user, client)
+                    if receipt:
+                        payload["receipts"] = [receipt_summary(receipt)]
+                finally:
+                    current_transfer.reset(token)
                 job["state"] = "COMPLETED" if payload.get("success") else "FAILED"
                 job["status_code"] = status_code
                 job["result"] = payload

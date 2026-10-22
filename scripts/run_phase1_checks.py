@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = [
     "edi835.test_intake",
+    "edi835.test_intake_duplicates",
     "edi835.test_sftp_intake",
     "edi835.test_sftp_invalid_file", "edi835.test_sftp_automation",
     "edi835.test_sftp_sequential_hhss", "edi835.test_sftp_source_independence",
