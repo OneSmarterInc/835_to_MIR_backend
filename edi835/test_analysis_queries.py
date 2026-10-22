@@ -92,10 +92,10 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(len(claim_detail(self.client_record, "claim")["occurrences"]), 2)
         self.upload("835", [("CLAIM", "90", "50", "20", "OTHER")], "other.835")
         row = self.page()["rows"][0]
-        self.assertTrue(row["ambiguous"])
+        self.assertFalse(row["ambiguous"])
         self.assertEqual(row["reference_count"], 2)
-        self.assertEqual(row["display_amounts"]["billed_835"]["count"], 2)
-        self.assertEqual(row["display_amounts"]["payment"], {"count": 1, "value": "50.00"})
+        self.assertEqual(row["display_amounts"]["billed_835"]["count"], 1)
+        self.assertEqual(row["display_amounts"]["payment"], {"count": 1, "value": "100.00"})
         self.assertEqual(len(claim_detail(self.client_record, "CLAIM")["occurrences"]), 3)
 
     def test_search_keeps_entire_group_and_treats_wildcards_literally(self):
@@ -108,6 +108,43 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(self.page(search="notfound")["total"], 0)
         self.assertEqual(self.page(search="' OR 1=1 --")["total"], 0)
         self.assertEqual(self.page(search="%%%%")["total"], 0)
+
+    def test_835_totals_drive_both_comparisons_counts_detail_and_csv(self):
+        self.upload("837", [("TOTAL", "624")])
+        self.upload("835", [("TOTAL", "400", "350", "50", "FIRST")], "first.835")
+        self.upload("835", [("TOTAL", "224", "200", "24", "SECOND")], "second.835")
+        result = self.page(category="matched", search="second.835")
+        self.assertEqual(result["counts"], {"both": 0, "matched": 1, "837-only": 0})
+        row = result["rows"][0]
+        self.assertEqual([row[key] for key in ("billed_835", "payment", "patient_responsibility", "allowed")],
+                         ["624.00", "550.00", "74.00", "624.00"])
+        self.assertEqual((row["billed_status"], row["allowed_status"]), ("Match", "Match"))
+        self.assertFalse(row["ambiguous"])
+        self.assertEqual(row["reference_count"], 2)
+        self.assertEqual(claim_detail(self.client_record, "TOTAL")["billed_835"], "624.00")
+        self.assertEqual(len(claim_detail(self.client_record, "TOTAL")["occurrences"]), 3)
+        exported = list(csv.reader(StringIO("".join(comparison_csv(
+            self.client_record, query_options({"category": "matched"}))))))
+        self.assertEqual(exported[1][7:11], ["624.00", "550.00", "74.00", "624.00"])
+
+    def test_sum_preserves_reversals_unknowns_and_same_file_deduplication(self):
+        self.upload("837", [("SIGNED", "100"), ("UNKNOWN", "100"), ("EQUAL", "100")])
+        self.upload("835", [("SIGNED", "120", "100", "20"), ("UNKNOWN", "50", "30", "20"),
+                            ("EQUAL", "50", "40", "10")], "first.835")
+        self.upload("835", [("SIGNED", "-20", "-10", "-10"), ("UNKNOWN", "50", "50", None),
+                            ("EQUAL", "50", "40", "10")], "second.835")
+        # A repeated record in the same named file remains a single contribution.
+        self.upload("835", [("SIGNED", "-20", "-10", "-10")], "second.835")
+        matched = {row["claim"]: row for row in self.page(category="matched")["rows"]}
+        self.assertEqual(set(matched), {"SIGNED", "EQUAL"})
+        self.assertEqual((matched["SIGNED"]["payment"], matched["SIGNED"]["patient_responsibility"]),
+                         ("90.00", "10.00"))
+        self.assertEqual(matched["EQUAL"]["payment"], "80.00")
+        unknown = self.page()["rows"][0]
+        self.assertEqual((unknown["billed_status"], unknown["allowed_status"]), ("Match", "Amount unavailable"))
+        self.assertEqual(unknown["payment"], "80.00")
+        self.assertIsNone(unknown["patient_responsibility"])
+        self.assertIsNone(unknown["allowed"])
 
     def test_internal_claim_is_from_835_only_in_list_detail_and_export(self):
         self.upload("837", [("X", "100", None, None, "SUBMISSION-REF")])

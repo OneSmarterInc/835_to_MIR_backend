@@ -23,7 +23,7 @@ AMOUNTS = {
     "allowed": ("835", "payment + patient_responsibility"),
 }
 SORTS = {"claim", "internal_number", "filename", "difference", "allowed_difference", *AMOUNTS}
-MATCH = "COALESCE(n837 = 1 AND n835 = 1 AND a837 = a835 AND a837 = allowed_value, FALSE)"
+MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND a837 = a835 AND a837 = allowed_value, FALSE)"
 MISMATCH = f"n835 > 0 AND NOT {MATCH}"
 
 
@@ -69,11 +69,20 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
     amount_columns = []
     for key, (kind, expression) in AMOUNTS.items():
         test = f"kind = '{kind}'"
-        amount_columns.extend([
-            f"MIN(CASE WHEN {test} THEN {expression} END) AS {key}_value",
-            f"COUNT(DISTINCT CASE WHEN {test} THEN {expression} END) + "
-            f"MAX(CASE WHEN {test} AND ({expression}) IS NULL THEN 1 ELSE 0 END) AS {key}_count",
-        ])
+        if kind == "835":
+            # SUM normally ignores NULL. A missing component must make its total
+            # unknown, otherwise an incomplete remittance could falsely match.
+            amount_columns.extend([
+                f"CASE WHEN MAX(CASE WHEN {test} AND ({expression}) IS NULL THEN 1 ELSE 0 END) = 0 "
+                f"THEN SUM(CASE WHEN {test} THEN {expression} END) END AS {key}_value",
+                f"MAX(CASE WHEN {test} THEN 1 ELSE 0 END) AS {key}_count",
+            ])
+        else:
+            amount_columns.extend([
+                f"MIN(CASE WHEN {test} THEN {expression} END) AS {key}_value",
+                f"COUNT(DISTINCT CASE WHEN {test} THEN {expression} END) + "
+                f"MAX(CASE WHEN {test} AND ({expression}) IS NULL THEN 1 ELSE 0 END) AS {key}_count",
+            ])
     sql = f"""WITH source AS (
         SELECT UPPER(TRIM(c.claim_number)) AS claim, u.kind, u.filename,
                UPPER(TRIM(c.internal_number)) AS internal_number,
@@ -89,7 +98,7 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
             SUM(CASE WHEN kind = '837' THEN 1 ELSE 0 END) AS n837,
             SUM(CASE WHEN kind = '835' THEN 1 ELSE 0 END) AS n835,
             MIN(CASE WHEN kind = '837' THEN billed END) AS a837,
-            MIN(CASE WHEN kind = '835' THEN billed END) AS a835,
+            SUM(CASE WHEN kind = '835' THEN billed END) AS a835,
             COALESCE(MIN(CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END), '') AS internal_number,
             COUNT(DISTINCT CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END) AS reference_count,
             MIN(CASE WHEN kind = '837' THEN filename END) AS filename,
@@ -98,13 +107,13 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
         FROM distinct_records GROUP BY claim
     ), compared AS (
         SELECT grouped.*,
-            CASE WHEN n837 = 1 AND n835 = 1 THEN ABS(a837 - a835) END AS difference,
-            CASE WHEN n837 = 1 AND n835 = 1 THEN ABS(a837 - allowed_value) END AS allowed_difference,
+            CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - a835) END AS difference,
+            CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - allowed_value) END AS allowed_difference,
             CASE WHEN n837 = 1 THEN a837 END AS billed_837,
-            CASE WHEN n835 = 1 THEN a835 END AS billed_835,
-            CASE WHEN n837 = 1 AND n835 = 1 THEN payment_value END AS payment,
-            CASE WHEN n837 = 1 AND n835 = 1 THEN patient_responsibility_value END AS patient_responsibility,
-            CASE WHEN n837 = 1 AND n835 = 1 THEN allowed_value END AS allowed
+            a835 AS billed_835,
+            payment_value AS payment,
+            patient_responsibility_value AS patient_responsibility,
+            allowed_value AS allowed
         FROM grouped WHERE n837 > 0 AND search_match = 1
     ) """
     return sql, params
@@ -115,7 +124,7 @@ def money(cents: int | Decimal | None) -> str | None:
 
 
 def summary_row(record: dict[str, Any], has835: bool) -> dict[str, Any]:
-    paired = record["n837"] == record["n835"] == 1
+    paired = record["n837"] == 1 and record["n835"] > 0
     ambiguous = record["n835"] > 0 and not paired
 
     def status(delta):
@@ -264,6 +273,8 @@ def comparison_csv(client: Client, options: dict[str, Any]) -> Iterator[str]:
                 def source(kind, key):
                     return " | ".join(item[key] for item in sources if item["source_type"] == kind)
                 def amounts(key):
+                    if key != "billed_837":
+                        return row[key] if row[key] is not None else "Unknown"
                     kind = "837" if key == "billed_837" else "835"
                     return " | ".join(dict.fromkeys(item[key] or "Unknown" for item in items if item["source_type"] == kind))
                 values = [row["claim"], source("837", "filename"), source("835", "filename"),
