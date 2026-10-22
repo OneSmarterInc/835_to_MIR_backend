@@ -4,6 +4,7 @@ Only summary rows leave the list endpoint. Clinical/source records are fetched
 separately for a selected claim or in bounded batches during CSV export.
 """
 import csv
+import json
 from collections.abc import Iterator, Mapping, Sequence
 from typing import Any
 from decimal import Decimal
@@ -23,7 +24,7 @@ AMOUNTS = {
     "allowed": ("835", "payment + patient_responsibility"),
 }
 SORTS = {"claim", "internal_number", "filename", "difference", "allowed_difference", *AMOUNTS}
-MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND a837 = a835 AND (a837 = payment_value OR a837 = allowed_value), FALSE)"
+MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND latest_claim_status != '22' AND a837 = a835 AND (a837 = payment_value OR a837 = allowed_value), FALSE)"
 MISMATCH = f"n835 > 0 AND NOT {MATCH}"
 
 
@@ -66,16 +67,9 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
         pattern = "%" + connection.ops.prep_for_like_query(search.upper()) + "%"
         search_sql = "CASE WHEN claim LIKE %s ESCAPE '\\' OR internal_number LIKE %s ESCAPE '\\' OR UPPER(filename) LIKE %s ESCAPE '\\' THEN 1 ELSE 0 END"
         params.extend([pattern] * 3)
-    # Consensus needs no date. Otherwise every contributing remittance must be
-    # dated, and the latest date must identify one billed amount, not a guessed
-    # winner between conflicting same-day records.
-    latest_billed = """CASE
-        WHEN COUNT(DISTINCT CASE WHEN kind = '835' THEN billed END) = 1
-            THEN MIN(CASE WHEN kind = '835' THEN billed END)
-        WHEN MAX(CASE WHEN kind = '835' AND payment_date IS NULL THEN 1 ELSE 0 END) = 1 THEN NULL
-        WHEN COUNT(DISTINCT CASE WHEN kind = '835' AND payment_date = latest_date THEN billed END) = 1
-            THEN MAX(CASE WHEN kind = '835' AND payment_date = latest_date THEN billed END)
-        END"""
+    # Upload order is the business ordering across files; original CLP sequence
+    # selects the final entry within a file. Never infer state from amount size.
+    latest_billed = "MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN billed END)"
     amount_columns = []
     for key, (kind, expression) in AMOUNTS.items():
         test = f"kind = '{kind}'"
@@ -99,32 +93,53 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
                 f"MAX(CASE WHEN {test} AND ({expression}) IS NULL THEN 1 ELSE 0 END) AS {key}_count",
             ])
     sql = f"""WITH source AS (
-        SELECT UPPER(TRIM(c.claim_number)) AS claim, u.kind, u.filename, c.payment_date,
+        SELECT UPPER(TRIM(c.claim_number)) AS claim, u.kind, u.filename, c.payment_date, u.uploaded_at, u.id AS upload_id, c.sequence, c.id AS record_id,
+               COALESCE(n.claim_status, '') AS claim_status, COALESCE(i.fingerprint, '') AS fingerprint,
                UPPER(TRIM(c.internal_number)) AS internal_number,
                {cents('billed')} AS billed, {cents('payment')} AS payment,
                {cents('patient_responsibility')} AS patient_responsibility
         FROM client_analysis_claim c JOIN client_analysis_upload u ON u.id = c.upload_id
+        LEFT JOIN client_analysis_835_claim n ON n.analysis_claim_id = c.id
+        LEFT JOIN client_analysis_claim_identity i ON i.claim_id = c.id
         WHERE u.client_id = %s {claim_filter}
+    ), ranked_records AS (
+        SELECT source.*, ROW_NUMBER() OVER (
+            PARTITION BY claim, kind, filename, internal_number, billed, payment, patient_responsibility, payment_date, claim_status, fingerprint,
+                CASE WHEN kind = '835' AND internal_number = '' THEN record_id ELSE 0 END
+            ORDER BY uploaded_at DESC, upload_id DESC, sequence DESC
+        ) AS record_rank FROM source
     ), distinct_records AS (
-        SELECT DISTINCT claim, kind, filename, internal_number, billed, payment, patient_responsibility, payment_date
-        FROM source
+        SELECT ranked_records.*, CASE WHEN internal_number != '' THEN 'id:' || internal_number
+            ELSE 'missing:' || CAST(record_id AS TEXT) END AS reference_key
+        FROM ranked_records WHERE record_rank = 1
+    ), claim_groups AS (
+        SELECT DISTINCT claim, reference_key AS group_internal FROM distinct_records WHERE kind = '835'
+        UNION
+        SELECT DISTINCT d.claim, '' FROM distinct_records d WHERE d.kind = '837'
+            AND NOT EXISTS (SELECT 1 FROM distinct_records r WHERE r.claim = d.claim AND r.kind = '835')
+    ), grouped_sources AS (
+        SELECT d.*, g.group_internal FROM distinct_records d JOIN claim_groups g ON g.claim = d.claim
+            AND (d.kind = '837' OR d.reference_key = g.group_internal)
     ), dated AS (
-        SELECT distinct_records.*, MAX(CASE WHEN kind = '835' THEN payment_date END)
-            OVER (PARTITION BY claim) AS latest_date
-        FROM distinct_records
+        SELECT grouped_sources.*, ROW_NUMBER() OVER (
+            PARTITION BY claim, group_internal, kind ORDER BY uploaded_at DESC, upload_id DESC, sequence DESC
+        ) AS claim_rank FROM grouped_sources
     ), grouped AS (
         SELECT claim,
             SUM(CASE WHEN kind = '837' THEN 1 ELSE 0 END) AS n837,
             SUM(CASE WHEN kind = '835' THEN 1 ELSE 0 END) AS n835,
             MIN(CASE WHEN kind = '837' THEN billed END) AS a837,
             {latest_billed} AS a835,
-            MAX(latest_date) AS latest_payment_date,
-            COALESCE(MIN(CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END), '') AS internal_number,
-            COUNT(DISTINCT CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END) AS reference_count,
+            MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN payment_date END) AS latest_payment_date,
+            MAX(CASE WHEN kind = '835' THEN uploaded_at END) AS latest_uploaded_at,
+            group_internal AS group_key,
+            COALESCE(MIN(CASE WHEN kind = '835' THEN internal_number END), '') AS internal_number,
+            MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN claim_status END) AS latest_claim_status,
+            MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN record_id END) AS selected_record_id,
             MIN(CASE WHEN kind = '837' THEN filename END) AS filename,
             MAX({search_sql}) AS search_match,
             {', '.join(amount_columns)}
-        FROM dated GROUP BY claim
+        FROM dated GROUP BY claim, group_internal
     ), compared AS (
         SELECT grouped.*,
             CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - a835) END AS difference,
@@ -157,16 +172,20 @@ def summary_row(record: dict[str, Any], has835: bool) -> dict[str, Any]:
             return "Not in uploaded 835" if has835 else "Awaiting 835 upload"
         return "Amount unavailable" if delta is None else "Match" if delta == 0 else "Mismatch"
 
-    billed_status = "Latest 835 needs review" if paired and record["a835"] is None else status(record["difference"])
+    references = [record["internal_number"]] if record["internal_number"] else []
+    reversed_claim = record["latest_claim_status"] == "22"
+    billed_status = "Reversed — review" if reversed_claim else status(record["difference"])
     return {
-        "key": record["claim"], "claim": record["claim"], "internal_number": record["internal_number"],
-        "reference_count": record["reference_count"], "waiting_days": 0,
+        "key": json.dumps([record["claim"], record["group_key"]], separators=(",", ":")) if record["n835"] else record["claim"], "claim": record["claim"], "internal_number": record["internal_number"],
+        "reference_count": len(references), "internal_numbers": references, "waiting_days": 0,
         "category": "both" if record["n835"] else "837-only", "ambiguous": ambiguous,
         **{key: money(record[key]) for key in AMOUNTS},
         "difference": money(record["difference"]), "allowed_difference": money(record["allowed_difference"]),
         "billed_status": billed_status,
-        "allowed_status": status(record["allowed_difference"]), "allowed_basis": record["allowed_basis"],
+        "allowed_status": "Reversed — review" if reversed_claim else status(record["allowed_difference"]), "allowed_basis": record["allowed_basis"],
         "latest_payment_date": str(record["latest_payment_date"]) if record["latest_payment_date"] else None,
+        "latest_uploaded_at": str(record["latest_uploaded_at"]) if record["latest_uploaded_at"] else None,
+        "latest_claim_status": record["latest_claim_status"] or "", "selected_record_id": record["selected_record_id"],
         "status": billed_status, "source_837": "", "source_835": "", "record_835_id": None,
         "display_amounts": {key: {"count": record[f"{key}_count"], "value": money(record[f"{key}_value"])} for key in AMOUNTS},
         "occurrences": [],
@@ -183,7 +202,7 @@ def selection(options: dict[str, Any]) -> str:
     # All identifiers come from the allowlist in query_options, never request SQL.
     sort = options["sort"]
     direction = options["direction"].upper()
-    return f"FROM compared WHERE {where} ORDER BY {sort} {direction} NULLS LAST, claim ASC"
+    return f"FROM compared WHERE {where} ORDER BY {sort} {direction} NULLS LAST, claim ASC, internal_number ASC, group_key ASC"
 
 
 def comparison_page(client: Client, options: dict[str, Any]) -> dict[str, Any]:
@@ -208,7 +227,7 @@ def comparison_page(client: Client, options: dict[str, Any]) -> dict[str, Any]:
     ), paged AS (
         SELECT * {selection(options)} LIMIT %s OFFSET (SELECT (page - 1) * %s FROM pagination)
     ) SELECT pagination.*, paged.* FROM pagination LEFT JOIN paged ON 1 = 1
-      ORDER BY paged.{options['sort']} {options['direction'].upper()} NULLS LAST, paged.claim ASC"""
+      ORDER BY paged.{options['sort']} {options['direction'].upper()} NULLS LAST, paged.claim ASC, internal_number ASC, group_key ASC"""
     with connection.cursor() as cursor:
         cursor.execute(sql, [*params, options["size"], options["page"], options["page"], options["size"], options["size"]])
         records = dictionaries(cursor, cursor.fetchall())
@@ -223,14 +242,15 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
     """One narrow query for selected claims, never the uploaded raw file."""
     records = (AnalysisClaim.objects.filter(upload__client=client)
                .annotate(number=Upper(Trim("claim_number")))
-               .filter(number__in=numbers).order_by("upload_id", "sequence")
+               .filter(number__in=numbers).order_by("-upload__uploaded_at", "-upload_id", "-sequence")
                .values("id", "number", "upload_id", "sequence", "internal_number", "billed", "payment", "payment_date",
-                       "patient_responsibility", "upload__kind", "upload__filename", "upload__uploaded_at"))
+                       "normalized_835__claim_status", "identity__fingerprint", "patient_responsibility", "upload__kind", "upload__filename", "upload__uploaded_at"))
     result, seen = {}, set()
     for record in records.iterator(chunk_size=1000):
         kind, filename = record["upload__kind"], record["upload__filename"]
         identity = (record["number"], kind, filename, record["internal_number"].strip().upper(),
-                    record["billed"], record["payment"], record["patient_responsibility"], record["payment_date"])
+                    record["billed"], record["payment"], record["patient_responsibility"], record["payment_date"], record["normalized_835__claim_status"], record["identity__fingerprint"],
+                    record["id"] if kind == "835" and not record["internal_number"].strip() else None)
         if identity in seen:
             continue
         seen.add(identity)
@@ -243,6 +263,7 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
             "file_id": str(record["upload_id"]), "source_type": kind, "filename": filename,
             "received_at": record["upload__uploaded_at"].isoformat(),
             "payment_date": record["payment_date"].isoformat() if record["payment_date"] else None,
+            "claim_status": record["normalized_835__claim_status"] or "",
             "internal_number": record["internal_number"] if kind == "835" else "",
             "claim_sequence": record["sequence"],
             "billed_837": amount("billed") if kind == "837" else None,
@@ -255,15 +276,31 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
 
 
 def claim_detail(client: Client, number: str) -> dict[str, Any] | None:
+    internal = None
+    if number.startswith('["'):
+        try:
+            parts = json.loads(number)
+        except (ValueError, TypeError) as exc:
+            raise ValueError("Invalid claim reference.") from exc
+        if not isinstance(parts, list) or len(parts) != 2 or not all(isinstance(part, str) and len(part) <= 280 for part in parts):
+            raise ValueError("Invalid claim reference.")
+        number, internal = parts
     sql, params = comparison_sql(client, claim=number)
     with connection.cursor() as cursor:
-        cursor.execute(sql + "SELECT * FROM compared", params)
+        cursor.execute(sql + "SELECT * FROM compared" + (" WHERE group_key = %s" if internal is not None else ""), [*params, internal] if internal is not None else params)
         records = dictionaries(cursor, cursor.fetchall())
     if not records:
         return None
+    if len(records) > 1:
+        raise ValueError("Select a specific internal claim from the Analysis table.")
     row = summary_row(records[0], AnalysisUpload.objects.filter(client=client, kind="835").exists())
-    row["occurrences"] = claim_occurrences(client, [row["claim"]]).get(row["claim"], [])
+    row["occurrences"] = group_occurrences(row, claim_occurrences(client, [row["claim"]]).get(row["claim"], []))
     return row
+
+
+def group_occurrences(row: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [item for item in items if item["source_type"] == "837" or
+            (item["internal_number"].strip().upper() == row["internal_number"] if row["internal_number"] else item["record_id"] == row["selected_record_id"])]
 
 
 class CsvBuffer:
@@ -295,7 +332,7 @@ def comparison_csv(client: Client, options: dict[str, Any]) -> Iterator[str]:
             rows = [summary_row(row, has835) for row in dictionaries(cursor, batch)]
             occurrences = claim_occurrences(client, [row["claim"] for row in rows])
             for row in rows:
-                items = occurrences.get(row["claim"], [])
+                items = group_occurrences(row, occurrences.get(row["claim"], []))
                 sources = list({(item["source_type"], item["filename"]): item for item in reversed(items)}.values())
                 def source(kind, key):
                     return " | ".join(item[key] for item in sources if item["source_type"] == kind)

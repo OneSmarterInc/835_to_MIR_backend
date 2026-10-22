@@ -11,8 +11,8 @@ search and ordering apply to the whole workbook. Empty categories retain their
 headers. No colored fills, status colors, charts or source-file columns are added.
 
 The existing database comparison query supplies every category from one result
-set, preserving tenant scoping and the latest-CLP03/cumulative-payment rules described
-in [Latest payment reconciliation](analysis_latest_payment.md).
+set, preserving tenant scoping and the CLP selection and per-internal-claim totals described
+in [Claim state selection](analysis_claim_state.md).
 Identifiers are literal text, including leading zeroes and formula-like prefixes.
 Amounts are numeric currency cells; unavailable values remain an em dash. The two
 comparison cells contain their status and known difference, matching the screen.
@@ -36,5 +36,7 @@ The subsequent reconciliation update requires migration 0063, openpyxl 3.1.5
 and Pillow 12.3.0. Each sheet has a transparent red-and-silver mark followed by
 the FileX wordmark, a category title, then plain headers in row 3. Data starts
 at row 4, with C4 frozen. Author and last editor metadata are Filex OS.
-Gridlines are hidden; data has no colored fills.
+Thin cell borders form a visible grid around the table. Worksheet gridlines
+outside the table remain hidden; data has no colored fills. The header uses
+the supplied OSI CUT logo with a transparent background.
 Production and PostgreSQL execution have not been performed locally.

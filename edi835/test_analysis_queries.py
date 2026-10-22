@@ -13,7 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from accounts.models import Client, User
 from .analysis_queries import claim_detail, comparison_csv, comparison_page, query_options
 from .client_portal_analysis import analysis_upload
-from .models import AnalysisClaim, AnalysisClaimRejection, AnalysisUpload
+from .models import AnalysisClaim, AnalysisClaimRejection, AnalysisUpload, Analysis835Claim
 
 
 class AnalysisQueryTests(TestCase):
@@ -29,9 +29,13 @@ class AnalysisQueryTests(TestCase):
             filename=filename or f"file-{self.counter}.{kind}", content_sha256=str(self.counter), raw_content=b"private",
             accepted_count=len(claims), processing_version=2)
         for index, values in enumerate(claims, 1):
-            number, billed, payment, responsibility, internal = (*values, *([None] * (5 - len(values))))
-            AnalysisClaim.objects.create(upload=upload, sequence=index, claim_number=number, billed=Decimal(billed),
+            number, billed, payment, responsibility, internal, claim_status = (*values, *([None] * (6 - len(values))))
+            projection = AnalysisClaim.objects.create(upload=upload, sequence=index, claim_number=number, billed=Decimal(billed),
                 payment=payment, patient_responsibility=responsibility, internal_number=internal or "REF", payment_date=paid_on)
+            if kind == "835":
+                Analysis835Claim.objects.create(edi_file=upload, analysis_claim=projection, claim_sequence=index,
+                    highmark_claim_number=number, internal_claim_number=internal or "REF", claim_status=claim_status or "1",
+                    total_charge_amount=billed, paid_amount=payment or "0", patient_responsibility=responsibility or "0")
         return upload
 
     def page(self, **options):
@@ -94,10 +98,11 @@ class AnalysisQueryTests(TestCase):
         self.upload("835", [("CLAIM", "90", "50", "20", "OTHER")], "other.835")
         row = self.page()["rows"][0]
         self.assertFalse(row["ambiguous"])
-        self.assertEqual(row["reference_count"], 2)
+        self.assertEqual(row["reference_count"], 1)
         self.assertEqual(row["display_amounts"]["billed_835"]["count"], 1)
-        self.assertEqual(row["display_amounts"]["payment"], {"count": 1, "value": "100.00"})
-        self.assertEqual(len(claim_detail(self.client_record, "CLAIM")["occurrences"]), 3)
+        self.assertEqual(row["display_amounts"]["payment"], {"count": 1, "value": "50.00"})
+        self.assertEqual(self.page()["total"], 2)
+        self.assertEqual(len(claim_detail(self.client_record, row["key"])["occurrences"]), 2)
 
     def test_search_keeps_entire_group_and_treats_wildcards_literally(self):
         self.upload("837", [("X", "100", None, None, "837-REF")], "percent%_file.837")
@@ -112,8 +117,8 @@ class AnalysisQueryTests(TestCase):
 
     def test_835_totals_drive_both_comparisons_counts_detail_and_csv(self):
         self.upload("837", [("TOTAL", "624")])
-        self.upload("835", [("TOTAL", "400", "350", "50", "FIRST")], "first.835", paid_on="2026-09-01")
-        self.upload("835", [("TOTAL", "624", "200", "24", "SECOND")], "second.835", paid_on="2026-09-02")
+        self.upload("835", [("TOTAL", "400", "350", "50", "REF")], "first.835", paid_on="2026-09-01")
+        self.upload("835", [("TOTAL", "624", "200", "24", "REF")], "second.835", paid_on="2026-09-02")
         result = self.page(category="matched", search="second.835")
         self.assertEqual(result["counts"], {"both": 0, "matched": 1, "837-only": 0})
         row = result["rows"][0]
@@ -121,7 +126,7 @@ class AnalysisQueryTests(TestCase):
                          ["624.00", "550.00", "74.00", "624.00"])
         self.assertEqual((row["billed_status"], row["allowed_status"]), ("Match", "Match"))
         self.assertFalse(row["ambiguous"])
-        self.assertEqual(row["reference_count"], 2)
+        self.assertEqual(row["reference_count"], 1)
         self.assertEqual(claim_detail(self.client_record, "TOTAL")["billed_835"], "624.00")
         self.assertEqual(len(claim_detail(self.client_record, "TOTAL")["occurrences"]), 3)
         exported = list(csv.reader(StringIO("".join(comparison_csv(
@@ -169,6 +174,9 @@ class AnalysisQueryTests(TestCase):
             self.assertEqual(sheet.max_row, 4)
             self.assertEqual(sheet.freeze_panes, "C4")
             self.assertFalse(sheet.sheet_view.showGridLines)
+            self.assertTrue(all(cell.border.left.style == "thin" and cell.border.bottom.style == "thin"
+                                for row in sheet.iter_rows(min_row=3) for cell in row))
+            self.assertIsNone(sheet["A1"].border.left.style)
             self.assertEqual(sheet.auto_filter.ref, "A3:I4")
             self.assertTrue(all(cell.fill.patternType is None for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
@@ -223,39 +231,96 @@ class AnalysisQueryTests(TestCase):
         self.assertIsNone(unknown["patient_responsibility"])
         self.assertIsNone(unknown["allowed"])
 
-    def test_latest_payment_date_overrides_upload_order_and_payments_can_match_alone(self):
+    def test_latest_upload_overrides_payment_date_and_payments_can_match_alone(self):
         self.upload("837", [("LATEST", "624")])
-        latest = self.upload("835", [("LATEST", "624", "507", "20", " ref ")], "early-name.835", paid_on="2026-09-14")
-        self.upload("835", [("LATEST", "117", "117", "0", "REF")], "later-upload.835", paid_on="2026-09-03")
+        self.upload("835", [("LATEST", "117", "117", "0", " ref ")], "z.835", paid_on="2026-09-16")
+        latest = self.upload("835", [("LATEST", "624", "507", "20", "REF")], "a.835", paid_on="2026-09-08")
         row = self.page(category="matched")["rows"][0]
         self.assertEqual((row["billed_835"], row["payment"], row["allowed"]), ("624.00", "624.00", "644.00"))
         self.assertEqual((row["billed_status"], row["allowed_status"], row["allowed_difference"]), ("Match", "Match", "0.00"))
         self.assertEqual(row["allowed_basis"], "payment")
-        self.assertEqual(row["latest_payment_date"], "2026-09-14")
-        self.assertEqual((row["reference_count"], row["internal_number"]), (1, "REF"))
-        detail = claim_detail(self.client_record, "LATEST")
-        self.assertEqual({item["payment_date"] for item in detail["occurrences"] if item["source_type"] == "835"},
-                         {"2026-09-03", "2026-09-14"})
+        self.assertEqual(row["latest_payment_date"], "2026-09-08")
+        self.assertEqual((row["reference_count"], row["internal_numbers"]), (1, ["REF"]))
+        self.assertEqual(claim_detail(self.client_record, "LATEST")["billed_835"], "624.00")
         exported = self.excel()
+        self.assertEqual(exported["Matched amount"]["D4"].value, 624)
+        self.assertEqual(exported["Matched amount"]["B4"].value, "REF")
         self.assertEqual(exported["Matched amount"]["I4"].value, "Match\nTotal payments match\nDifference $0.00")
         exported.close()
-        # The screenshot's opposite date order must not be forced into Match.
-        latest.claims.update(payment_date="2026-09-01")
-        row = self.page()["rows"][0]
-        self.assertEqual((row["billed_835"], row["billed_status"], row["allowed_status"]), ("117.00", "Mismatch", "Match"))
+        # Changing BPR16 cannot change the selected uploaded file.
+        latest.claims.update(payment_date=None)
+        self.assertEqual(self.page(category="matched")["rows"][0]["billed_835"], "624.00")
 
-    def test_missing_or_tied_payment_dates_do_not_guess_a_latest_billed_value(self):
-        self.upload("837", [("TIED", "100"), ("UNDATED", "100"), ("SAME", "100")])
-        self.upload("835", [("TIED", "50", "40", "0"), ("UNDATED", "50", "40", "0"),
-                            ("SAME", "100", "40", "0")], paid_on="2026-09-01")
-        self.upload("835", [("TIED", "100", "60", "0")], paid_on="2026-09-01")
-        self.upload("835", [("UNDATED", "100", "60", "0"), ("SAME", "100", "60", "0")])
-        rows = {row["claim"]: row for row in self.page()["rows"]}
-        for key in ("TIED", "UNDATED"):
-            self.assertEqual(rows[key]["billed_status"], "Latest 835 needs review")
-            self.assertIsNone(rows[key]["billed_835"])
-            self.assertEqual(rows[key]["allowed_status"], "Match")
-        self.assertEqual(self.page(category="matched")["rows"][0]["claim"], "SAME")
+    def test_latest_clp03_is_neither_sum_nor_largest_amount(self):
+        self.upload("837", [("X", "4")])
+        self.upload("835", [("X", "1", "1", "0", "REF")])
+        self.upload("835", [("X", "4", "3", "0", "REF")])
+        row = self.page(category="matched")["rows"][0]
+        self.assertEqual((row["billed_835"], row["payment"]), ("4.00", "4.00"))
+        self.assertEqual(row["internal_numbers"], ["REF"])
+        exported = self.excel()
+        self.assertEqual(exported["Matched amount"]["B4"].value, "REF")
+        exported.close()
+        self.upload("835", [("X", "2", "0", "0", "REF")])
+        self.assertEqual(self.page()["rows"][0]["billed_835"], "2.00")
+
+    def test_clp_sequence_selects_actual_latest_value_not_sum_or_maximum(self):
+        self.upload("837", [("X", "60")])
+        self.upload("835", [("X", "30", "30", "0"), ("X", "60", "30", "0")])
+        row = self.page(category="matched")["rows"][0]
+        self.assertEqual((row["billed_835"], row["payment"]), ("60.00", "60.00"))
+        self.upload("835", [("X", "90", "0", "0"), ("X", "40", "0", "0")])
+        self.assertEqual(self.page()["rows"][0]["billed_835"], "40.00")
+
+    def test_reversal_and_correction_use_status_and_sequence(self):
+        self.upload("837", [("X", "60")])
+        self.upload("835", [("X", "30", "30", "0", "REF", "1")])
+        self.upload("835", [("X", "-30", "-30", "0", "REF", "22")])
+        row = self.page()["rows"][0]
+        self.assertEqual(row["latest_claim_status"], "22")
+        self.assertEqual((row["billed_835"], row["payment"]), ("-30.00", "0.00"))
+        self.assertEqual(row["billed_status"], "Reversed — review")
+        self.assertEqual(row["allowed_status"], "Reversed — review")
+        self.upload("835", [("X", "60", "60", "0", "REF", "1")])
+        row = self.page(category="matched")["rows"][0]
+        self.assertEqual((row["billed_835"], row["payment"]), ("60.00", "60.00"))
+        detail = claim_detail(self.client_record, row["key"])
+        self.assertEqual(detail["selected_record_id"], row["selected_record_id"])
+        self.assertIn("22", [item["claim_status"] for item in detail["occurrences"]])
+
+    def test_distinct_internal_claims_get_separate_rows_details_and_exports(self):
+        self.upload("837", [("X", "60")])
+        self.upload("835", [("X", "30", "30", "0", "FIRST0000"), ("X", "60", "60", "0", "SECOND0000")])
+        self.upload("835", [("X", "60", "30", "0", "FIRST0000")])
+        result = self.page(category="matched")
+        self.assertEqual(result["total"], 2)
+        self.assertEqual(len({row["key"] for row in result["rows"]}), 2)
+        for row in result["rows"]:
+            self.assertEqual((row["reference_count"], row["payment"], row["billed_835"]), (1, "60.00", "60.00"))
+            response = self.get(view="claim", claim=row["key"])
+            self.assertEqual(response.status_code, 200)
+            items = json.loads(response.content)["row"]["occurrences"]
+            self.assertEqual({item["internal_number"] for item in items if item["source_type"] == "835"}, {row["internal_number"]})
+        self.assertEqual(self.get(view="claim", claim="X").status_code, 400)
+        self.assertEqual(self.page(search="SECOND0000", category="matched")["total"], 1)
+        exported = self.excel()
+        self.assertEqual({exported["Matched amount"].cell(i, 2).value for i in (4, 5)}, {"FIRST0000", "SECOND0000"})
+        exported.close()
+
+    def test_missing_internal_ids_and_different_patient_claims_do_not_merge(self):
+        self.upload("837", [("X", "60"), ("Y", "60")])
+        unknown = self.upload("835", [("X", "60", "30", "0"), ("X", "60", "30", "0")])
+        unknown.claims.update(internal_number="")
+        self.upload("835", [("Y", "60", "60", "0", "REF")])
+        self.upload("835", [("X", "60", "60", "0", "REF")])
+        rows = self.page()["rows"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(len({row["key"] for row in rows}), 2)
+        for row in rows:
+            self.assertEqual(row["payment"], "30.00")
+            self.assertEqual(len([item for item in claim_detail(self.client_record, row["key"])["occurrences"]
+                                  if item["source_type"] == "835"]), 1)
+        self.assertEqual(self.page(category="matched")["total"], 2)
 
     def test_internal_claim_is_from_835_only_in_list_detail_and_export(self):
         self.upload("837", [("X", "100", None, None, "SUBMISSION-REF")])
@@ -270,7 +335,8 @@ class AnalysisQueryTests(TestCase):
         missing = self.page(category="837-only")["rows"][0]
         self.assertEqual((missing["internal_number"], missing["reference_count"]), ("", 0))
         self.upload("835", [("X", "80", "50", "0", "OTHER-PAYER-REF")])
-        self.assertEqual(self.page()["rows"][0]["reference_count"], 2)
+        self.assertEqual(self.page()["total"], 2)
+        self.assertTrue(all(row["reference_count"] == 1 for row in self.page()["rows"]))
 
     def test_constant_queries_bounded_payload_paging_sort_and_full_csv(self):
         self.upload("837", [(f"C{i:03}", str(i)) for i in range(51)])

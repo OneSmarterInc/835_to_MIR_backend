@@ -27,7 +27,7 @@ def analysis_read(request, client):
         return response
     if view == "claim":
         number = request.GET.get("claim", "").strip()
-        if not number or len(number) > 255:
+        if not number or len(number) > 3100:
             raise ValueError("Invalid claim number.")
         row = claim_detail(client, number)
         return JsonResponse({"success": True, "row": row} if row else

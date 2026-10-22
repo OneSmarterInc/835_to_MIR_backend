@@ -1,5 +1,8 @@
 # Analysis: latest billed amount and cumulative payments
 
+Historical report. The payment-date ordering and cross-internal-ID totals below
+are superseded by [Claim state selection](analysis_claim_state.md).
+
 835 billed is now CLP03 from the latest BPR16 payment date inside the file.
 Upload order and filename dates never decide the billed amount. CLP04 payments
 and patient responsibility continue to accumulate across distinct records,

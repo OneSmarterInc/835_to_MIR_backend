@@ -11,7 +11,7 @@ from openpyxl.cell import WriteOnlyCell
 from openpyxl.drawing.image import Image
 from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
 from openpyxl.drawing.xdr import XDRPositiveSize2D
-from openpyxl.styles import Alignment, Font
+from openpyxl.styles import Alignment, Border, Font, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 
@@ -51,6 +51,8 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
     output = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
     header_font = Font(bold=True)
     wrapped = Alignment(vertical="top", wrap_text=True)
+    edge = Side(style="thin", color="B8C2CC")
+    grid = Border(left=edge, right=edge, top=edge, bottom=edge)
     sheets = []
     counts = [3, 3, 3]
 
@@ -96,6 +98,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
             headers = [cell(sheet, title) for title in HEADERS]
             for header in headers:
                 header.font = header_font
+                header.border = grid
             sheet.append(headers)
 
         has835 = AnalysisUpload.objects.filter(client=client, kind="835").exists()
@@ -113,8 +116,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                     if counts[index] > 1048576:
                         raise ValueError("Too many claims for one Excel sheet. Narrow the search and retry.")
                     sheet = sheets[index]
-                    reference = (f"Multiple ({row['reference_count']})" if row["reference_count"] > 1
-                                 else row["internal_number"] or "—")
+                    reference = "\n".join(row["internal_numbers"]) or "—"
                     values = [cell(sheet, row["claim"]), cell(sheet, reference)]
                     for key in AMOUNTS:
                         amount = row["display_amounts"][key]
@@ -129,6 +131,8 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                         if row[difference] is not None:
                             text += f"\nDifference ${Decimal(row[difference]):,.2f}"
                         values.append(cell(sheet, text))
+                    for value_cell in values:
+                        value_cell.border = grid
                     sheet.append(values)
         for sheet, count in zip(sheets, counts):
             sheet.auto_filter.ref = f"A3:I{count}"
