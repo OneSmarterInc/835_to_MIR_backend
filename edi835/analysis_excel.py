@@ -1,13 +1,19 @@
 """Plain, bounded-memory Excel export of all Analysis comparison categories."""
 from decimal import Decimal
+from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from typing import Any, BinaryIO
 
 from django.db import connection
+from django.utils import timezone
 from openpyxl import Workbook
 from openpyxl.cell import WriteOnlyCell
+from openpyxl.drawing.image import Image
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor
+from openpyxl.drawing.xdr import XDRPositiveSize2D
 from openpyxl.styles import Alignment, Font
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.units import pixels_to_EMU
 
 from accounts.models import Client
 from .analysis_queries import AMOUNTS, comparison_sql, dictionaries, summary_row
@@ -16,12 +22,12 @@ from .models import AnalysisUpload
 
 HEADERS = (
     "Claim\n837 / 835", "Internal claim\n835 · CLP07",
-    "837 billed\n837 · CLM02", "835 billed\n835 · CLP03 total",
+    "837 billed\n837 · CLM02", "835 billed\n835 · Latest CLP03",
     "Claim payment\n835 · CLP04 total",
     "Patient responsibility\n835 · CLP05 / PR total",
     "Allowed amount\n835 · Payment + responsibility totals",
-    "Billed comparison\nCLM02 vs billed total",
-    "Allowed comparison\nCLM02 vs allowed total",
+    "Billed comparison\nCLM02 vs latest CLP03",
+    "Allowed comparison\nCLM02 vs payments / allowed",
 )
 SHEETS = ("Mismatch amount", "Matched amount", "Missing in 835")
 CURRENCY = '"$"#,##0.00;-"$"#,##0.00'
@@ -34,11 +40,19 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
     must close it after the response. Temporary output spills to disk above 8 MiB.
     """
     workbook = Workbook(write_only=True)
+    workbook.properties.creator = "Filex OS"
+    workbook.properties.lastModifiedBy = "Filex OS"
+    workbook.properties.title = "FileX Claims Reconciliation"
+    workbook.properties.subject = "Analysis billed and allowed comparisons"
+    workbook.properties.description = "FileX Analysis export: latest 835 billed charges and cumulative payments."
+    workbook.properties.keywords = "FileX, Filex OS, Analysis, 835, 837, reconciliation"
+    workbook.properties.category = "FileX Analysis"
+    workbook.properties.created = workbook.properties.modified = timezone.now().replace(tzinfo=None)
     output = SpooledTemporaryFile(max_size=8 * 1024 * 1024, mode="w+b")
     header_font = Font(bold=True)
     wrapped = Alignment(vertical="top", wrap_text=True)
     sheets = []
-    counts = [1, 1, 1]
+    counts = [3, 3, 3]
 
     def cell(sheet, value, *, currency=False):
         result = WriteOnlyCell(sheet, value=value)
@@ -54,11 +68,31 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
         for title in SHEETS:
             sheet = workbook.create_sheet(title)
             sheets.append(sheet)
-            sheet.freeze_panes = "C2"
-            sheet.sheet_format.defaultRowHeight = 30
-            sheet.row_dimensions[1].height = 46
+            sheet.freeze_panes = "C4"
+            sheet.sheet_view.showGridLines = False
+            sheet.sheet_format.defaultRowHeight = 44
+            sheet.row_dimensions[1].height = 34
+            sheet.row_dimensions[2].height = 24
+            sheet.row_dimensions[3].height = 46
             for index, width in enumerate((26, 24, 19, 21, 22, 27, 31, 35, 35), 1):
                 sheet.column_dimensions[get_column_letter(index)].width = width
+            # Transparent portal mark and a reserved three-character logo slot.
+            # Literal spacing also renders correctly in viewers that ignore indent.
+            logo = Image(Path(__file__).parent / "assets" / "filex-mark.png")
+            logo.anchor = OneCellAnchor(
+                _from=AnchorMarker(col=0, row=0, colOff=pixels_to_EMU(2), rowOff=pixels_to_EMU(2)),
+                ext=XDRPositiveSize2D(pixels_to_EMU(40), pixels_to_EMU(40)),
+            )
+            sheet.add_image(logo)
+            wordmark = cell(sheet, "   FileX")
+            wordmark.font = Font(name="Consolas", size=18, bold=True, color="172033")
+            wordmark.alignment = Alignment(horizontal="left", vertical="center")
+            report_title = cell(sheet, "Claims reconciliation")
+            report_title.alignment = Alignment(vertical="center")
+            sheet.append([wordmark, None, report_title])
+            section = cell(sheet, title)
+            section.font = Font(size=12, bold=True)
+            sheet.append([section])
             headers = [cell(sheet, title) for title in HEADERS]
             for header in headers:
                 header.font = header_font
@@ -90,12 +124,14 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                     for status, difference in (("billed_status", "difference"),
                                                ("allowed_status", "allowed_difference")):
                         text = row[status]
+                        if status == "allowed_status" and row[status] == "Match" and row["allowed_basis"] == "payment":
+                            text += "\nTotal payments match"
                         if row[difference] is not None:
                             text += f"\nDifference ${Decimal(row[difference]):,.2f}"
                         values.append(cell(sheet, text))
                     sheet.append(values)
         for sheet, count in zip(sheets, counts):
-            sheet.auto_filter.ref = f"A1:I{count}"
+            sheet.auto_filter.ref = f"A3:I{count}"
         workbook.save(output)
         output.seek(0)
         return output

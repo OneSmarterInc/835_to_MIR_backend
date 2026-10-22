@@ -1,5 +1,6 @@
 import csv
 import json
+import zipfile
 from decimal import Decimal
 from io import BytesIO, StringIO
 from time import perf_counter
@@ -22,7 +23,7 @@ class AnalysisQueryTests(TestCase):
                                             client=self.client_record, client_role="CLIENT_USER", password="TestPassword!234")
         self.counter = 0
 
-    def upload(self, kind, claims, filename=None, tenant=None):
+    def upload(self, kind, claims, filename=None, tenant=None, paid_on=None):
         self.counter += 1
         upload = AnalysisUpload.objects.create(client=tenant or self.client_record, kind=kind,
             filename=filename or f"file-{self.counter}.{kind}", content_sha256=str(self.counter), raw_content=b"private",
@@ -30,7 +31,7 @@ class AnalysisQueryTests(TestCase):
         for index, values in enumerate(claims, 1):
             number, billed, payment, responsibility, internal = (*values, *([None] * (5 - len(values))))
             AnalysisClaim.objects.create(upload=upload, sequence=index, claim_number=number, billed=Decimal(billed),
-                payment=payment, patient_responsibility=responsibility, internal_number=internal or "REF")
+                payment=payment, patient_responsibility=responsibility, internal_number=internal or "REF", payment_date=paid_on)
         return upload
 
     def page(self, **options):
@@ -111,8 +112,8 @@ class AnalysisQueryTests(TestCase):
 
     def test_835_totals_drive_both_comparisons_counts_detail_and_csv(self):
         self.upload("837", [("TOTAL", "624")])
-        self.upload("835", [("TOTAL", "400", "350", "50", "FIRST")], "first.835")
-        self.upload("835", [("TOTAL", "224", "200", "24", "SECOND")], "second.835")
+        self.upload("835", [("TOTAL", "400", "350", "50", "FIRST")], "first.835", paid_on="2026-09-01")
+        self.upload("835", [("TOTAL", "624", "200", "24", "SECOND")], "second.835", paid_on="2026-09-02")
         result = self.page(category="matched", search="second.835")
         self.assertEqual(result["counts"], {"both": 0, "matched": 1, "837-only": 0})
         row = result["rows"][0]
@@ -136,36 +137,50 @@ class AnalysisQueryTests(TestCase):
                          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
         self.assertIn('filename="Claims-Reconciliation.xlsx"', response["Content-Disposition"])
         try:
-            return load_workbook(BytesIO(b"".join(response.streaming_content)))
+            content = b"".join(response.streaming_content)
+            with zipfile.ZipFile(BytesIO(content)) as archive:
+                self.assertEqual(len([name for name in archive.namelist() if name.startswith("xl/media/")]), 3)
+                for number in range(1, 4):
+                    self.assertIn(b"<drawing", archive.read(f"xl/worksheets/sheet{number}.xml"))
+                    from PIL import Image
+                    logo = Image.open(BytesIO(archive.read(f"xl/media/image{number}.png")))
+                    self.assertEqual(logo.mode, "RGBA")
+                    self.assertEqual(logo.getpixel((0, 0))[3], 0)
+            return load_workbook(BytesIO(content))
         finally:
             response.close()
 
     def test_excel_contains_all_categories_numeric_totals_and_table_headings(self):
         from .analysis_excel import HEADERS, SHEETS
         self.upload("837", [("00123", "100"), ("MISMATCH", "100"), ("MISSING", "39")])
-        self.upload("835", [("00123", "120", "100", "20"), ("MISMATCH", "80", "50", "20")])
-        self.upload("835", [("00123", "-20", "-10", "-10")])
+        self.upload("835", [("00123", "120", "100", "20"), ("MISMATCH", "80", "50", "20")], paid_on="2026-09-01")
+        self.upload("835", [("00123", "100", "-10", "-10")], paid_on="2026-09-02")
         # UI selection and pagination must not suppress other export sheets.
         with CaptureQueriesContext(connection) as queries:
             workbook = self.excel(category="837-only", page="999", page_size="10")
         self.assertEqual(len(queries), 2)
         self.assertEqual(workbook.sheetnames, list(SHEETS))
+        self.assertEqual(workbook.properties.creator, "Filex OS")
+        self.assertEqual(workbook.properties.lastModifiedBy, "Filex OS")
+        self.assertEqual(workbook.properties.title, "FileX Claims Reconciliation")
         for sheet in workbook:
-            self.assertEqual(tuple(cell.value for cell in sheet[1]), HEADERS)
-            self.assertEqual(sheet.max_row, 2)
-            self.assertEqual(sheet.freeze_panes, "C2")
-            self.assertEqual(sheet.auto_filter.ref, "A1:I2")
-            self.assertTrue(all(cell.fill.patternType is None for row in sheet for cell in row))
+            self.assertEqual(sheet["A1"].value.strip(), "FileX")
+            self.assertEqual(tuple(cell.value for cell in sheet[3]), HEADERS)
+            self.assertEqual(sheet.max_row, 4)
+            self.assertEqual(sheet.freeze_panes, "C4")
+            self.assertFalse(sheet.sheet_view.showGridLines)
+            self.assertEqual(sheet.auto_filter.ref, "A3:I4")
+            self.assertTrue(all(cell.fill.patternType is None for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
         matched = workbook["Matched amount"]
-        self.assertEqual(matched["A2"].value, "00123")
-        self.assertEqual(matched["A2"].data_type, "s")
-        self.assertEqual([matched.cell(2, col).value for col in range(3, 8)], [100, 100, 90, 10, 100])
-        self.assertTrue(all(matched.cell(2, col).data_type == "n" for col in range(3, 8)))
-        self.assertEqual(matched["I2"].value, "Match\nDifference $0.00")
-        self.assertEqual(workbook["Mismatch amount"]["I2"].value, "Mismatch\nDifference $30.00")
-        self.assertEqual(workbook["Missing in 835"]["D2"].value, "—")
-        self.assertEqual(workbook["Missing in 835"]["I2"].value, "Not in uploaded 835")
+        self.assertEqual(matched["A4"].value, "00123")
+        self.assertEqual(matched["A4"].data_type, "s")
+        self.assertEqual([matched.cell(4, col).value for col in range(3, 8)], [100, 100, 90, 10, 100])
+        self.assertTrue(all(matched.cell(4, col).data_type == "n" for col in range(3, 8)))
+        self.assertEqual(matched["I4"].value, "Match\nDifference $0.00")
+        self.assertEqual(workbook["Mismatch amount"]["I4"].value, "Mismatch\nDifference $30.00")
+        self.assertEqual(workbook["Missing in 835"]["D4"].value, "—")
+        self.assertEqual(workbook["Missing in 835"]["I4"].value, "Not in uploaded 835")
         workbook.close()
 
     def test_excel_exports_all_pages_search_tenant_boundary_and_literal_ids(self):
@@ -174,29 +189,29 @@ class AnalysisQueryTests(TestCase):
         other = Client.objects.create(name="Other Excel", client_code="OTHERXL", email="otherxl@example.com")
         self.upload("837", [("SECRET", "50")], tenant=other)
         workbook = self.excel(category="both", sort="billed_837", direction="desc", page="2")
-        self.assertEqual(workbook["Missing in 835"].max_row, 13)
-        self.assertEqual(workbook["Missing in 835"]["A2"].value, "C011")
+        self.assertEqual(workbook["Missing in 835"].max_row, 15)
+        self.assertEqual(workbook["Missing in 835"]["A4"].value, "C011")
         sheet = workbook["Mismatch amount"]
-        self.assertEqual((sheet["A2"].value, sheet["A2"].data_type), ("=FORMULA", "s"))
-        self.assertEqual((sheet["B2"].value, sheet["B2"].data_type), ("=INTERNAL", "s"))
-        self.assertEqual(sheet["C2"].value, -20)
+        self.assertEqual((sheet["A4"].value, sheet["A4"].data_type), ("=FORMULA", "s"))
+        self.assertEqual((sheet["B4"].value, sheet["B4"].data_type), ("=INTERNAL", "s"))
+        self.assertEqual(sheet["C4"].value, -20)
         self.assertNotIn("SECRET", [cell.value for tab in workbook for row in tab for cell in row])
         workbook.close()
         filtered = self.excel(search="C011")
-        self.assertEqual([sheet.max_row for sheet in filtered], [1, 1, 2])
+        self.assertEqual([sheet.max_row for sheet in filtered], [3, 3, 4])
         filtered.close()
         empty = self.excel(search="ABSENT")
-        self.assertEqual([sheet.max_row for sheet in empty], [1, 1, 1])
+        self.assertEqual([sheet.max_row for sheet in empty], [3, 3, 3])
         empty.close()
 
     def test_sum_preserves_reversals_unknowns_and_same_file_deduplication(self):
         self.upload("837", [("SIGNED", "100"), ("UNKNOWN", "100"), ("EQUAL", "100")])
         self.upload("835", [("SIGNED", "120", "100", "20"), ("UNKNOWN", "50", "30", "20"),
-                            ("EQUAL", "50", "40", "10")], "first.835")
-        self.upload("835", [("SIGNED", "-20", "-10", "-10"), ("UNKNOWN", "50", "50", None),
-                            ("EQUAL", "50", "40", "10")], "second.835")
+                            ("EQUAL", "100", "40", "10")], "first.835", paid_on="2026-09-01")
+        self.upload("835", [("SIGNED", "100", "-10", "-10"), ("UNKNOWN", "100", "50", None),
+                            ("EQUAL", "100", "40", "10")], "second.835", paid_on="2026-09-02")
         # A repeated record in the same named file remains a single contribution.
-        self.upload("835", [("SIGNED", "-20", "-10", "-10")], "second.835")
+        self.upload("835", [("SIGNED", "100", "-10", "-10")], "second.835", paid_on="2026-09-02")
         matched = {row["claim"]: row for row in self.page(category="matched")["rows"]}
         self.assertEqual(set(matched), {"SIGNED", "EQUAL"})
         self.assertEqual((matched["SIGNED"]["payment"], matched["SIGNED"]["patient_responsibility"]),
@@ -207,6 +222,40 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(unknown["payment"], "80.00")
         self.assertIsNone(unknown["patient_responsibility"])
         self.assertIsNone(unknown["allowed"])
+
+    def test_latest_payment_date_overrides_upload_order_and_payments_can_match_alone(self):
+        self.upload("837", [("LATEST", "624")])
+        latest = self.upload("835", [("LATEST", "624", "507", "20", " ref ")], "early-name.835", paid_on="2026-09-14")
+        self.upload("835", [("LATEST", "117", "117", "0", "REF")], "later-upload.835", paid_on="2026-09-03")
+        row = self.page(category="matched")["rows"][0]
+        self.assertEqual((row["billed_835"], row["payment"], row["allowed"]), ("624.00", "624.00", "644.00"))
+        self.assertEqual((row["billed_status"], row["allowed_status"], row["allowed_difference"]), ("Match", "Match", "0.00"))
+        self.assertEqual(row["allowed_basis"], "payment")
+        self.assertEqual(row["latest_payment_date"], "2026-09-14")
+        self.assertEqual((row["reference_count"], row["internal_number"]), (1, "REF"))
+        detail = claim_detail(self.client_record, "LATEST")
+        self.assertEqual({item["payment_date"] for item in detail["occurrences"] if item["source_type"] == "835"},
+                         {"2026-09-03", "2026-09-14"})
+        exported = self.excel()
+        self.assertEqual(exported["Matched amount"]["I4"].value, "Match\nTotal payments match\nDifference $0.00")
+        exported.close()
+        # The screenshot's opposite date order must not be forced into Match.
+        latest.claims.update(payment_date="2026-09-01")
+        row = self.page()["rows"][0]
+        self.assertEqual((row["billed_835"], row["billed_status"], row["allowed_status"]), ("117.00", "Mismatch", "Match"))
+
+    def test_missing_or_tied_payment_dates_do_not_guess_a_latest_billed_value(self):
+        self.upload("837", [("TIED", "100"), ("UNDATED", "100"), ("SAME", "100")])
+        self.upload("835", [("TIED", "50", "40", "0"), ("UNDATED", "50", "40", "0"),
+                            ("SAME", "100", "40", "0")], paid_on="2026-09-01")
+        self.upload("835", [("TIED", "100", "60", "0")], paid_on="2026-09-01")
+        self.upload("835", [("UNDATED", "100", "60", "0"), ("SAME", "100", "60", "0")])
+        rows = {row["claim"]: row for row in self.page()["rows"]}
+        for key in ("TIED", "UNDATED"):
+            self.assertEqual(rows[key]["billed_status"], "Latest 835 needs review")
+            self.assertIsNone(rows[key]["billed_835"])
+            self.assertEqual(rows[key]["allowed_status"], "Match")
+        self.assertEqual(self.page(category="matched")["rows"][0]["claim"], "SAME")
 
     def test_internal_claim_is_from_835_only_in_list_detail_and_export(self):
         self.upload("837", [("X", "100", None, None, "SUBMISSION-REF")])

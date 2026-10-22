@@ -29,6 +29,19 @@ def envelope(kind="837", segments=None, element="*", terminator="~"):
 
 
 class AnalysisParserTests(SimpleTestCase):
+    def test_payment_dates_follow_transactions_and_custom_delimiters(self):
+        from importlib import import_module
+        from datetime import date
+        bpr = "*".join(["BPR", *([""] * 15), "20260914"])
+        valid = envelope("835", [bpr, "CLP*123*1*624*507*0*ZZ*REF"], "|", "!")
+        no_date = envelope("835", ["CLP*456*1*117*117*0*ZZ*REF"])
+        invalid = envelope("835", [bpr.replace("20260914", "20260230"), "CLP*789*1*10*10*0*ZZ*REF"])
+        text = valid + no_date + invalid
+        rows = parse_analysis(text, "835")
+        self.assertEqual([row["payment_date"] for row in rows], ["2026-09-14", None, None])
+        migration = import_module("edi835.migrations.0063_analysis_payment_date")
+        self.assertEqual(migration.dates_by_sequence(text.encode()), {1: date(2026, 9, 14), 2: None, 3: None})
+
     def test_minimal_normalized_payload_and_identity(self):
         parsed = parse_analysis(envelope(segments=["CLM*123456789ABC001*100", "REF*9C*INTERNAL",
             "NM1*QC*1*PRIVATE*PATIENT", "LX*1", "REF*9C*SERVICE-ID"]), "837")
@@ -108,6 +121,16 @@ class AnalysisUploadTests(TestCase):
         request = self.factory.get("/edi835/api/client-portal/analysis/" + query)
         request.user = user or self.user
         return analysis_upload(request)
+
+    def test_payment_date_is_saved_and_returned_without_changing_claim_amounts(self):
+        bpr = "*".join(["BPR", *([""] * 15), "20260914"])
+        response = self.request("835", raw=envelope("835", [bpr, "CLP*123*1*624*507*0*ZZ*REF"]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(response.content)["file"]["claims"][0]["payment_date"], "2026-09-14")
+        record = AnalysisClaim.objects.get()
+        self.assertEqual(record.payment_date.isoformat(), "2026-09-14")
+        self.assertEqual(record.billed, Decimal("624"))
+        self.assertEqual(record.payment, Decimal("507"))
 
     def test_atomic_staging_save_without_production_writes(self):
         with CaptureQueriesContext(connection) as queries:

@@ -364,7 +364,19 @@ for state in ("QUEUED", "RUNNING", "COMPLETED", "FAILED"):
         original_filename="old.837", storage_key=str(uuid.uuid4()), checksum="a" * 64,
         byte_count=1, received_started_at=timezone.now(), dispatch=dispatch)
 call_command("migrate", "edi835", "0062_sftp_source_claims", verbosity=0)
-call_command("migrate", "edi835", "0062_sftp_source_claims", verbosity=0)
+apps = MigrationExecutor(connection).loader.project_state([("edi835", "0062_sftp_source_claims")]).apps
+from edi835.test_client_portal_analysis import envelope
+bpr = "*".join(["BPR", *([""] * 15), "20260914"])
+upload = apps.get_model("edi835", "AnalysisUpload").objects.create(client_id=client.pk, kind="835", filename="old.835",
+    content_sha256="c" * 64, raw_content=envelope("835", [bpr, "CLP*123*1*624*507*0*ZZ*REF"]).encode())
+apps.get_model("edi835", "AnalysisClaim").objects.create(upload_id=upload.pk, sequence=1, claim_number="123",
+    internal_number=" zz: ref ", billed="624", payment="507", patient_responsibility="0")
+call_command("migrate", "edi835", "0063_analysis_payment_date", verbosity=0)
+call_command("migrate", "edi835", "0063_analysis_payment_date", verbosity=0)
+from edi835.models import AnalysisClaim
+assert AnalysisClaim.objects.get().payment_date.isoformat() == "2026-09-14"
+assert AnalysisClaim.objects.get().internal_number == "REF"
+assert AnalysisClaim.objects.get().payment == 507
 from edi835.models import EDI835File, InboundTransfer, BatchDispatch
 assert EDI835File.objects.get().original_filename == "preserved.835"
 assert set(InboundTransfer.objects.values_list("state", flat=True)) == {"QUEUED", "PROCESSING", "COMPLETED", "FAILED"}

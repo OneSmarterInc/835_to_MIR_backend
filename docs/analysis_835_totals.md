@@ -1,5 +1,8 @@
 # Analysis: totals across 835 records
 
+Historical implementation report. The CLP03 summation and allowed-match rules
+below are superseded by [Latest payment reconciliation](analysis_latest_payment.md).
+
 Analysis now displays one monetary total per claim when multiple 835 source
 records exist. Previously, these records made the amounts and comparisons appear
 as "Multiple" even when the combined remittances could be compared.

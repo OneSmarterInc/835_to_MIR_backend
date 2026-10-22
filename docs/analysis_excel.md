@@ -11,7 +11,8 @@ search and ordering apply to the whole workbook. Empty categories retain their
 headers. No colored fills, status colors, charts or source-file columns are added.
 
 The existing database comparison query supplies every category from one result
-set, preserving tenant scoping, summed 835 amounts and both comparison statuses.
+set, preserving tenant scoping and the latest-CLP03/cumulative-payment rules described
+in [Latest payment reconciliation](analysis_latest_payment.md).
 Identifiers are literal text, including leading zeroes and formula-like prefixes.
 Amounts are numeric currency cells; unavailable values remain an em dash. The two
 comparison cells contain their status and known difference, matching the screen.
@@ -31,6 +32,9 @@ Tests cover sheet order, headings, numeric values, signed totals, missing values
 formula-safe IDs, leading zeroes, tenant isolation, full pagination, sorting,
 search, empty sheets and download availability on an empty selected tab.
 
-Deployment requires backend and frontend updates. No migration is added by this
-change. Ensure openpyxl 3.1.5 is installed in the backend environment. Production
-and PostgreSQL execution have not been performed locally.
+The subsequent reconciliation update requires migration 0063, openpyxl 3.1.5
+and Pillow 12.3.0. Each sheet has a transparent red-and-silver mark followed by
+the FileX wordmark, a category title, then plain headers in row 3. Data starts
+at row 4, with C4 frozen. Author and last editor metadata are Filex OS.
+Gridlines are hidden; data has no colored fills.
+Production and PostgreSQL execution have not been performed locally.

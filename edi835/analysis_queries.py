@@ -23,7 +23,7 @@ AMOUNTS = {
     "allowed": ("835", "payment + patient_responsibility"),
 }
 SORTS = {"claim", "internal_number", "filename", "difference", "allowed_difference", *AMOUNTS}
-MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND a837 = a835 AND a837 = allowed_value, FALSE)"
+MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND a837 = a835 AND (a837 = payment_value OR a837 = allowed_value), FALSE)"
 MISMATCH = f"n835 > 0 AND NOT {MATCH}"
 
 
@@ -66,10 +66,25 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
         pattern = "%" + connection.ops.prep_for_like_query(search.upper()) + "%"
         search_sql = "CASE WHEN claim LIKE %s ESCAPE '\\' OR internal_number LIKE %s ESCAPE '\\' OR UPPER(filename) LIKE %s ESCAPE '\\' THEN 1 ELSE 0 END"
         params.extend([pattern] * 3)
+    # Consensus needs no date. Otherwise every contributing remittance must be
+    # dated, and the latest date must identify one billed amount, not a guessed
+    # winner between conflicting same-day records.
+    latest_billed = """CASE
+        WHEN COUNT(DISTINCT CASE WHEN kind = '835' THEN billed END) = 1
+            THEN MIN(CASE WHEN kind = '835' THEN billed END)
+        WHEN MAX(CASE WHEN kind = '835' AND payment_date IS NULL THEN 1 ELSE 0 END) = 1 THEN NULL
+        WHEN COUNT(DISTINCT CASE WHEN kind = '835' AND payment_date = latest_date THEN billed END) = 1
+            THEN MAX(CASE WHEN kind = '835' AND payment_date = latest_date THEN billed END)
+        END"""
     amount_columns = []
     for key, (kind, expression) in AMOUNTS.items():
         test = f"kind = '{kind}'"
-        if kind == "835":
+        if key == "billed_835":
+            amount_columns.extend([
+                f"{latest_billed} AS billed_835_value",
+                "MAX(CASE WHEN kind = '835' THEN 1 ELSE 0 END) AS billed_835_count",
+            ])
+        elif kind == "835":
             # SUM normally ignores NULL. A missing component must make its total
             # unknown, otherwise an incomplete remittance could falsely match.
             amount_columns.extend([
@@ -84,31 +99,39 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
                 f"MAX(CASE WHEN {test} AND ({expression}) IS NULL THEN 1 ELSE 0 END) AS {key}_count",
             ])
     sql = f"""WITH source AS (
-        SELECT UPPER(TRIM(c.claim_number)) AS claim, u.kind, u.filename,
+        SELECT UPPER(TRIM(c.claim_number)) AS claim, u.kind, u.filename, c.payment_date,
                UPPER(TRIM(c.internal_number)) AS internal_number,
                {cents('billed')} AS billed, {cents('payment')} AS payment,
                {cents('patient_responsibility')} AS patient_responsibility
         FROM client_analysis_claim c JOIN client_analysis_upload u ON u.id = c.upload_id
         WHERE u.client_id = %s {claim_filter}
     ), distinct_records AS (
-        SELECT DISTINCT claim, kind, filename, internal_number, billed, payment, patient_responsibility
+        SELECT DISTINCT claim, kind, filename, internal_number, billed, payment, patient_responsibility, payment_date
         FROM source
+    ), dated AS (
+        SELECT distinct_records.*, MAX(CASE WHEN kind = '835' THEN payment_date END)
+            OVER (PARTITION BY claim) AS latest_date
+        FROM distinct_records
     ), grouped AS (
         SELECT claim,
             SUM(CASE WHEN kind = '837' THEN 1 ELSE 0 END) AS n837,
             SUM(CASE WHEN kind = '835' THEN 1 ELSE 0 END) AS n835,
             MIN(CASE WHEN kind = '837' THEN billed END) AS a837,
-            SUM(CASE WHEN kind = '835' THEN billed END) AS a835,
+            {latest_billed} AS a835,
+            MAX(latest_date) AS latest_payment_date,
             COALESCE(MIN(CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END), '') AS internal_number,
             COUNT(DISTINCT CASE WHEN kind = '835' THEN NULLIF(internal_number, '') END) AS reference_count,
             MIN(CASE WHEN kind = '837' THEN filename END) AS filename,
             MAX({search_sql}) AS search_match,
             {', '.join(amount_columns)}
-        FROM distinct_records GROUP BY claim
+        FROM dated GROUP BY claim
     ), compared AS (
         SELECT grouped.*,
             CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - a835) END AS difference,
-            CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - allowed_value) END AS allowed_difference,
+            CASE WHEN n837 = 1 AND n835 > 0 THEN
+                CASE WHEN a837 = payment_value THEN 0 ELSE ABS(a837 - allowed_value) END
+            END AS allowed_difference,
+            CASE WHEN a837 = payment_value THEN 'payment' ELSE 'payment_and_responsibility' END AS allowed_basis,
             CASE WHEN n837 = 1 THEN a837 END AS billed_837,
             a835 AS billed_835,
             payment_value AS payment,
@@ -134,14 +157,17 @@ def summary_row(record: dict[str, Any], has835: bool) -> dict[str, Any]:
             return "Not in uploaded 835" if has835 else "Awaiting 835 upload"
         return "Amount unavailable" if delta is None else "Match" if delta == 0 else "Mismatch"
 
+    billed_status = "Latest 835 needs review" if paired and record["a835"] is None else status(record["difference"])
     return {
         "key": record["claim"], "claim": record["claim"], "internal_number": record["internal_number"],
         "reference_count": record["reference_count"], "waiting_days": 0,
         "category": "both" if record["n835"] else "837-only", "ambiguous": ambiguous,
         **{key: money(record[key]) for key in AMOUNTS},
         "difference": money(record["difference"]), "allowed_difference": money(record["allowed_difference"]),
-        "billed_status": status(record["difference"]), "allowed_status": status(record["allowed_difference"]),
-        "status": status(record["difference"]), "source_837": "", "source_835": "", "record_835_id": None,
+        "billed_status": billed_status,
+        "allowed_status": status(record["allowed_difference"]), "allowed_basis": record["allowed_basis"],
+        "latest_payment_date": str(record["latest_payment_date"]) if record["latest_payment_date"] else None,
+        "status": billed_status, "source_837": "", "source_835": "", "record_835_id": None,
         "display_amounts": {key: {"count": record[f"{key}_count"], "value": money(record[f"{key}_value"])} for key in AMOUNTS},
         "occurrences": [],
     }
@@ -198,13 +224,13 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
     records = (AnalysisClaim.objects.filter(upload__client=client)
                .annotate(number=Upper(Trim("claim_number")))
                .filter(number__in=numbers).order_by("upload_id", "sequence")
-               .values("id", "number", "upload_id", "sequence", "internal_number", "billed", "payment",
+               .values("id", "number", "upload_id", "sequence", "internal_number", "billed", "payment", "payment_date",
                        "patient_responsibility", "upload__kind", "upload__filename", "upload__uploaded_at"))
     result, seen = {}, set()
     for record in records.iterator(chunk_size=1000):
         kind, filename = record["upload__kind"], record["upload__filename"]
         identity = (record["number"], kind, filename, record["internal_number"].strip().upper(),
-                    record["billed"], record["payment"], record["patient_responsibility"])
+                    record["billed"], record["payment"], record["patient_responsibility"], record["payment_date"])
         if identity in seen:
             continue
         seen.add(identity)
@@ -216,6 +242,7 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
             "key": f"{record['upload_id']}:{record['sequence']}", "record_id": record["id"],
             "file_id": str(record["upload_id"]), "source_type": kind, "filename": filename,
             "received_at": record["upload__uploaded_at"].isoformat(),
+            "payment_date": record["payment_date"].isoformat() if record["payment_date"] else None,
             "internal_number": record["internal_number"] if kind == "835" else "",
             "claim_sequence": record["sequence"],
             "billed_837": amount("billed") if kind == "837" else None,

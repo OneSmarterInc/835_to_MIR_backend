@@ -15,6 +15,7 @@ from django.views.decorators.http import require_http_methods
 from accounts.models import Client
 from project835.decorators import authenticated_api_required
 from .claim_numbers import split_claim_number
+from .analysis_dates import payment_date
 from .client_portal_views import only_client_user
 from .models import (AnalysisClaim, AnalysisUpload, Analysis835Claim, Analysis837Claim,
                      Analysis837ServiceLine, AnalysisClaimRejection, AnalysisClaimIdentity)
@@ -87,6 +88,7 @@ def parse_analysis(text: str, kind: str, *, rejected: list | None = None, detail
     complete = False
     current = None
     service = False
+    transaction_payment_date = None
     inferred_responsibility: dict[int, Decimal] = {}
     failures = {}
     sequence = 0
@@ -140,6 +142,7 @@ def parse_analysis(text: str, kind: str, *, rejected: list | None = None, detail
             transaction_raw = [isa_raw, gs_raw, element.join(fields)]
             current = None
             service = False
+            transaction_payment_date = None
         elif tag == "SE":
             if (not transaction or len(fields) != 3 or fields[2] != transaction
                     or not count_agrees(fields[1], segment_count)):
@@ -148,6 +151,8 @@ def parse_analysis(text: str, kind: str, *, rejected: list | None = None, detail
                 enrich_analysis_claims(transaction_rows, transaction_raw, kind, element, terminator, failures, reject)
             transaction = None
             current = None
+        elif kind == "835" and tag == "BPR" and transaction:
+            transaction_payment_date = payment_date(fields)
         elif tag == "GE":
             if (not group or transaction or len(fields) != 3 or fields[2] != group
                     or not count_agrees(fields[1], transaction_count) or not transaction_count):
@@ -179,8 +184,9 @@ def parse_analysis(text: str, kind: str, *, rejected: list | None = None, detail
                 internal = (split.get("internal_claim_number", "") if kind == "837"
                             else fields[7].strip().upper() if len(fields) > 7 else "")
                 current.update(claim=split.get("highmark_claim_number") or control,
-                               internal_number=internal.removeprefix("ZZ:"), billed=format(billed, ".2f"))
+                               internal_number=internal.removeprefix("ZZ:").strip(), billed=format(billed, ".2f"))
                 if kind == "835":
+                    current["payment_date"] = transaction_payment_date.isoformat() if transaction_payment_date else None
                     payment = claim_amount(fields[4] if len(fields) > 4 else "", "CLP04", sequence)
                     responsibility = claim_amount(fields[5] if len(fields) > 5 else "", "CLP05", sequence, optional=True)
                     if responsibility is None:
@@ -357,6 +363,7 @@ def upload_payload(upload: AnalysisUpload, *, compact: bool = False) -> dict:
             allowed = (claim.payment + claim.patient_responsibility
                        if claim.payment is not None and claim.patient_responsibility is not None else None)
             row.update(payment=format(claim.payment, ".2f") if claim.payment is not None else None,
+                       payment_date=claim.payment_date.isoformat() if claim.payment_date else None,
                        patient_responsibility=format(claim.patient_responsibility, ".2f") if claim.patient_responsibility is not None else None,
                        allowed=format(allowed, ".2f") if allowed is not None else None)
         claims.append(row)
@@ -397,6 +404,7 @@ def persist_analysis_result(record: AnalysisUpload, claims: list[dict], rejected
         projections = AnalysisClaim.objects.bulk_create([
             AnalysisClaim(upload=record, sequence=row["sequence"], claim_number=row["claim"],
                           internal_number=row["internal_number"], billed=row["billed"],
+                          payment_date=row.get("payment_date"),
                           payment=row.get("payment"), patient_responsibility=row.get("patient_responsibility"))
             for row in claims
         ], batch_size=500)

@@ -174,6 +174,7 @@ class AnalysisClaim(models.Model):
     billed = models.DecimalField(max_digits=18, decimal_places=2)
     payment = models.DecimalField(max_digits=18, decimal_places=2, null=True)
     patient_responsibility = models.DecimalField(max_digits=18, decimal_places=2, null=True)
+    payment_date = models.DateField(null=True, blank=True)
 
     class Meta:
         db_table = "client_analysis_claim"
