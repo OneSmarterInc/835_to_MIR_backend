@@ -5,6 +5,10 @@ client_body_timeout 60s;
 client_body_buffer_size 128k;
 # Keep nginx request buffering enabled so slow uploads do not occupy workers.
 proxy_request_buffering on;
+# On the API host, deny anonymous filesystem mounts. All clinical source and
+# output downloads go through authenticated Django handlers. Review any legacy
+# public nonclinical assets before adopting this location in the server block.
+location ^~ /media/ { return 404; }
 # Set `client_max_body_size 11m;` inside the EXISTING Analysis upload location
 # if it has its own location block. Django still enforces its 10 MiB/file limit.
 # Test with `sudo nginx -t` before reloading. Never replace an entire server

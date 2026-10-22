@@ -13,14 +13,15 @@ def root_redirect(request):
     return redirect("login")
 
 
-from django.conf import settings
-from django.conf.urls.static import static
+from edi835.transfer_api import transfers
 
 from home.views import home_view
 from project835.views import health_check
 from project835.drf_compat import DRFStatusView
 
 urlpatterns = [
+    path("api/v1/transfers", transfers, name="transfer-list"),
+    path("api/v1/transfers/", include("edi835.transfer_urls")),
     path("health/", health_check, name="health_check"),
     path("api/drf/status/", DRFStatusView.as_view(), name="drf_status"),
     path("admin/", admin.site.urls),
@@ -39,5 +40,5 @@ urlpatterns = [
 ]
 
 
-if settings.DEBUG:
-    urlpatterns += static(settings.MEDIA_URL, document_root=settings.MEDIA_ROOT)
+# Source and output files must use authorized download handlers even in DEBUG.
+# Do not mount MEDIA_ROOT as an anonymous directory here.

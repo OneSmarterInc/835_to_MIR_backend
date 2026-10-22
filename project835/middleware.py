@@ -287,7 +287,10 @@ class ClientAccessMiddleware:
         try:
             path = request.path.lower()
             
-            if path.startswith('/api/') and not path.startswith('/accounts/api/login') and not path.startswith('/accounts/api/signup') and not path.startswith('/admin-panel/'):
+            # V1 intake authenticates either a staff session (including CSRF)
+            # or an expiring HTTPS bearer credential in its own view.
+            transfer_api = path == '/api/v1/transfers' or path.startswith('/api/v1/transfers/')
+            if path.startswith('/api/') and not transfer_api and not path.startswith('/accounts/api/login') and not path.startswith('/accounts/api/signup') and not path.startswith('/admin-panel/'):
                 if not request.user.is_authenticated:
                     return JsonResponse({"success": False, "error": "Access denied. Authentication required."}, status=401)
                 

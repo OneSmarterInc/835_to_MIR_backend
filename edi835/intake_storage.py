@@ -96,3 +96,22 @@ def read_verified(source) -> bytes:
     if len(content) != source.byte_count or hashlib.sha256(content).hexdigest() != source.checksum:
         raise ValueError("Stored source integrity check failed.")
     return content
+
+
+def open_verified(source):
+    """Verify with bounded memory and serve the same open descriptor."""
+    handle = source_path(source.storage_key).open("rb")
+    try:
+        digest, size = hashlib.sha256(), 0
+        while chunk := handle.read(1024 * 1024):
+            size += len(chunk)
+            if size > source.byte_count:
+                raise ValueError("Stored source integrity check failed.")
+            digest.update(chunk)
+        if size != source.byte_count or digest.hexdigest() != source.checksum:
+            raise ValueError("Stored source integrity check failed.")
+        handle.seek(0)
+        return handle
+    except BaseException:
+        handle.close()
+        raise

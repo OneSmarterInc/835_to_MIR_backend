@@ -52,6 +52,9 @@ def start_attempt(record: BatchDispatch, job: dict) -> ProcessingAttempt:
         converter_version=converter_version(), retry_reason=job.get("retry_reason", "")[:64],
     )
     job.update(attempt_id=str(attempt.pk), lease_owner=str(attempt.owner))
+    if job.get("retry_request_id"):
+        from .models import TransferRetry
+        TransferRetry.objects.filter(pk=job["retry_request_id"], attempt__isnull=True).update(attempt=attempt)
     job.update(safe_error_code="", result=None, finished_at=None, status_code=None)
     job.pop("intake_result", None)
     job.pop("retryable", None)

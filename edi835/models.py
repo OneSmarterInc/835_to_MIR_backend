@@ -70,6 +70,8 @@ class InboundTransfer(models.Model):
             models.Index(fields=["client", "-received_at"], name="intake_client_received_idx"),
             models.Index(fields=["client", "workflow", "checksum"], name="intake_content_lookup_idx"),
             models.Index(fields=["state", "updated_at"], name="intake_state_age_idx"),
+            models.Index(fields=["client", "channel", "-received_at"], name="intake_client_channel_idx"),
+            models.Index(fields=["client", "state", "-received_at"], name="intake_client_state_idx"),
         ]
         constraints = [
             models.UniqueConstraint(fields=["client", "workflow", "checksum"],
@@ -81,6 +83,27 @@ class InboundTransfer(models.Model):
             models.CheckConstraint(condition=models.Q(channel__in=["STAFF", "SFTP", "PARTNER", "ANALYSIS", "SYSTEM"]), name="intake_valid_channel"),
             models.CheckConstraint(condition=models.Q(workflow__in=["835", "837", "VALIDATE_835", "ANALYSIS_835", "ANALYSIS_837", "RECON"]), name="intake_valid_workflow"),
         ]
+
+
+class SubmissionKey(models.Model):
+    """V1 key scope excludes routing; raw caller keys are never retained."""
+
+    digest = models.CharField(max_length=64, primary_key=True)
+    receipt = models.OneToOneField(InboundTransfer, on_delete=models.CASCADE, related_name="submission_key")
+    created_at = models.DateTimeField(default=timezone.now)
+
+
+class TransferRetry(models.Model):
+    """Accepted operator action, retained even before a worker claims it."""
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    receipt = models.ForeignKey(InboundTransfer, on_delete=models.CASCADE, related_name="retries")
+    actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL)
+    actor_reference = models.CharField(max_length=100)
+    reason = models.CharField(max_length=500)
+    parent = models.ForeignKey("ProcessingAttempt", null=True, on_delete=models.SET_NULL, related_name="requested_retries")
+    attempt = models.OneToOneField("ProcessingAttempt", null=True, on_delete=models.SET_NULL, related_name="operator_retry")
+    created_at = models.DateTimeField(default=timezone.now)
 
 
 class ProcessingAttempt(models.Model):

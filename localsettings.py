@@ -313,6 +313,7 @@ if not DEBUG and not CSRF_TRUSTED_ORIGINS:
 from corsheaders.defaults import default_headers
 
 CORS_ALLOW_HEADERS = list(default_headers) + [
+    "idempotency-key",
     "x-file-name",
     "x-filename",
     "x-expiration-date",
@@ -320,6 +321,7 @@ CORS_ALLOW_HEADERS = list(default_headers) + [
     "x-doc-type",
     "x-admin-screen",
 ]
+CORS_EXPOSE_HEADERS = ["Location", "Retry-After"]
 # Django CSRF Trusted Origins for CORS POST requests
 
 

@@ -393,6 +393,12 @@ call_command("migrate", "edi835", "0064_intake_dedup_provenance", verbosity=0)
 call_command("migrate", "edi835", "0064_intake_dedup_provenance", verbosity=0)
 assert InboundTransfer.objects.filter(canonical_transfer__isnull=True).count() == 1
 assert InboundTransfer.objects.count() == 4
+call_command("migrate", "edi835", "0065_transfer_api_contract", verbosity=0)
+call_command("migrate", "edi835", "0065_transfer_api_contract", verbosity=0)
+from edi835.models import SubmissionKey, TransferRetry
+assert SubmissionKey.objects.count() == 0
+assert TransferRetry.objects.count() == 0
+assert InboundTransfer.objects.count() == 4
 MigrationExecutor(connection).loader.check_consistent_history(connection)
 '''
         environment = dict(os.environ, SECRET_KEY="isolated-test-only", DATABASE_URL="sqlite:///:memory:",

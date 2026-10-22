@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 
 ROOT = Path(__file__).resolve().parents[1]
 LABELS = [
+    "edi835.test_transfer_api",
     "edi835.test_intake",
     "edi835.test_intake_duplicates",
     "edi835.test_sftp_intake",

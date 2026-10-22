@@ -17,6 +17,72 @@ from .models import ProcessingAttempt
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row locks and separate connections")
 class IntakePostgresConcurrencyTests(TransactionTestCase):
+    def test_v1_concurrent_key_recovers_one_receipt(self):
+        from accounts.models import User
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import SubmissionKey, InboundTransfer
+        from .transfer_service import key_digest, submit, SubmissionPending
+        with tempfile.TemporaryDirectory() as directory, override_settings(
+            INTAKE_STORAGE_ROOT=Path(directory) / "private", MEDIA_ROOT=Path(directory) / "media",
+        ):
+            tenant = Client.objects.create(client_code="PG-KEY", name="Synthetic", status="ACTIVE")
+            user = User.objects.create_user(email="pg-key@example.test", name="Test", mobile="+15550002222", is_staff=True)
+            digest = key_digest("same-key", user=user)
+            barrier = threading.Barrier(2)
+
+            def send(wait=True):
+                close_old_connections()
+                try:
+                    if wait:
+                        barrier.wait(timeout=10)
+                    receipt, _ = submit(client=tenant, user=user, partner=None, workflow="837",
+                        upload=SimpleUploadedFile("source", b"exact bytes"), digest=digest)
+                    return str(receipt.pk)
+                except SubmissionPending:
+                    return None
+                finally:
+                    close_old_connections()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: send(), range(2)))
+            canonical = send(wait=False)
+            self.assertEqual({item for item in results if item}, {canonical})
+            self.assertEqual(SubmissionKey.objects.count(), 1)
+            self.assertEqual(InboundTransfer.objects.count(), 1)
+
+    def test_v1_concurrent_operator_retries_create_one_audit(self):
+        from accounts.models import User
+        from .models import TransferRetry
+        from .transfer_service import retry_transfer
+        from .batch_jobs import write_job
+        with tempfile.TemporaryDirectory() as directory, override_settings(
+            INTAKE_STORAGE_ROOT=Path(directory) / "private", MEDIA_ROOT=Path(directory) / "media",
+        ):
+            tenant = Client.objects.create(client_code="PG-RETRY", name="Synthetic", status="ACTIVE")
+            user = User.objects.create_user(email="pg-retry@example.test", name="Test", mobile="+15550003333", is_staff=True, is_superuser=True)
+            receipt = register_sources(client=tenant, actor=user, channel="STAFF", workflow="837",
+                sources=[("source", io.BytesIO(b"source"))], asynchronous=True)[0][0]
+            job = claim_job(str(receipt.dispatch_id))
+            job.update(state="FAILED", result={"success": False})
+            write_job(job)
+            barrier = threading.Barrier(2)
+
+            def retry():
+                close_old_connections()
+                try:
+                    item = type(receipt).objects.get(pk=receipt.pk)
+                    barrier.wait(timeout=10)
+                    retry_transfer(item, user, "Dependency restored")
+                    return True
+                except ValueError:
+                    return False
+                finally:
+                    close_old_connections()
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(lambda _: retry(), range(2)))
+            self.assertEqual(sum(results), 1)
+            self.assertEqual(TransferRetry.objects.count(), 1)
+
     def test_simultaneous_cross_channel_submissions_have_one_canonical_job(self):
         from .models import InboundTransfer, BatchDispatch
         with tempfile.TemporaryDirectory() as directory, override_settings(
