@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "environment": "isolated SQLite, synthetic fixtures",
+  "generated_at_utc": "2026-10-22T08:21:56.177110+00:00",
+  "git_head": "d3bd79dee883dc2366a87fdfa4a5a96285f3d3a5",
+  "working_tree_changed": true,
+  "source_fingerprint_sha256": "25866339a918d4c82a8362cc0dc29511438098138043f1e378d6cb58b6e859ae",
+  "test_modules": [
+    "edi835.test_analysis_queries",
+    "project835.test_demo_access"
+  ],
+  "tests_run": 23,
+  "failures": 0,
+  "errors": 0,
+  "skipped": [
+    {
+      "test": "edi835.test_analysis_queries.AnalysisQueryTests.test_postgres_maximum_precision_and_sign",
+      "reason": "Exact maximum NUMERIC precision requires PostgreSQL"
+    }
+  ],
+  "duration_seconds": 14.421,
+  "successful": true,
+  "production_approval": false,
+  "limitations": "No PostgreSQL, AWS, partner, load, trust or backup/restore certification."
+}

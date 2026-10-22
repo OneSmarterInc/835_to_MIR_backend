@@ -1,7 +1,7 @@
 import csv
 import json
 from decimal import Decimal
-from io import StringIO
+from io import BytesIO, StringIO
 from time import perf_counter
 from unittest import skipUnless
 
@@ -126,6 +126,68 @@ class AnalysisQueryTests(TestCase):
         exported = list(csv.reader(StringIO("".join(comparison_csv(
             self.client_record, query_options({"category": "matched"}))))))
         self.assertEqual(exported[1][7:11], ["624.00", "550.00", "74.00", "624.00"])
+
+    def excel(self, **params):
+        from openpyxl import load_workbook
+        response = self.get(view="excel", **params)
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("no-store", response["Cache-Control"])
+        self.assertEqual(response["Content-Type"],
+                         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+        self.assertIn('filename="Claims-Reconciliation.xlsx"', response["Content-Disposition"])
+        try:
+            return load_workbook(BytesIO(b"".join(response.streaming_content)))
+        finally:
+            response.close()
+
+    def test_excel_contains_all_categories_numeric_totals_and_table_headings(self):
+        from .analysis_excel import HEADERS, SHEETS
+        self.upload("837", [("00123", "100"), ("MISMATCH", "100"), ("MISSING", "39")])
+        self.upload("835", [("00123", "120", "100", "20"), ("MISMATCH", "80", "50", "20")])
+        self.upload("835", [("00123", "-20", "-10", "-10")])
+        # UI selection and pagination must not suppress other export sheets.
+        with CaptureQueriesContext(connection) as queries:
+            workbook = self.excel(category="837-only", page="999", page_size="10")
+        self.assertEqual(len(queries), 2)
+        self.assertEqual(workbook.sheetnames, list(SHEETS))
+        for sheet in workbook:
+            self.assertEqual(tuple(cell.value for cell in sheet[1]), HEADERS)
+            self.assertEqual(sheet.max_row, 2)
+            self.assertEqual(sheet.freeze_panes, "C2")
+            self.assertEqual(sheet.auto_filter.ref, "A1:I2")
+            self.assertTrue(all(cell.fill.patternType is None for row in sheet for cell in row))
+            self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
+        matched = workbook["Matched amount"]
+        self.assertEqual(matched["A2"].value, "00123")
+        self.assertEqual(matched["A2"].data_type, "s")
+        self.assertEqual([matched.cell(2, col).value for col in range(3, 8)], [100, 100, 90, 10, 100])
+        self.assertTrue(all(matched.cell(2, col).data_type == "n" for col in range(3, 8)))
+        self.assertEqual(matched["I2"].value, "Match\nDifference $0.00")
+        self.assertEqual(workbook["Mismatch amount"]["I2"].value, "Mismatch\nDifference $30.00")
+        self.assertEqual(workbook["Missing in 835"]["D2"].value, "—")
+        self.assertEqual(workbook["Missing in 835"]["I2"].value, "Not in uploaded 835")
+        workbook.close()
+
+    def test_excel_exports_all_pages_search_tenant_boundary_and_literal_ids(self):
+        self.upload("837", [(f"C{i:03}", str(i)) for i in range(12)] + [("=FORMULA", "-20")])
+        self.upload("835", [("=FORMULA", "-10", "-10", "0", "=INTERNAL")])
+        other = Client.objects.create(name="Other Excel", client_code="OTHERXL", email="otherxl@example.com")
+        self.upload("837", [("SECRET", "50")], tenant=other)
+        workbook = self.excel(category="both", sort="billed_837", direction="desc", page="2")
+        self.assertEqual(workbook["Missing in 835"].max_row, 13)
+        self.assertEqual(workbook["Missing in 835"]["A2"].value, "C011")
+        sheet = workbook["Mismatch amount"]
+        self.assertEqual((sheet["A2"].value, sheet["A2"].data_type), ("=FORMULA", "s"))
+        self.assertEqual((sheet["B2"].value, sheet["B2"].data_type), ("=INTERNAL", "s"))
+        self.assertEqual(sheet["C2"].value, -20)
+        self.assertNotIn("SECRET", [cell.value for tab in workbook for row in tab for cell in row])
+        workbook.close()
+        filtered = self.excel(search="C011")
+        self.assertEqual([sheet.max_row for sheet in filtered], [1, 1, 2])
+        filtered.close()
+        empty = self.excel(search="ABSENT")
+        self.assertEqual([sheet.max_row for sheet in empty], [1, 1, 1])
+        empty.close()
 
     def test_sum_preserves_reversals_unknowns_and_same_file_deduplication(self):
         self.upload("837", [("SIGNED", "100"), ("UNKNOWN", "100"), ("EQUAL", "100")])

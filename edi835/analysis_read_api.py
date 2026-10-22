@@ -1,7 +1,7 @@
 """Read endpoints for paged Analysis comparisons and on-demand reports."""
 import csv
 
-from django.http import JsonResponse, StreamingHttpResponse
+from django.http import FileResponse, JsonResponse, StreamingHttpResponse
 
 from .analysis_queries import (CsvBuffer, claim_detail, comparison_csv, comparison_page,
                                file_counts, query_options, safe_csv)
@@ -10,6 +10,11 @@ from .models import AnalysisUpload
 
 def analysis_read(request, client):
     view = request.GET.get("view")
+    if view == "excel":
+        from .analysis_excel import comparison_workbook
+        return FileResponse(comparison_workbook(client, query_options(request.GET)),
+                            as_attachment=True, filename="Claims-Reconciliation.xlsx",
+                            content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
     if view in {"comparison", "export"}:
         options = query_options(request.GET)
         if view == "comparison":
