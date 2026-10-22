@@ -1,3 +1,4 @@
+from .sftp_intake import GuardedSFTP, intake_session
 import io
 import json
 import os
@@ -18,11 +19,8 @@ from .services import resolve_sftp_config
 
 
 def _open_sftp(paramiko, credentials):
-    ssh = paramiko.SSHClient()
-    if credentials.get("trust_unknown_key"):
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
 
     auth_method = credentials.get("auth_method")
     password = credentials.get("password")
@@ -60,6 +58,7 @@ def _normalize_folder(sftp, folder):
 # 2026-09-23 - Yash: Removed csrf_exempt decorator for CSRF protection
 @authenticated_api_required
 @json_api_errors
+@intake_session
 def edi837_sftp_transfer(request):
     """Move valid 837 files from the configured 837 inbound route to 837 outbound.
 
@@ -125,6 +124,7 @@ def edi837_sftp_transfer(request):
     uploaded_temp_paths = []
     try:
         inbound_ssh, inbound_sftp = _open_sftp(paramiko, inbound_credentials)
+        inbound_sftp = GuardedSFTP(inbound_sftp, inbound_credentials, client)
         outbound_ssh, outbound_sftp = _open_sftp(paramiko, outbound_credentials)
 
         resolved_inbound = _normalize_folder(inbound_sftp, inbound_folder)
@@ -145,7 +145,7 @@ def edi837_sftp_transfer(request):
                 "renamed": [],
                 "transferred": [],
                 "filename": filename,
-                "message": "No valid 837 files were found in the inbound SFTP folder.",
+                "message": "No stable, unclaimed inbound 837 files are ready. New uploads are checked again on the next poll.",
             })
 
         outbound_entries = outbound_sftp.listdir_attr(resolved_outbound)
@@ -211,17 +211,13 @@ def edi837_sftp_transfer(request):
                 raise RuntimeError(f"Outbound upload could not be verified for {target_name}: {exc}")
 
             # Only now is it safe to remove the inbound source. If cleanup
-            # fails, roll back the outbound copy so a retry cannot duplicate it.
+            # fails, retain the delivered copy and require review before replay.
             try:
                 inbound_sftp.remove(source_path)
             except Exception as exc:
-                try:
-                    outbound_sftp.remove(target_path)
-                except Exception:
-                    pass
                 raise RuntimeError(
                     f"{source_name} reached outbound but could not be removed from inbound; "
-                    f"the outbound copy was rolled back: {exc}"
+                    f"the delivered copy was retained; review required: {exc}"
                 )
 
             if hasattr(edi_file, "outbound_path"):

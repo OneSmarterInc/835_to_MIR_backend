@@ -251,11 +251,8 @@ def upload_mir_to_sftp(local_file_path, mir_filename, client=None, sftp_config=N
                 "Please retry the conversion."
             )
 
-        ssh = paramiko.SSHClient()
-        if trust_unknown_key:
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        else:
-            ssh.load_system_host_keys()
+        from .sftp_security import verified_ssh_client
+        ssh = verified_ssh_client(paramiko)
 
         pkey = None
         if out_auth in ["SSH Key", "SSH Key + Password"]:

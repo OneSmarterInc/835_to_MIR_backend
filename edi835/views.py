@@ -1,3 +1,4 @@
+from .sftp_intake import GuardedSFTP, intake_session
 import os
 import uuid
 import logging
@@ -829,11 +830,8 @@ def test_sftp_connection(host, port, username, password=None, ssh_key=None, auth
 
         # --- STAGE 2: SSH Client Handshake & Host Key Setup ---
         logger.info("Stage 2: SSH handshake attempted")
-        ssh = paramiko.SSHClient()
-        if trust_unknown_key:
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        else:
-            ssh.load_system_host_keys()
+        from .sftp_security import verified_ssh_client
+        ssh = verified_ssh_client(paramiko)
 
         # Parse SSH Key if applicable
         pkey = None
@@ -1509,9 +1507,8 @@ def api_verify_sftp_paths(request):
     path_statuses = []
 
     try:
-        ssh = paramiko.SSHClient()
-        if trust_unknown_key:
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        from .sftp_security import verified_ssh_client
+        ssh = verified_ssh_client(paramiko)
 
         pkey = None
         if auth_method in ["SSH Key", "SSH Key + Password"]:
@@ -1736,11 +1733,8 @@ def get_cached_sftp_client(host, port, username, password=None, ssh_key=None, au
         _sftp_client_cache.pop(cache_key, None)
 
     import paramiko
-    ssh = paramiko.SSHClient()
-    if trust_unknown_key:
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
 
     pkey = None
     if auth_method in ["SSH Key", "SSH Key + Password"]:
@@ -1858,11 +1852,8 @@ def api_browse_sftp(request):
     import paramiko
     from datetime import datetime
 
-    ssh = paramiko.SSHClient()
-    if trust_unknown_key:
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
 
     pkey = None
     if auth_method in ["SSH Key", "SSH Key + Password"]:
@@ -1946,6 +1937,7 @@ def api_browse_sftp(request):
             except Exception: pass
 
 
+@intake_session
 def _execute_batch_conversion(request):
     """
     API Endpoint: POST /api/start-batch-conversion/
@@ -2103,11 +2095,8 @@ def _execute_batch_conversion(request):
         inbound_trust_unknown_key = inbound_credentials["trust_unknown_key"]
         in_folder = inbound_credentials["remote_folder"]
 
-        ssh = paramiko.SSHClient()
-        if inbound_trust_unknown_key:
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        else:
-            ssh.load_system_host_keys()
+        from .sftp_security import verified_ssh_client
+        ssh = verified_ssh_client(paramiko)
 
         pkey = None
         if inbound_auth in ["SSH Key", "SSH Key + Password"]:
@@ -2129,7 +2118,7 @@ def _execute_batch_conversion(request):
                 look_for_keys=False,
                 allow_agent=False,
             )
-            sftp = ssh.open_sftp()
+            sftp = GuardedSFTP(ssh.open_sftp(), inbound_credentials, client)
 
             try:
                 remote_in_dir = sftp.normalize(in_folder)
@@ -2194,11 +2183,8 @@ def _execute_batch_conversion(request):
         try:
             from .recon_service import ingest_837_reference, ingest_sftp_recon_file
 
-            ssh_837 = paramiko.SSHClient()
-            if inbound_credentials["trust_unknown_key"]:
-                ssh_837.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            else:
-                ssh_837.load_system_host_keys()
+            from .sftp_security import verified_ssh_client
+            ssh_837 = verified_ssh_client(paramiko)
 
             pkey_837 = None
             if inbound_credentials["auth_method"] in ["SSH Key", "SSH Key + Password"]:
@@ -2225,7 +2211,7 @@ def _execute_batch_conversion(request):
                 look_for_keys=False,
                 allow_agent=False,
             )
-            sftp_837 = ssh_837.open_sftp()
+            sftp_837 = GuardedSFTP(ssh_837.open_sftp(), inbound_credentials, client)
 
             # Accept the same practical file types used by manual RECON uploads
             # plus common X12/837 extensions.
@@ -2408,11 +2394,8 @@ def _execute_batch_conversion(request):
                 and config.inbound_835_folder
             ):
                 try:
-                    ssh_del = paramiko.SSHClient()
-                    if inbound_credentials["trust_unknown_key"]:
-                        ssh_del.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-                    else:
-                        ssh_del.load_system_host_keys()
+                    from .sftp_security import verified_ssh_client
+                    ssh_del = verified_ssh_client(paramiko)
                     pkey_del = None
                     cleanup_key = inbound_credentials["ssh_key"]
                     cleanup_password = inbound_credentials["password"]
@@ -2432,7 +2415,7 @@ def _execute_batch_conversion(request):
                         look_for_keys=False,
                         allow_agent=False,
                     )
-                    sftp_del = ssh_del.open_sftp()
+                    sftp_del = GuardedSFTP(ssh_del.open_sftp(), inbound_credentials, client)
                     deleted_835_files = []
                     retained_835_files = []
                     accepted_names = set(batch_res.get("accepted_files", []))

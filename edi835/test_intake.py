@@ -363,8 +363,8 @@ for state in ("QUEUED", "RUNNING", "COMPLETED", "FAILED"):
         client_id=client.pk, actor_reference="system", channel="SYSTEM", workflow="837",
         original_filename="old.837", storage_key=str(uuid.uuid4()), checksum="a" * 64,
         byte_count=1, received_started_at=timezone.now(), dispatch=dispatch)
-call_command("migrate", "edi835", "0061_backfill_intake_lifecycle", verbosity=0)
-call_command("migrate", "edi835", "0061_backfill_intake_lifecycle", verbosity=0)
+call_command("migrate", "edi835", "0062_sftp_source_claims", verbosity=0)
+call_command("migrate", "edi835", "0062_sftp_source_claims", verbosity=0)
 from edi835.models import EDI835File, InboundTransfer, BatchDispatch
 assert EDI835File.objects.get().original_filename == "preserved.835"
 assert set(InboundTransfer.objects.values_list("state", flat=True)) == {"QUEUED", "PROCESSING", "COMPLETED", "FAILED"}

@@ -98,6 +98,8 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
             idempotency_digest=key_digest, received_started_at=started, dispatch=dispatch,
             state="QUEUED" if asynchronous else "RECEIVED",
         ) for name, source in stored]
+        from .sftp_intake import bind_receipts
+        bind_receipts(receipts)
         if not asynchronous:
             from .intake_lifecycle import start_attempt
             start_attempt(dispatch, job)

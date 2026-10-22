@@ -1,5 +1,7 @@
 """Conversion Test wrapper using the administrator's exact SFTP routes."""
 
+from .sftp_intake import GuardedSFTP, intake_session
+
 import io
 import json
 import os
@@ -39,6 +41,7 @@ def _available_name(base_name, existing):
     raise RuntimeError(f"Could not allocate a unique outbound name for {base_name}.")
 
 
+@intake_session
 def _relay_837_for_test(request, client):
     """Process 837_IN -> index -> 837_OUT -> delete source, one file at a time."""
     if client is None:
@@ -63,6 +66,7 @@ def _relay_837_for_test(request, client):
     temp_paths = []
     try:
         inbound_ssh, inbound_sftp = _open_sftp(paramiko, inbound_credentials)
+        inbound_sftp = GuardedSFTP(inbound_sftp, inbound_credentials, client)
         outbound_ssh, outbound_sftp = _open_sftp(paramiko, outbound_credentials)
         resolved_inbound = _normalize_folder(inbound_sftp, inbound_folder)
         resolved_outbound = _normalize_folder(outbound_sftp, outbound_folder)
@@ -89,7 +93,7 @@ def _relay_837_for_test(request, client):
                 "resolved_filename": resolved_base,
                 "inbound_folder": resolved_inbound,
                 "outbound_folder": resolved_outbound,
-                "message": f"No inbound 837 files were found in {resolved_inbound}.",
+                "message": f"No stable, unclaimed inbound 837 files are ready. New uploads are checked again on the next poll.",
             }
 
         outbound_names = {
@@ -140,11 +144,7 @@ def _relay_837_for_test(request, client):
                 try:
                     inbound_sftp.remove(source_path)
                 except Exception as exc:
-                    try:
-                        outbound_sftp.remove(target_path)
-                    except Exception:
-                        pass
-                    raise RuntimeError(f"outbound uploaded, but inbound delete failed; outbound rolled back: {exc}")
+                    raise RuntimeError(f"outbound uploaded, but inbound delete failed; outbound retained; review required: {exc}")
 
                 edi_file.import_mode = "SFTP"
                 edi_file.remote_path = source_path

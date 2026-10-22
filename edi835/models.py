@@ -118,6 +118,28 @@ class IntakeOutput(models.Model):
         constraints = [models.UniqueConstraint(fields=["dispatch", "source_835"], name="intake_output_identity")]
 
 
+class SFTPSourceClaim(models.Model):
+    """Shared remote-path observation and fenced ownership across all adapters."""
+
+    identity = models.CharField(max_length=64, primary_key=True)
+    client = models.ForeignKey("accounts.Client", null=True, on_delete=models.PROTECT)
+    remote_path = models.TextField()
+    size = models.PositiveBigIntegerField()
+    mtime = models.BigIntegerField()
+    stable_since = models.DateTimeField(default=timezone.now)
+    owner = models.UUIDField(null=True)
+    lease_expires_at = models.DateTimeField(null=True, db_index=True)
+    state = models.CharField(max_length=20, default="OBSERVING")
+    storage_key = models.CharField(max_length=255, blank=True, db_index=True)
+    receipt = models.ForeignKey(InboundTransfer, null=True, on_delete=models.PROTECT)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(state__in=[
+            "OBSERVING", "READING", "STORED", "ACCEPTED", "REVIEW", "REMOVED",
+        ]), name="sftp_source_valid_state")]
+
+
 class AnalysisUpload(models.Model):
     """Durable staging uploads, deliberately separate from production ingestion."""
 

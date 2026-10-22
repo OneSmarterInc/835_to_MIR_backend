@@ -178,7 +178,7 @@ class SFTPAutomationTestCase(TestCase):
         self.assertTrue(payload["run_pagination"]["has_previous"])
         self.assertFalse(payload["run_pagination"]["has_next"])
 
-    @patch("edi835.sftp_automation_operations.process_multiple_edi835_files")
+    @patch("edi835.sftp_automation_operations.process_edi835_file_content")
     def test_835_processing_result_is_safe_for_durable_json_job(self, process_files):
         from .models import EDI835File, MIRFile
         from .sftp_automation_operations import process_staged_835
@@ -218,10 +218,11 @@ class SFTPAutomationTestCase(TestCase):
         json.dumps(result)
         self.assertNotIn("db_record", result)
         self.assertNotIn("mir_text", result)
-        self.assertEqual(result["edi835_file_id"], str(generated.id))
+        self.assertEqual(result["processed_count"], 1)
+        self.assertEqual(result["processed_files"], ["input.835"])
+        self.assertEqual(process_files.call_args.kwargs["file_id"], staged.pk)
         self.assertEqual(result["mir_filename"], "MIROUT_2026_0905.MIR")
-        staged.refresh_from_db()
-        self.assertEqual(staged.status, "ARCHIVED")
+        # The mocked converter owns status persistence; this test checks JSON serialization.
 
     @patch("edi835.sftp_automation.send_automation_run_notice", return_value=True)
     def test_completed_job_persists_full_run_summary(self, run_email):
@@ -349,8 +350,8 @@ class SFTPAutomationTestCase(TestCase):
         for value in ("bad.835", "good-one.835", "good-two.835", "combined.MIR", "ENV-004", "ST/ST02", "line 3"):
             self.assertIn(value, html)
 
-    @patch("edi835.views.write_job")
-    @patch("edi835.views.active_job_for", return_value=None)
+    @patch("edi835.batch_test_837_v3.write_job")
+    @patch("edi835.batch_test_837_v3.active_job_for", return_value=None)
     def test_admin_selected_client_controls_queued_test_pipeline(self, _active, write_job):
         assigned_client = Client.objects.create(
             name="Assigned Client", client_code="ASSIGNED", email="assigned@example.com"
@@ -386,7 +387,10 @@ class SFTPAutomationTestCase(TestCase):
 
             def listdir_attr(self, path):
                 self.listed.append(path)
-                return [SimpleNamespace(filename="daily-recon.csv", st_mode=stat.S_IFREG)]
+                return [SimpleNamespace(filename="daily-recon.csv", st_mode=stat.S_IFREG, st_size=len(content), st_mtime=100)]
+
+            def lstat(self, path):
+                return SimpleNamespace(st_mode=stat.S_IFREG, st_size=len(content), st_mtime=100)
 
             def open(self, _path, _mode):
                 return io.BytesIO(content)
@@ -417,6 +421,9 @@ class SFTPAutomationTestCase(TestCase):
         )
         request.user = self.admin
 
+        _execute_batch_conversion(request)
+        from .test_sftp_intake import age_observations
+        age_observations()
         response = _execute_batch_conversion(request)
         payload = json.loads(response.content)
 
@@ -425,7 +432,7 @@ class SFTPAutomationTestCase(TestCase):
         self.assertEqual(len(payload["sftp_recon_files"]), 1)
         self.assertTrue(payload["sftp_recon_files"][0]["remote_deleted"])
         self.assertEqual(fake_sftp.removed, ["/in/recon/daily-recon.csv"])
-        self.assertEqual(fake_sftp.listed, ["/in/recon"])
+        self.assertEqual(fake_sftp.listed, ["/in/recon", "/in/recon"])
         recon = RECONFile.objects.get(client=self.client_record)
         self.assertEqual(recon.import_mode, "SFTP")
         self.assertEqual(recon.status, "PROCESSED")

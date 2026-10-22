@@ -1,5 +1,7 @@
 """Directional SFTP operations used by the persistent scheduler."""
 
+from .sftp_intake import GuardedSFTP, intake_session
+
 import io
 import json
 import os
@@ -55,6 +57,7 @@ def _numbered_outbound_name(filename, sequence, total):
     return f"{stem}_{sequence:03d}{extension or '.837'}"
 
 
+@intake_session
 def ingest_835_incoming(client, actor):
     """Validate, persist and archive inbound 835 files without converting them."""
     _config, credentials = _connected(client, "835_IN")
@@ -65,6 +68,7 @@ def ingest_835_incoming(client, actor):
     taken, errors = [], []
     try:
         ssh, sftp = _open_sftp(paramiko, credentials)
+        sftp = GuardedSFTP(sftp, credentials, client)
         folder = _normalize_folder(sftp, credentials["remote_folder"])
         entries = sftp.listdir_attr(folder)
         for entry in sorted(entries, key=lambda item: item.filename):
@@ -92,11 +96,10 @@ def ingest_835_incoming(client, actor):
                         EDI835File.objects.create(
                             client=client, original_filename=name, stored_filename=stored,
                             input_file_content=text, status="ERROR", archive_path=relative_media_path(archived),
-                            present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
+                            present_in_sftp=True, present_in_archive_folder=True, ingestion_source="SFTP",
                             error_message=detail, processing_completed_at=timezone.now(),
                         )
-                        finish_inline(receipts, False)
-                        sftp.remove(remote_path)
+                        finish_inline(receipts, False, outcome="REJECTED")
                         errors.append(f"{name}: 835 validation failed")
                         continue
                     stored = f"{uuid.uuid4().hex}_{os.path.basename(name)}"
@@ -105,10 +108,10 @@ def ingest_835_incoming(client, actor):
                     EDI835File.objects.create(
                         client=client, original_filename=name, stored_filename=stored,
                         input_file_content=text, status="UPLOADED", archive_path=relative_media_path(archived),
-                        present_in_sftp=False, present_in_archive_folder=True, ingestion_source="SFTP",
+                        present_in_sftp=True, present_in_archive_folder=True, ingestion_source="SFTP",
                     )
                     finish_inline(receipts, True)
-                    sftp.remove(remote_path)
+                    # Keep the remote original through conversion and delivery.
                     taken.append(name)
             except Exception as exc:
                 if receipts:

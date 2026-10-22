@@ -7,7 +7,7 @@ from django.db.models import Count, Min
 from django.utils import timezone
 
 from edi835.intake_storage import source_path, storage_root
-from edi835.models import BatchDispatch, InboundTransfer, IntakeOutput
+from edi835.models import BatchDispatch, InboundTransfer, IntakeOutput, SFTPSourceClaim
 
 
 class Command(BaseCommand):
@@ -26,6 +26,7 @@ class Command(BaseCommand):
                 missing.append(str(receipt.pk))
         root = storage_root()
         known.update(IntakeOutput.objects.values_list("storage_key", flat=True))
+        known.update(SFTPSourceClaim.objects.exclude(storage_key="").values_list("storage_key", flat=True))
         orphans = sum(1 for path in root.glob("*/*") if path.is_file() and
                       path.relative_to(root).as_posix() not in known and path.stat().st_mtime < cutoff.timestamp())
         oldest = BatchDispatch.objects.filter(state="QUEUED").aggregate(value=Min("created_at"))["value"]

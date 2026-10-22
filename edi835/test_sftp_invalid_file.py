@@ -8,6 +8,7 @@ from django.test import TestCase
 
 from accounts.models import Client, User
 from .models import EDI835File
+from .test_sftp_intake import FakeSFTP, CREDENTIALS, age_observations
 from .sftp_automation_operations import ingest_835_incoming
 
 
@@ -25,13 +26,7 @@ class SFTPInvalid835RegressionTestCase(TestCase):
 
     def _sftp(self, filename="bad.835", content=b"not-a-valid-835"):
         ssh = MagicMock()
-        sftp = MagicMock()
-        sftp.listdir_attr.return_value = [
-            SimpleNamespace(filename=filename, st_mode=stat.S_IFREG)
-        ]
-        handle = MagicMock()
-        handle.read.return_value = content
-        sftp.open.return_value.__enter__.return_value = handle
+        sftp = FakeSFTP({filename: content})
         return ssh, sftp
 
     @patch("edi835.sftp_automation_operations.relative_media_path", return_value="clients/n11/835/archive/bad.835")
@@ -41,14 +36,14 @@ class SFTPInvalid835RegressionTestCase(TestCase):
     @patch("edi835.sftp_automation_operations._normalize_folder", return_value="/in/835")
     @patch("edi835.sftp_automation_operations._connected")
     @patch("edi835.sftp_automation_operations._open_sftp")
-    def test_structured_validation_errors_are_persisted_as_json_and_remote_is_removed(
+    def test_structured_validation_errors_are_persisted_as_json_and_remote_is_retained(
         self, open_sftp, connected, _normalize, validate, _stage, _archive, _relative
     ):
         ssh, sftp = self._sftp()
         open_sftp.return_value = (ssh, sftp)
         connected.return_value = (
             None,
-            {"remote_folder": "/in/835"},
+            {**CREDENTIALS, "remote_folder": "/in/835"},
         )
         validate.return_value = (
             False,
@@ -68,6 +63,8 @@ class SFTPInvalid835RegressionTestCase(TestCase):
             },
         )
 
+        ingest_835_incoming(self.client_record, self.admin)
+        age_observations()
         result = ingest_835_incoming(self.client_record, self.admin)
 
         record = EDI835File.objects.get(original_filename="bad.835")
@@ -78,7 +75,8 @@ class SFTPInvalid835RegressionTestCase(TestCase):
         self.assertEqual(payload["decision"], "REFUSE")
         self.assertEqual(payload["errors"][0]["segment"], "ISA")
         self.assertEqual(result["errors"], ["bad.835: 835 validation failed"])
-        sftp.remove.assert_called_once_with("/in/835/bad.835")
+        self.assertEqual(sftp.removed, [])
+        self.assertTrue(record.present_in_sftp)
 
     @patch("edi835.sftp_automation_operations.relative_media_path", return_value="clients/n11/835/archive/bad.835")
     @patch("edi835.sftp_automation_operations.archive_inbound", return_value=Path("/tmp/archive/bad.835"))
@@ -93,16 +91,18 @@ class SFTPInvalid835RegressionTestCase(TestCase):
     ):
         ssh, sftp = self._sftp()
         open_sftp.return_value = (ssh, sftp)
-        connected.return_value = (None, {"remote_folder": "/in/835"})
+        connected.return_value = (None, {**CREDENTIALS, "remote_folder": "/in/835"})
         validate.return_value = (
             False,
             {"decision": "REFUSE", "errors": [{"message": "Invalid 835"}]},
         )
         create_record.side_effect = RuntimeError("database unavailable")
 
+        ingest_835_incoming(self.client_record, self.admin)
+        age_observations()
         result = ingest_835_incoming(self.client_record, self.admin)
 
-        sftp.remove.assert_not_called()
+        self.assertEqual(sftp.removed, [])
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("database unavailable", result["errors"][0])
 
@@ -117,15 +117,17 @@ class SFTPInvalid835RegressionTestCase(TestCase):
     ):
         ssh, sftp = self._sftp()
         open_sftp.return_value = (ssh, sftp)
-        connected.return_value = (None, {"remote_folder": "/in/835"})
+        connected.return_value = (None, {**CREDENTIALS, "remote_folder": "/in/835"})
         validate.return_value = (
             False,
             {"decision": "REFUSE", "errors": [{"message": "Invalid 835"}]},
         )
         archive.side_effect = OSError("archive unavailable")
 
+        ingest_835_incoming(self.client_record, self.admin)
+        age_observations()
         result = ingest_835_incoming(self.client_record, self.admin)
 
-        sftp.remove.assert_not_called()
+        self.assertEqual(sftp.removed, [])
         self.assertEqual(len(result["errors"]), 1)
         self.assertIn("archive unavailable", result["errors"][0])

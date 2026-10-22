@@ -9,6 +9,8 @@ remain available for retry.
 
 from __future__ import annotations
 
+from .sftp_intake import GuardedSFTP, intake_session
+
 import hashlib
 import os
 import posixpath
@@ -51,6 +53,7 @@ def _decode_recon(raw: bytes) -> str:
     return raw.decode("utf-8-sig", errors="replace")
 
 
+@intake_session
 def process_recon_incoming(client, actor):
     """Process every RECON file one by one and delete only successful inputs."""
     _config, credentials, _folder = resolve_admin_sftp_route(client, "RECON_IN")
@@ -62,6 +65,7 @@ def process_recon_incoming(client, actor):
     processed, errors, retained = [], [], []
     try:
         ssh, sftp = _open_sftp(paramiko, credentials)
+        sftp = GuardedSFTP(sftp, credentials, client)
         folder = _normalize_folder(sftp, credentials["remote_folder"])
         entries = sorted(sftp.listdir_attr(folder), key=lambda item: item.filename)
         for entry in entries:
@@ -151,6 +155,7 @@ def process_recon_incoming(client, actor):
     }
 
 
+@intake_session
 def process_835_to_mir_sftp(client, actor):
     """Combine every valid inbound 835 into ONE MIR, push it, then delete inputs.
 
@@ -173,6 +178,7 @@ def process_835_to_mir_sftp(client, actor):
 
     try:
         ssh, sftp = _open_sftp(paramiko, credentials)
+        sftp = GuardedSFTP(sftp, credentials, client)
         folder = _normalize_folder(sftp, credentials["remote_folder"])
         entries = sorted(sftp.listdir_attr(folder), key=lambda item: item.filename)
 
@@ -211,7 +217,7 @@ def process_835_to_mir_sftp(client, actor):
                 "sent_files": [],
                 "errors": [],
                 "combined_mir": "",
-                "message": "No inbound 835 files were found.",
+                "message": "No stable, unclaimed inbound 835 files are ready. New uploads are checked again on the next poll.",
             }
 
         if not batch_items:

@@ -6,6 +6,7 @@ from django.test import TestCase
 from accounts.models import Client
 
 from .full_sftp_pipeline import process_835_to_mir_sftp
+from .test_sftp_intake import FakeSFTP, CREDENTIALS, age_observations
 
 
 class _FakeSSH:
@@ -13,32 +14,14 @@ class _FakeSSH:
         pass
 
 
-class _FakeSFTP:
-    def __init__(self, files):
-        self.files = dict(files)
-        self.removed = []
-
-    def listdir_attr(self, folder):
-        return [SimpleNamespace(filename=name, st_mode=0) for name in self.files]
-
-    def open(self, path, mode):
-        name = path.rsplit("/", 1)[-1]
-        return io.BytesIO(self.files[name])
-
-    def remove(self, path):
-        name = path.rsplit("/", 1)[-1]
-        self.removed.append(path)
-        self.files.pop(name, None)
-
-    def close(self):
-        pass
+_FakeSFTP = FakeSFTP
 
 
 class CombinedSFTP835ContractTests(TestCase):
     def setUp(self):
         self.client = Client.objects.create(name="Synthetic", client_code="SFTP-COMBINED")
         self.actor = SimpleNamespace(is_authenticated=True)
-        self.credentials = {"remote_folder": "/in/835"}
+        self.credentials = {**CREDENTIALS, "remote_folder": "/in/835"}
 
     @patch("edi835.full_sftp_pipeline.process_multiple_edi835_files")
     @patch("edi835.full_sftp_pipeline._normalize_folder", return_value="/in/835")
@@ -62,6 +45,28 @@ class CombinedSFTP835ContractTests(TestCase):
             "errors": [],
         }
 
+        def accept(items, **kwargs):
+            # Model the converter's durable acceptance/output contract.
+            from .intake_service import register_sources
+            from .models import EDI835File, IntakeOutput, MIRFile
+            from .intake_storage import store_stream
+            receipts, _ = register_sources(client=self.client, actor=None, channel="SFTP", workflow="835",
+                sources=[(item["filename"], item["_stored_source"]) for item in items])
+            source = EDI835File.objects.create(client=self.client, status="ARCHIVED")
+            output = store_stream(io.BytesIO(b"SYNTHETIC MIR"), self.client.pk, max_bytes=100)
+            mir = MIRFile.objects.create(source_835=source, client=self.client, mir_filename="synthetic.MIR",
+                file_content="SYNTHETIC MIR", file_hash=output.checksum, file_size=output.size)
+            IntakeOutput.objects.create(dispatch=receipts[0].dispatch, source_835=source, mir_file=mir,
+                storage_key=output.key, checksum=output.checksum, byte_count=output.size,
+                converter_version="synthetic", delivery_state="CONFIRMED")
+            from .intake_service import finish_inline
+            finish_inline(receipts, True, source_id=source.pk)
+            return process_multiple.return_value
+
+        process_multiple.side_effect = accept
+
+        process_835_to_mir_sftp(self.client, self.actor)
+        age_observations()
         result = process_835_to_mir_sftp(self.client, self.actor)
 
         self.assertTrue(result["success"])
@@ -97,6 +102,8 @@ class CombinedSFTP835ContractTests(TestCase):
             "errors": [],
         }
 
+        process_835_to_mir_sftp(self.client, self.actor)
+        age_observations()
         result = process_835_to_mir_sftp(self.client, self.actor)
 
         self.assertFalse(result["success"])

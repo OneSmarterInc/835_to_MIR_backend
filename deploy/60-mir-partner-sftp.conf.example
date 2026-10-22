@@ -1,0 +1,15 @@
+# Install on the INBOUND SSH server, not automatically on the web server.
+# Create only dedicated partner accounts in this group. See phase2_sftp.md.
+Match Group mir-sftp-partners
+    ChrootDirectory /srv/mir-sftp/%u
+    ForceCommand internal-sftp -d /inbound -u 0077
+    AuthorizedKeysFile /etc/ssh/authorized_keys/%u
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    DisableForwarding yes
+    PermitTunnel no
+    PermitTTY no
+    X11Forwarding no
+Match all

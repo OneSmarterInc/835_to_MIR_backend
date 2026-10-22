@@ -282,11 +282,8 @@ def edi837_sftp_batch_rename(request):
 
     import paramiko
 
-    ssh = paramiko.SSHClient()
-    if credentials.get("trust_unknown_key"):
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
 
     auth_method = credentials.get("auth_method")
     password = credentials.get("password")
@@ -930,11 +927,8 @@ def edi837_claim_push_sftp(request, claim_id):
     if not remote_folder:
         return JsonResponse({"success": False, "error": "The 837 outbound SFTP folder is not configured."}, status=400)
     import paramiko
-    ssh = paramiko.SSHClient()
-    if credentials.get("trust_unknown_key"):
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
     auth_method, password = credentials.get("auth_method"), credentials.get("password")
     pkey = _load_private_key(paramiko, credentials.get("ssh_key"), password=password) if auth_method in ["SSH Key", "SSH Key + Password"] else None
     pass_val = password if auth_method in ["Password", "SSH Key + Password"] else None

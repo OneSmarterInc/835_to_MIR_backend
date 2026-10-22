@@ -74,13 +74,17 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
 
     name = client.name
     with transaction.atomic():
-        from edi835.models import BatchDispatch, InboundTransfer, IntakePartner, IntakeOutput
+        from edi835.models import BatchDispatch, InboundTransfer, IntakePartner, IntakeOutput, SFTPSourceClaim
         client = Client.objects.select_for_update().get(pk=client.pk)
         dispatches = BatchDispatch.objects.filter(payload__client_id=str(client.pk))
         if dispatches.filter(state__in=["QUEUED", "RUNNING"]).exists():
             raise ClientDeletionError("Finish or review active intake jobs before permanently deleting this client.", 409)
+        from django.utils import timezone
+        if SFTPSourceClaim.objects.filter(client=client, lease_expires_at__gt=timezone.now()).exists():
+            raise ClientDeletionError("Finish active SFTP reads before deleting this client.", 409)
         private_keys = list(InboundTransfer.objects.filter(client=client).values_list("storage_key", flat=True))
         private_keys += list(IntakeOutput.objects.filter(dispatch__in=dispatches).values_list("storage_key", flat=True))
+        private_keys += list(SFTPSourceClaim.objects.filter(client=client).exclude(storage_key="").values_list("storage_key", flat=True))
         dispatch_ids = list(dispatches.values_list("id", flat=True))
         # Client users use SET_NULL so they must be explicitly removed. Never
         # silently delete another super administrator account.
@@ -94,6 +98,7 @@ def permanently_delete_client(*, actor, client_id, confirmation_name, password):
 
         # Only this explicitly authorized permanent deletion may remove receipts.
         # Routine status pruning cannot erase their source or dispatch history.
+        SFTPSourceClaim.objects.filter(client=client).delete()
         InboundTransfer.objects.filter(client=client).delete()
         IntakePartner.objects.filter(client=client).delete()
         dispatches.filter(transfers__isnull=True).delete()

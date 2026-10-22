@@ -1,3 +1,4 @@
+from .sftp_intake import GuardedSFTP, intake_session
 import hashlib
 import json
 import os
@@ -764,11 +765,8 @@ def _open_sftp(config):
     from project835.field_crypto import get_sftp_runtime_credentials
     from .views import parse_ssh_private_key
     creds = get_sftp_runtime_credentials(config, outbound=False)
-    ssh = paramiko.SSHClient()
-    if creds.get("trust_unknown_key", True):
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    else:
-        ssh.load_system_host_keys()
+    from .sftp_security import verified_ssh_client
+    ssh = verified_ssh_client(paramiko)
     pkey = None
     password = creds.get("password") or ""
     if creds.get("auth_method") in ["SSH Key", "SSH Key + Password"]:
@@ -832,6 +830,7 @@ def sftp_837_files(request):
         if ssh: ssh.close()
 @authenticated_api_required
 @json_api_errors
+@intake_session
 def sftp_837_ingest(request):
     if request.method != "POST":
         return JsonResponse({"success": False, "error": "Only POST is allowed."}, status=405)
@@ -850,6 +849,9 @@ def sftp_837_ingest(request):
     ssh = sftp = None
     try:
         ssh, sftp = _open_sftp(config)
+        from project835.field_crypto import get_sftp_runtime_credentials
+        client = config.client or getattr(request.user, "client", None)
+        sftp = GuardedSFTP(sftp, get_sftp_runtime_credentials(config, outbound=False), client)
         with sftp.open(remote_path, "rb") as remote:
             from .recon_service import ingest_837_reference
             client = config.client or getattr(request.user, "client", None)

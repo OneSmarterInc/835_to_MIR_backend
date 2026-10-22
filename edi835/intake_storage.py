@@ -81,7 +81,11 @@ def store_stream(stream: BinaryIO, client_id, *, max_bytes: int) -> StoredSource
             os.fsync(output.fileno())
         os.replace(temporary, destination)
         _sync_directory(directory)
-        return StoredSource(f"{scope}/{destination.name}", digest.hexdigest(), size)
+        source = StoredSource(f"{scope}/{destination.name}", digest.hexdigest(), size)
+        from .sftp_intake import _SourceReader
+        if isinstance(stream, _SourceReader):
+            stream.intake_stored(source)
+        return source
     finally:
         temporary.unlink(missing_ok=True)
 

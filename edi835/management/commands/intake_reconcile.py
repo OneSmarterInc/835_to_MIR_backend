@@ -16,7 +16,7 @@ from django.utils import timezone
 from edi835.intake_lifecycle import recover_expired
 from edi835.intake_outputs import verify_output
 from edi835.intake_storage import _sync_directory, read_verified, source_path, storage_root
-from edi835.models import BatchDispatch, InboundTransfer, IntakeOutput
+from edi835.models import BatchDispatch, InboundTransfer, IntakeOutput, SFTPSourceClaim
 
 
 def quarantine_object(path: Path, root: Path, key: str, origin: str) -> None:
@@ -64,6 +64,8 @@ class Command(BaseCommand):
             raise CommandError("Quarantine requires --apply --producers-stopped after stopping all intake producers.")
         if quarantine and BatchDispatch.objects.filter(state__in=["QUEUED", "RUNNING"]).exists():
             raise CommandError("Drain or reconcile active dispatches before orphan quarantine.")
+        if quarantine and SFTPSourceClaim.objects.filter(lease_expires_at__gt=timezone.now()).exists():
+            raise CommandError("Drain active SFTP source reads before orphan quarantine.")
         if options["limit"] < 1 or options["grace_hours"] < 1:
             raise CommandError("Limit and grace hours must be positive.")
         report = {"applied": apply, "leases": recover_expired(apply=apply), "invalid_sources": [],
@@ -133,7 +135,9 @@ class Command(BaseCommand):
             if path.suffix not in {".bin", ".part"}:
                 continue
             key = path.relative_to(root).as_posix()
-            if InboundTransfer.objects.filter(storage_key=key).exists() or IntakeOutput.objects.filter(storage_key=key).exists():
+            if (InboundTransfer.objects.filter(storage_key=key).exists()
+                    or IntakeOutput.objects.filter(storage_key=key).exists()
+                    or SFTPSourceClaim.objects.filter(storage_key=key).exists()):
                 continue
             report["orphan_candidates"].append(key)
             if quarantine:
