@@ -1,5 +1,9 @@
 # Analysis Excel export
 
+The current column layout and category rules are documented in
+[Allowed reconciliation](analysis_allowed_reconciliation.md). They supersede
+the original comparison-column layout described below.
+
 The Analysis download button now requests `view=excel` and downloads
 `Claims-Reconciliation.xlsx`. The previous CSV endpoint remains available for
 existing callers and rejection downloads remain CSV.

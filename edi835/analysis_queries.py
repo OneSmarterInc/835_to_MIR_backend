@@ -24,7 +24,7 @@ AMOUNTS = {
     "allowed": ("835", "payment + patient_responsibility"),
 }
 SORTS = {"claim", "internal_number", "filename", "difference", "allowed_difference", *AMOUNTS}
-MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND latest_claim_status != '22' AND a837 = a835 AND (a837 = payment_value OR a837 = allowed_value), FALSE)"
+MATCH = "COALESCE(n837 = 1 AND n835 > 0 AND has_reversal = 0 AND (a837 = payment_value OR a837 = allowed_value), FALSE)"
 MISMATCH = f"n835 > 0 AND NOT {MATCH}"
 
 
@@ -70,6 +70,7 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
     # Upload order is the business ordering across files; original CLP sequence
     # selects the final entry within a file. Never infer state from amount size.
     latest_billed = "MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN billed END)"
+    json_array = "JSON_AGG" if connection.vendor == "postgresql" else "JSON_GROUP_ARRAY"
     amount_columns = []
     for key, (kind, expression) in AMOUNTS.items():
         test = f"kind = '{kind}'"
@@ -112,18 +113,21 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
         SELECT ranked_records.*, CASE WHEN internal_number != '' THEN 'id:' || internal_number
             ELSE 'missing:' || CAST(record_id AS TEXT) END AS reference_key
         FROM ranked_records WHERE record_rank = 1
-    ), claim_groups AS (
-        SELECT DISTINCT claim, reference_key AS group_internal FROM distinct_records WHERE kind = '835'
-        UNION
-        SELECT DISTINCT d.claim, '' FROM distinct_records d WHERE d.kind = '837'
-            AND NOT EXISTS (SELECT 1 FROM distinct_records r WHERE r.claim = d.claim AND r.kind = '835')
-    ), grouped_sources AS (
-        SELECT d.*, g.group_internal FROM distinct_records d JOIN claim_groups g ON g.claim = d.claim
-            AND (d.kind = '837' OR d.reference_key = g.group_internal)
+    ), reference_lists AS (
+        SELECT claim, {json_array}(internal_number) AS refs FROM (
+            SELECT DISTINCT claim, internal_number FROM distinct_records
+            WHERE kind = '835' AND internal_number != '' ORDER BY claim, internal_number
+        ) refs GROUP BY claim
+    ), source_lists AS (
+        SELECT claim, kind, {json_array}(filename) AS filenames FROM (
+            SELECT DISTINCT claim, kind, filename FROM distinct_records ORDER BY claim, kind, filename
+        ) names GROUP BY claim, kind
     ), dated AS (
-        SELECT grouped_sources.*, ROW_NUMBER() OVER (
-            PARTITION BY claim, group_internal, kind ORDER BY uploaded_at DESC, upload_id DESC, sequence DESC
-        ) AS claim_rank FROM grouped_sources
+        SELECT distinct_records.*, ROW_NUMBER() OVER (
+            PARTITION BY claim, kind ORDER BY uploaded_at DESC, upload_id DESC, sequence DESC
+        ) AS claim_rank, ROW_NUMBER() OVER (
+            PARTITION BY claim, kind, reference_key ORDER BY uploaded_at DESC, upload_id DESC, sequence DESC
+        ) AS internal_rank FROM distinct_records
     ), grouped AS (
         SELECT claim,
             SUM(CASE WHEN kind = '837' THEN 1 ELSE 0 END) AS n837,
@@ -132,16 +136,18 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
             {latest_billed} AS a835,
             MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN payment_date END) AS latest_payment_date,
             MAX(CASE WHEN kind = '835' THEN uploaded_at END) AS latest_uploaded_at,
-            group_internal AS group_key,
+            '' AS group_key,
             COALESCE(MIN(CASE WHEN kind = '835' THEN internal_number END), '') AS internal_number,
+            MAX(CASE WHEN kind = '835' AND internal_rank = 1 AND claim_status = '22' THEN 1 ELSE 0 END) AS has_reversal,
             MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN claim_status END) AS latest_claim_status,
             MAX(CASE WHEN kind = '835' AND claim_rank = 1 THEN record_id END) AS selected_record_id,
             MIN(CASE WHEN kind = '837' THEN filename END) AS filename,
             MAX({search_sql}) AS search_match,
             {', '.join(amount_columns)}
-        FROM dated GROUP BY claim, group_internal
+        FROM dated GROUP BY claim
     ), compared AS (
-        SELECT grouped.*,
+        SELECT grouped.*, r.refs AS internal_numbers,
+            s837.filenames AS sources_837, s835.filenames AS sources_835,
             CASE WHEN n837 = 1 AND n835 > 0 THEN ABS(a837 - a835) END AS difference,
             CASE WHEN n837 = 1 AND n835 > 0 THEN
                 CASE WHEN a837 = payment_value THEN 0 ELSE ABS(a837 - allowed_value) END
@@ -152,13 +158,21 @@ def comparison_sql(client: Client, search: str = "", claim: str | None = None) -
             payment_value AS payment,
             patient_responsibility_value AS patient_responsibility,
             allowed_value AS allowed
-        FROM grouped WHERE n837 > 0 AND search_match = 1
+        FROM grouped
+        LEFT JOIN reference_lists r ON r.claim = grouped.claim
+        LEFT JOIN source_lists s837 ON s837.claim = grouped.claim AND s837.kind = '837'
+        LEFT JOIN source_lists s835 ON s835.claim = grouped.claim AND s835.kind = '835'
+        WHERE n837 > 0 AND search_match = 1
     ) """
     return sql, params
 
 
 def money(cents: int | Decimal | None) -> str | None:
     return None if cents is None else format(Decimal(cents) / 100, ".2f")
+
+
+def json_values(value: Any) -> list[str]:
+    return sorted(json.loads(value) if isinstance(value, str) else value or [])
 
 
 def summary_row(record: dict[str, Any], has835: bool) -> dict[str, Any]:
@@ -172,11 +186,11 @@ def summary_row(record: dict[str, Any], has835: bool) -> dict[str, Any]:
             return "Not in uploaded 835" if has835 else "Awaiting 835 upload"
         return "Amount unavailable" if delta is None else "Match" if delta == 0 else "Mismatch"
 
-    references = [record["internal_number"]] if record["internal_number"] else []
-    reversed_claim = record["latest_claim_status"] == "22"
+    references = json_values(record["internal_numbers"])
+    reversed_claim = bool(record["has_reversal"])
     billed_status = "Reversed — review" if reversed_claim else status(record["difference"])
     return {
-        "key": json.dumps([record["claim"], record["group_key"]], separators=(",", ":")) if record["n835"] else record["claim"], "claim": record["claim"], "internal_number": record["internal_number"],
+        "key": record["claim"], "claim": record["claim"], "internal_number": " | ".join(references),
         "reference_count": len(references), "internal_numbers": references, "waiting_days": 0,
         "category": "both" if record["n835"] else "837-only", "ambiguous": ambiguous,
         **{key: money(record[key]) for key in AMOUNTS},
@@ -276,7 +290,6 @@ def claim_occurrences(client: Client, numbers: Sequence[str]) -> dict[str, list[
 
 
 def claim_detail(client: Client, number: str) -> dict[str, Any] | None:
-    internal = None
     if number.startswith('["'):
         try:
             parts = json.loads(number)
@@ -284,10 +297,11 @@ def claim_detail(client: Client, number: str) -> dict[str, Any] | None:
             raise ValueError("Invalid claim reference.") from exc
         if not isinstance(parts, list) or len(parts) != 2 or not all(isinstance(part, str) and len(part) <= 280 for part in parts):
             raise ValueError("Invalid claim reference.")
-        number, internal = parts
+        # Previous deep links included the internal ID. They now open the full claim.
+        number = parts[0]
     sql, params = comparison_sql(client, claim=number)
     with connection.cursor() as cursor:
-        cursor.execute(sql + "SELECT * FROM compared" + (" WHERE group_key = %s" if internal is not None else ""), [*params, internal] if internal is not None else params)
+        cursor.execute(sql + "SELECT * FROM compared", params)
         records = dictionaries(cursor, cursor.fetchall())
     if not records:
         return None
@@ -299,8 +313,7 @@ def claim_detail(client: Client, number: str) -> dict[str, Any] | None:
 
 
 def group_occurrences(row: dict[str, Any], items: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [item for item in items if item["source_type"] == "837" or
-            (item["internal_number"].strip().upper() == row["internal_number"] if row["internal_number"] else item["record_id"] == row["selected_record_id"])]
+    return items
 
 
 class CsvBuffer:

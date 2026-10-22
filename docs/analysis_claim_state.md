@@ -1,5 +1,9 @@
 # Analysis claim grouping, CLP state and Excel grid
 
+Historical behavior: the later [allowed reconciliation update](analysis_allowed_reconciliation.md)
+combines internal IDs into one submitted-claim row and bases categories only on
+the allowed comparison. Internal-claim detail remains separate.
+
 ## Current business rule
 
 Group by client, submitted claim/CLP01 and the full normalized 835 internal

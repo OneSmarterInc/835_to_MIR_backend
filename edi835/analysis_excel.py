@@ -1,5 +1,6 @@
 """Plain, bounded-memory Excel export of all Analysis comparison categories."""
 from decimal import Decimal
+from math import ceil
 from pathlib import Path
 from tempfile import SpooledTemporaryFile
 from typing import Any, BinaryIO
@@ -16,20 +17,17 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 
 from accounts.models import Client
-from .analysis_queries import AMOUNTS, comparison_sql, dictionaries, summary_row
+from .analysis_queries import comparison_sql, dictionaries, json_values, summary_row
 from .models import AnalysisUpload
 
 
 HEADERS = (
-    "Claim\n837 / 835", "Internal claim\n835 · CLP07",
-    "837 billed\n837 · CLM02", "835 billed\n835 · Latest CLP03",
-    "Claim payment\n835 · CLP04 total",
-    "Patient responsibility\n835 · CLP05 / PR total",
-    "Allowed amount\n835 · Payment + responsibility totals",
-    "Billed comparison\nCLM02 vs latest CLP03",
-    "Allowed comparison\nCLM02 vs payments / allowed",
+    "Claim ID", "Internal claim number", "837 source", "Billed ($)",
+    "Paid in supplied 835s ($)", "Unconfirmed / difference ($)",
+    "Remit records", "835 sources", "Notes",
 )
 SHEETS = ("Mismatch amount", "Matched amount", "Missing in 835")
+COLUMN_WIDTHS = (26, 24, 42, 19, 25, 28, 16, 42, 52)
 CURRENCY = '"$"#,##0.00;-"$"#,##0.00'
 
 
@@ -43,8 +41,8 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
     workbook.properties.creator = "Filex OS"
     workbook.properties.lastModifiedBy = "Filex OS"
     workbook.properties.title = "FileX Claims Reconciliation"
-    workbook.properties.subject = "Analysis billed and allowed comparisons"
-    workbook.properties.description = "FileX Analysis export: latest 835 billed charges and cumulative payments."
+    workbook.properties.subject = "Analysis allowed comparisons"
+    workbook.properties.description = "FileX Analysis export: 837 billed charges, cumulative payments and allowed comparison."
     workbook.properties.keywords = "FileX, Filex OS, Analysis, 835, 837, reconciliation"
     workbook.properties.category = "FileX Analysis"
     workbook.properties.created = workbook.properties.modified = timezone.now().replace(tzinfo=None)
@@ -76,7 +74,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
             sheet.row_dimensions[1].height = 34
             sheet.row_dimensions[2].height = 24
             sheet.row_dimensions[3].height = 46
-            for index, width in enumerate((26, 24, 19, 21, 22, 27, 31, 35, 35), 1):
+            for index, width in enumerate(COLUMN_WIDTHS, 1):
                 sheet.column_dimensions[get_column_letter(index)].width = width
             # Transparent portal mark and a reserved three-character logo slot.
             # Literal spacing also renders correctly in viewers that ignore indent.
@@ -110,32 +108,40 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
             while batch := cursor.fetchmany(500):
                 for record in dictionaries(cursor, batch):
                     row = summary_row(record, has835)
-                    matched = row["billed_status"] == row["allowed_status"] == "Match"
+                    matched = row["allowed_status"] == "Match"
                     index = 2 if record["n835"] == 0 else 1 if matched else 0
                     counts[index] += 1
                     if counts[index] > 1048576:
                         raise ValueError("Too many claims for one Excel sheet. Narrow the search and retry.")
                     sheet = sheets[index]
                     reference = "\n".join(row["internal_numbers"]) or "—"
-                    values = [cell(sheet, row["claim"]), cell(sheet, reference)]
-                    for key in AMOUNTS:
-                        amount = row["display_amounts"][key]
-                        value = (f"Multiple ({amount['count']})" if amount["count"] > 1
-                                 else Decimal(amount["value"]) if amount["value"] is not None else "—")
-                        values.append(cell(sheet, value, currency=isinstance(value, Decimal)))
-                    for status, difference in (("billed_status", "difference"),
-                                               ("allowed_status", "allowed_difference")):
-                        text = row[status]
-                        if status == "allowed_status" and row[status] == "Match" and row["allowed_basis"] == "payment":
-                            text += "\nTotal payments match"
-                        if row[difference] is not None:
-                            text += f"\nDifference ${Decimal(row[difference]):,.2f}"
-                        values.append(cell(sheet, text))
+                    billed = Decimal(row["billed_837"]) if row["billed_837"] is not None else None
+                    payment = Decimal(row["payment"]) if row["payment"] is not None else None
+                    # Template difference is billed minus paid, not the allowed comparison delta.
+                    difference = (billed if record["n835"] == 0 else billed - payment
+                                  if billed is not None and payment is not None else None)
+                    if record["n835"] == 0:
+                        note = "No matching CLP01 in supplied 835 files; payment unconfirmed."
+                    elif row["allowed_status"] == "Match":
+                        note = ("Payments equal original billed amount." if row["allowed_basis"] == "payment"
+                                else "Payments plus patient responsibility equal original billed amount.")
+                    else:
+                        note = f"Allowed comparison: {row['allowed_status']}."
+                        if row["allowed_difference"] is not None:
+                            note += f" Difference ${Decimal(row['allowed_difference']):,.2f}."
+                    raw_values = [row["claim"], reference, "\n".join(json_values(record["sources_837"])),
+                                  billed, payment, difference, record["n835"],
+                                  "\n".join(json_values(record["sources_835"])) or "—", note]
+                    values = [cell(sheet, value if value is not None else "—", currency=isinstance(value, Decimal))
+                              for value in raw_values]
+                    lines = max(sum(max(1, ceil(len(line) / (width - 2))) for line in str(value or "").split("\n"))
+                                for value, width in zip(raw_values, COLUMN_WIDTHS))
+                    sheet.row_dimensions[counts[index]].height = min(409, max(44, 15 * lines + 8))
                     for value_cell in values:
                         value_cell.border = grid
                     sheet.append(values)
         for sheet, count in zip(sheets, counts):
-            sheet.auto_filter.ref = f"A3:I{count}"
+            sheet.auto_filter.ref = f"A3:{get_column_letter(len(HEADERS))}{count}"
         workbook.save(output)
         output.seek(0)
         return output
