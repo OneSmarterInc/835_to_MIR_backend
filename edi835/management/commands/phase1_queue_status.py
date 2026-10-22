@@ -17,9 +17,15 @@ class Command(BaseCommand):
         parser.add_argument("--max-files", type=int, default=5000)
         parser.add_argument("--max-queue-age-seconds", type=int)
         parser.add_argument("--fail-if-unhealthy", action="store_true")
+        parser.add_argument("--approved-target", action="store_true", help="Use the target approved in Intake Control.")
 
     def handle(self, *args, **options):
         limit = options["max_queue_age_seconds"]
+        if options["approved_target"]:
+            if limit is not None:
+                raise CommandError("Choose an explicit threshold or --approved-target, not both.")
+            from edi835.models import IntakeOperatingTargets
+            limit = IntakeOperatingTargets.objects.filter(pk=1).values_list("queue_age_seconds", flat=True).first()
         if not 1 <= options["max_files"] <= 100000:
             raise CommandError("--max-files must be between 1 and 100000.")
         if limit is not None and limit < 1:

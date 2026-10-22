@@ -1,7 +1,7 @@
 ADMIN_SCREENS = (
     "clients", "onboard", "docs", "conversions", "search", "checks", "result",
     "sftp-automation", "files", "code-dictionary", "promote", "trust",
-    "access", "defaults", "audit", "ops", "offboard",
+    "access", "defaults", "audit", "ops", "offboard", "intake-control",
 )
 
 DEFAULT_ADMIN_SCREENS = (
@@ -15,6 +15,7 @@ SCREEN_LABELS = {
     "code-dictionary": "Code Dictionary", "promote": "Go Live",
     "trust": "Trust Center", "access": "Access", "defaults": "Default Configs",
     "audit": "Audit Log", "ops": "Operations", "offboard": "Offboarding",
+    "intake-control": "Intake Control",
 }
 
 

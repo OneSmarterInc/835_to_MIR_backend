@@ -22,7 +22,13 @@ def process_intake(job, user, client):
     token = current_transfer.set(receipt)
     try:
         if receipt.workflow == "837":
-            from .edi837_service import ingest_837
+            from .edi837_service import ingest_837, parse_837
+            try:
+                parse_837(raw.decode("utf-8-sig"))
+            except (ValueError, UnicodeError):
+                record_validation(receipt, raw, outcome="REJECTED", code="VALIDATION_REJECTED")
+                job.update(receipt_state="REJECTED", safe_error_code="VALIDATION_REJECTED")
+                return {"success": False, "error": "837 validation failed. Review the quarantined source."}
             begin_effects()
             record, duplicate = ingest_837(client, user, receipt.original_filename, raw)
             record_validation(receipt, raw, outcome="VALID")

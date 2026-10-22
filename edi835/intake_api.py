@@ -14,6 +14,8 @@ from .intake_service import register_sources
 from .models import InboundTransfer
 from .intake_receipts import receipt_detail, receipt_summary
 from .partner_auth import authenticate_partner as _partner, allowed_workflows, permitted
+from .partner_auth import resolve_client, client_permitted, consume_rate
+from .intake_access import permitted_staff, audit_access
 
 
 def _response(payload, status=200):
@@ -30,8 +32,8 @@ def _handle(request, partner=None):
         if not request.GET.get("receipt_id"):
             from django.core.paginator import Paginator
             try:
-                client = partner.client if partner else Client.objects.get(pk=request.GET.get("client_id"))
-                if not partner and not can_access_client(user, client.pk):
+                client = resolve_client(partner, request.GET.get("client_id")) if partner else Client.objects.get(pk=request.GET.get("client_id"))
+                if not partner and not permitted_staff(user, client.pk):
                     return _response({"error": "Access denied."}, 403)
                 page_number = int(request.GET.get("page", "1"))
                 if page_number < 1:
@@ -45,6 +47,7 @@ def _handle(request, partner=None):
                 rows = rows.filter(state=request.GET["state"])
             page = Paginator(rows.order_by("-received_at", "-pk").values(
                 "id", "workflow", "channel", "state", "byte_count", "received_at", "canonical_transfer_id"), 50).get_page(page_number)
+            audit_access(request, "LEGACY_RECEIPT_LIST", client=client)
             return _response({"receipts": list(page.object_list), "page": page.number,
                               "pages": page.paginator.num_pages, "total": page.paginator.count})
         try:
@@ -52,9 +55,10 @@ def _handle(request, partner=None):
         except ValueError:
             return _response({"error": "A valid receipt_id is required."}, 400)
         receipt = InboundTransfer.objects.select_related("dispatch").filter(pk=identifier).first()
-        allowed = receipt and ((receipt.partner_id == partner.pk and receipt.client_id == partner.client_id and permitted(partner, "READ", receipt.workflow)) if partner else can_access_client(user, receipt.client_id))
+        allowed = receipt and ((receipt.partner_id == partner.pk and client_permitted(partner, receipt.client_id) and permitted(partner, "READ", receipt.workflow)) if partner else permitted_staff(user, receipt.client_id))
         if not allowed:
             return _response({"error": "Receipt not found."}, 404)
+        audit_access(request, "LEGACY_RECEIPT_DETAIL", receipt=receipt)
         result = receipt_detail(receipt)
         if partner:
             result["status_url"] = f"/edi835/api/intake/partner/?receipt_id={receipt.pk}"
@@ -67,7 +71,7 @@ def _handle(request, partner=None):
     if partner and not permitted(partner, "SUBMIT", workflow):
         return _response({"error": "Workflow is not permitted for this credential."}, 403)
     try:
-        client = partner.client if partner else Client.objects.get(pk=request.POST.get("client_id"))
+        client = resolve_client(partner, request.POST.get("client_id")) if partner else Client.objects.get(pk=request.POST.get("client_id"))
     except (Client.DoesNotExist, ValueError, TypeError, ValidationError):
         return _response({"error": "Select an authorized client."}, 400)
     if not partner and not can_access_client(user, client.pk):
@@ -80,6 +84,9 @@ def _handle(request, partner=None):
             sources=[(upload.name, upload)], partner=partner, partner_credential=getattr(request, "partner_credential", None),
             idempotency_key=key, asynchronous=True)
     except ValueError as exc:
+        from .intake_control import QuotaExceeded
+        if isinstance(exc, QuotaExceeded):
+            return _response({"error": str(exc)}, 429)
         return _response({"error": str(exc)}, 409)
     except (DatabaseError, OSError):
         return _response({"error": "Intake could not be committed. Retry with the same idempotency key."}, 503)
@@ -109,4 +116,8 @@ def partner_intake(request):
     partner = _partner(request)
     if not partner:
         return _response({"error": "Valid partner credentials over HTTPS are required."}, 401)
+    if not consume_rate(partner):
+        result = _response({"error": "Partner request quota exceeded."}, 429)
+        result["Retry-After"] = "60"
+        return result
     return _handle(request, partner)

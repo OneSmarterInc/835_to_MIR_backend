@@ -44,8 +44,8 @@ def authenticate_partner(request):
     now = timezone.now()
     credentials = PartnerCredential.objects.select_related("partner__client").filter(
         active=True, revoked_at__isnull=True, not_before__lte=now, expires_at__gt=now,
-        partner__active=True, partner__client__status="ACTIVE",
-    ).exclude(partner__client__stage="offboarded")
+        partner__active=True,
+    )
     if any(name in request.headers for name in HEADERS):
         if not getattr(settings, "INTAKE_MTLS_ENABLED", False) or "Authorization" in request.headers:
             return None
@@ -81,7 +81,7 @@ def authenticate_partner(request):
         credential = credentials.filter(pk=identifier, kind="TOKEN", partner__auth_mode="TOKEN").first()
         if not credential or not hmac.compare_digest(credential.digest, hashlib.sha256(secret.encode()).hexdigest()):
             return None
-    if not credential:
+    if not credential or not client_ids(credential.partner).exists():
         return None
     request.partner_credential = credential
     return credential.partner
@@ -103,7 +103,7 @@ Security revocation or suspension does stop queued work. Already running effects
 cannot be undone here; operators must reconcile those explicitly.
     """
     partner = receipt.partner
-    if (not partner or partner.client_id != receipt.client_id
+    if (not partner or not client_permitted(partner, receipt.client_id)
             or not permitted(partner, "SUBMIT", receipt.workflow)):
         return False
     if receipt.partner_credential_id:
@@ -112,3 +112,46 @@ cannot be undone here; operators must reconcile those explicitly.
         return False
     # Legacy receipts without an authentication snapshot retain the old boundary.
     return partner.expires_at > timezone.now()
+
+
+def client_ids(partner):
+    from accounts.models import Client
+    from django.db.models import Q
+    primary = Q(pk=partner.client_id) if partner.primary_client_enabled else Q(pk__in=[])
+    return Client.objects.filter(primary | Q(intake_partners=partner),
+                                 status="ACTIVE").exclude(stage="offboarded").values_list("pk", flat=True)
+
+
+def client_permitted(partner, client_id):
+    return client_id in client_ids(partner)
+
+
+def resolve_client(partner, value=None):
+    from accounts.models import Client
+    ids = list(client_ids(partner))
+    if not value:
+        if len(ids) != 1:
+            raise ValueError("An explicit permitted client_id is required.")
+        value = ids[0]
+    if str(value) not in {str(pk) for pk in ids}:
+        raise PartnerClientDenied("Client not found.")
+    return Client.objects.get(pk=value, pk__in=ids)
+
+
+class PartnerClientDenied(ValueError):
+    pass
+
+
+def consume_rate(partner):
+    from django.db import transaction
+    from .models import IntakePartner
+    with transaction.atomic():
+        current = IntakePartner.objects.select_for_update().get(pk=partner.pk)
+        now = timezone.now()
+        if (now - current.rate_window_started_at).total_seconds() >= 60:
+            current.rate_window_started_at, current.rate_window_count = now, 0
+        if current.rate_window_count >= current.requests_per_minute:
+            return False
+        current.rate_window_count += 1
+        current.save(update_fields=["rate_window_started_at", "rate_window_count"])
+        return True

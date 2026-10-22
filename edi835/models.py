@@ -34,6 +34,18 @@ class IntakePartner(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     auth_mode = models.CharField(max_length=10, choices=[("TOKEN", "Token"), ("MTLS", "mTLS")], default="TOKEN")
     routing_required = models.BooleanField(default=False)
+    primary_client_enabled = models.BooleanField(default=True)
+    requests_per_minute = models.PositiveIntegerField(default=60)
+    concurrent_jobs = models.PositiveIntegerField(default=2)
+    storage_limit_bytes = models.PositiveBigIntegerField(default=10737418240)
+    rate_window_started_at = models.DateTimeField(default=timezone.now)
+    rate_window_count = models.PositiveIntegerField(default=0)
+    additional_clients = models.ManyToManyField("accounts.Client", blank=True, related_name="intake_partners")
+
+    class Meta:
+        constraints = [models.CheckConstraint(
+            condition=models.Q(requests_per_minute__gt=0, concurrent_jobs__gt=0, storage_limit_bytes__gt=0),
+            name="partner_positive_quotas")]
 
 
 class PartnerCredential(models.Model):
@@ -150,6 +162,98 @@ class SubmissionKey(models.Model):
 
     digest = models.CharField(max_length=64, primary_key=True)
     receipt = models.OneToOneField(InboundTransfer, on_delete=models.CASCADE, related_name="submission_key")
+    created_at = models.DateTimeField(default=timezone.now)
+
+
+class IntakeStaffGrant(models.Model):
+    """Explicit PHI access; administrator status never implies this grant."""
+    user = models.ForeignKey("accounts.User", on_delete=models.CASCADE)
+    client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
+    can_download = models.BooleanField(default=False)
+    can_retry = models.BooleanField(default=False)
+    expires_at = models.DateTimeField()
+    revoked_at = models.DateTimeField(null=True)
+    approved_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT, related_name="intake_grants_approved")
+    reason = models.CharField(max_length=500)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        indexes = [models.Index(fields=["user", "client", "expires_at"], name="intake_staff_scope_idx")]
+
+
+class IntakeQuarantine(models.Model):
+    receipt = models.OneToOneField(InboundTransfer, on_delete=models.PROTECT, related_name="quarantine")
+    state = models.CharField(max_length=20, default="OPEN", choices=[(s, s) for s in ("OPEN", "REVIEWED", "REVALIDATING")])
+    safe_code = models.CharField(max_length=64, default="VALIDATION_REJECTED")
+    created_at = models.DateTimeField(default=timezone.now)
+    reviewed_at = models.DateTimeField(null=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["state", "-created_at"], name="quarantine_state_created_idx")]
+        constraints = [models.CheckConstraint(condition=models.Q(state__in=["OPEN", "REVIEWED", "REVALIDATING"]), name="quarantine_valid_state")]
+
+
+class IntakeLegalHold(models.Model):
+    client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
+    receipt = models.ForeignKey(InboundTransfer, null=True, on_delete=models.PROTECT)
+    reference = models.CharField(max_length=200)
+    created_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT)
+    created_at = models.DateTimeField(default=timezone.now)
+    released_at = models.DateTimeField(null=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["client", "released_at", "receipt"], name="intake_active_hold_idx")]
+
+
+class IntakeRetentionPolicy(models.Model):
+    client = models.OneToOneField("accounts.Client", on_delete=models.PROTECT)
+    # Null means retain; no arbitrary retention period is invented.
+    source_days = models.PositiveIntegerField(null=True)
+    output_days = models.PositiveIntegerField(null=True)
+    quarantine_days = models.PositiveIntegerField(null=True)
+    audit_days = models.PositiveIntegerField(null=True)
+    backup_days = models.PositiveIntegerField(null=True)
+    evidence_reference = models.CharField(max_length=200)
+    approved_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT)
+    updated_at = models.DateTimeField(auto_now=True)
+
+
+class IntakeArtifactDisposition(models.Model):
+    """Tombstone before unlink; a crash resumes without restoring access."""
+    storage_key = models.CharField(max_length=255, unique=True)
+    client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
+    kind = models.CharField(max_length=20)
+    state = models.CharField(max_length=20, default="PENDING")
+    created_at = models.DateTimeField(default=timezone.now)
+    purged_at = models.DateTimeField(null=True)
+
+    class Meta:
+        indexes = [models.Index(fields=["client", "state"], name="intake_pending_purge_idx")]
+        constraints = [
+            models.CheckConstraint(condition=models.Q(state__in=["PENDING", "PURGED"]), name="intake_purge_valid_state"),
+            models.CheckConstraint(condition=models.Q(kind__in=["SOURCE", "QUARANTINE", "OUTPUT"]), name="intake_purge_valid_kind"),
+        ]
+
+
+class IntakeOperatingTargets(models.Model):
+    # One approved target record. Evidence is a reference, never patient content.
+    id = models.PositiveSmallIntegerField(primary_key=True, default=1, editable=False)
+    queue_age_seconds = models.PositiveIntegerField(null=True)
+    rpo_seconds = models.PositiveIntegerField(null=True)
+    rto_seconds = models.PositiveIntegerField(null=True)
+    evidence_reference = models.CharField(max_length=200)
+    approved_by = models.ForeignKey("accounts.User", on_delete=models.PROTECT)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [models.CheckConstraint(condition=models.Q(id=1), name="intake_targets_singleton")]
+
+
+class IntakeRecoveryReview(models.Model):
+    receipt = models.ForeignKey(InboundTransfer, on_delete=models.PROTECT, related_name="recovery_reviews")
+    decision = models.CharField(max_length=30, choices=[(s, s) for s in ("INVESTIGATING", "DELIVERY_CONFIRMED", "NO_DELIVERY_CONFIRMED")])
+    evidence_reference = models.CharField(max_length=200)
+    actor = models.ForeignKey("accounts.User", on_delete=models.PROTECT)
     created_at = models.DateTimeField(default=timezone.now)
 
 

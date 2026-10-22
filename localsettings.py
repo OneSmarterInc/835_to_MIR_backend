@@ -116,6 +116,7 @@ MIDDLEWARE = [
     "django.middleware.common.CommonMiddleware",
     "django.middleware.csrf.CsrfViewMiddleware",
     "django.contrib.auth.middleware.AuthenticationMiddleware",
+    "edi835.intake_audit_middleware.DownloadAuditMiddleware",
     "project835.middleware.AdminAccessMiddleware",
     "project835.middleware.ClientAccessMiddleware",
     "django.contrib.messages.middleware.MessageMiddleware",

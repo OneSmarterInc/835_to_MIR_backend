@@ -300,6 +300,9 @@ class IntakeRecoveryTests(TestCase):
         self.assertFalse(ProcessingAttempt.objects.exists())
 
     def test_receipt_status_exposes_safe_metadata_without_storage_paths_or_credentials(self):
+        from .models import IntakeStaffGrant
+        IntakeStaffGrant.objects.create(user=self.admin, client=self.tenant, approved_by=self.admin,
+            reason="Synthetic receipt inspection", expires_at=timezone.now()+timedelta(days=1))
         receipt = self.register()
         Worker()._process(receipt.dispatch.payload)
         self.client.force_login(self.admin)

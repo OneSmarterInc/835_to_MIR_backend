@@ -413,6 +413,15 @@ from edi835.models import PartnerCredential, PartnerPermission
 assert PartnerCredential.objects.get(pk=partner.pk).digest == partner.token_digest
 assert PartnerPermission.objects.filter(partner_id=partner.pk).count() == 6
 assert InboundTransfer.objects.count() == 4
+InboundTransfer.objects.filter(canonical_transfer__isnull=True).update(state="REJECTED", validation_outcome="REJECTED")
+call_command("migrate", "edi835", "0069_intake_control_constraints", verbosity=0)
+call_command("migrate", "edi835", "0069_intake_control_constraints", verbosity=0)
+from edi835.models import IntakePartner, IntakeQuarantine, IntakeStaffGrant
+assert IntakePartner.objects.get(pk=partner.pk).primary_client_enabled is True
+assert IntakePartner.objects.get(pk=partner.pk).requests_per_minute == 60
+assert IntakeQuarantine.objects.count() == 1
+assert IntakeStaffGrant.objects.count() == 0
+assert InboundTransfer.objects.count() == 4
 MigrationExecutor(connection).loader.check_consistent_history(connection)
 '''
         environment = dict(os.environ, SECRET_KEY="isolated-test-only", DATABASE_URL="sqlite:///:memory:",

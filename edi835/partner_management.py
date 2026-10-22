@@ -67,6 +67,25 @@ def change_partner(partner_id, *, action, actor, reason, data=None):
             raise ValueError("Register a currently valid client certificate before requiring mTLS.")
         partner.save(update_fields=["auth_mode", "routing_required"])
         metadata = {"auth_mode": mode, "routing_required": partner.routing_required}
+    elif action == "CLIENTS":
+        identifiers = data.get("client_ids")
+        if not isinstance(identifiers, list) or not 1 <= len(identifiers) <= 100:
+            raise ValueError("Supply 1–100 approved client IDs.")
+        clients = list(Client.objects.filter(pk__in=identifiers, status="ACTIVE").exclude(stage="offboarded"))
+        if len(clients) != len(set(identifiers)):
+            raise ValueError("Select active clients.")
+        partner.primary_client_enabled = str(partner.client_id) in identifiers
+        partner.save(update_fields=["primary_client_enabled"])
+        partner.additional_clients.set([c for c in clients if c.pk != partner.client_id])
+        metadata = {"client_ids": sorted(identifiers)}
+    elif action == "QUOTAS":
+        for field, maximum in (("requests_per_minute", 10000), ("concurrent_jobs", 100), ("storage_limit_bytes", 10**15)):
+            value = data.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or not 1 <= value <= maximum:
+                raise ValueError("Supply positive rate, concurrency and storage limits within supported bounds.")
+            setattr(partner, field, value)
+        partner.save(update_fields=["requests_per_minute", "concurrent_jobs", "storage_limit_bytes"])
+        metadata = {key: data[key] for key in ("requests_per_minute", "concurrent_jobs", "storage_limit_bytes")}
     elif action == "PERMISSIONS":
         permissions = data.get("permissions")
         if not isinstance(permissions, list) or len(permissions) > 6:
@@ -114,7 +133,7 @@ def change_partner(partner_id, *, action, actor, reason, data=None):
         credential.save(update_fields=["active", "revoked_at", "revocation_reason"])
         metadata = {"credential_id": str(credential.pk)}
     elif action == "ROUTE":
-        if data.get("workflow") not in partner.workflows or set(data) - set(ROUTE_FIELDS) - {"workflow"}:
+        if data.get("workflow") not in partner.workflows or set(data) - set(ROUTE_FIELDS) - {"workflow", "client_id"}:
             raise ValueError("Route must use an approved workflow and exact envelope fields.")
         for field in ROUTE_FIELDS:
             if not isinstance(data.get(field), str) or (not data[field] and field != "st_version"):
@@ -123,7 +142,10 @@ def change_partner(partner_id, *, action, actor, reason, data=None):
                 raise ValueError("Route identifiers must be exact printable ASCII without padding.")
         if len(data["isa_sender_qualifier"]) != 2 or len(data["isa_receiver_qualifier"]) != 2 or len(data["isa_version"]) != 5:
             raise ValueError("ISA qualifiers must have two characters and ISA version five.")
-        route = PartnerRoute(partner=partner, client=partner.client, approved_by=actor, **data)
+        from .partner_auth import resolve_client
+        route_data = dict(data)
+        client = resolve_client(partner, route_data.pop("client_id", None))
+        route = PartnerRoute(partner=partner, client=client, approved_by=actor, **route_data)
         try:
             route.full_clean()
         except ValidationError as exc:

@@ -1,5 +1,6 @@
 """Versioned submission recovery and conservative, audited operator retry."""
 import hashlib
+from contextlib import contextmanager
 
 from django.conf import settings
 from django.db import connection, transaction
@@ -25,10 +26,23 @@ def key_digest(key: str, *, user=None, partner=None) -> str:
     return hashlib.sha256(f"transfers:v1:{principal}:{key}".encode()).hexdigest()
 
 
+@contextmanager
+def discard_quota_rejection(source):
+    from .intake_control import QuotaExceeded
+    from .models import InboundTransfer
+    try:
+        yield
+    except QuotaExceeded:
+        # Runs after atomic rollback, only for this newly allocated private key.
+        if not InboundTransfer.objects.filter(storage_key=source.key).exists():
+            source_path(source.key).unlink(missing_ok=True)
+        raise
+
+
 def submit(*, client, user, partner, workflow: str, upload, digest: str, partner_credential=None):
     source = store_stream(upload, client.pk, max_bytes=settings.INTAKE_MAX_BYTES)
     check_source(upload.name, source)
-    with transaction.atomic():
+    with discard_quota_rejection(source), transaction.atomic():
         # A nonblocking transaction lock makes unresolved same-key submissions
         # explicit. The PK remains the durable uniqueness guarantee.
         if connection.vendor == "postgresql":
@@ -78,10 +92,10 @@ def retry_blocker(receipt) -> str:
 @transaction.atomic
 def retry_transfer(receipt, user, reason: str):
     from accounts.models import Client
-    from admin_panel.access_control import can_access_client
+    from .intake_access import permitted_staff
     # Use the same client -> dispatch lock order as registration.
     Client.objects.select_for_update().get(pk=receipt.client_id)
-    if not user.is_active or not user.is_staff or not can_access_client(user, receipt.client_id):
+    if not permitted_staff(user, receipt.client_id, "RETRY"):
         raise ValueError("Current operator authorization is required.")
     dispatch = BatchDispatch.objects.select_for_update().get(pk=receipt.dispatch_id)
     receipt.refresh_from_db()

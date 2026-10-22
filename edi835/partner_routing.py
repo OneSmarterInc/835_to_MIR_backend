@@ -107,20 +107,20 @@ def envelope_routes(stream, workflow):
                 raise EnvelopeError()
 
 
-def authorize_routes(partner, workflow, source):
+def authorize_routes(partner, workflow, source, client=None):
     if partner.auth_mode != "MTLS" and not partner.routing_required:
         return []
     routes = {}
     for route in partner.routes.filter(active=True, workflow=workflow):
         key = tuple(getattr(route, field) for field in ROUTE_FIELDS)
-        if key in routes or route.client_id != partner.client_id:
+        if key in routes:
             raise EnvelopeError()
         routes[key] = route
     selected = {}
     with source_path(source.key).open("rb") as stream:
         for key in envelope_routes(stream, workflow):
             route = routes.get(key)
-            if not route:
+            if not route or route.client_id != (client.pk if client else partner.client_id):
                 raise EnvelopeError()
             selected[route.pk] = {"route_id": route.pk, "approved_at": route.approved_at.isoformat(),
                                   "client_id": str(route.client_id), "workflow": workflow}

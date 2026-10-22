@@ -91,6 +91,9 @@ def store_stream(stream: BinaryIO, client_id, *, max_bytes: int) -> StoredSource
 
 
 def read_verified(source) -> bytes:
+    from .models import IntakeArtifactDisposition
+    if IntakeArtifactDisposition.objects.filter(storage_key=source.storage_key).exists():
+        raise ValueError("Stored source has entered approved retention disposal.")
     with source_path(source.storage_key).open("rb") as handle:
         content = handle.read(source.byte_count + 1)
     if len(content) != source.byte_count or hashlib.sha256(content).hexdigest() != source.checksum:
@@ -100,6 +103,9 @@ def read_verified(source) -> bytes:
 
 def open_verified(source):
     """Verify with bounded memory and serve the same open descriptor."""
+    from .models import IntakeArtifactDisposition
+    if IntakeArtifactDisposition.objects.filter(storage_key=source.storage_key).exists():
+        raise ValueError("Stored artifact has entered approved retention disposal.")
     handle = source_path(source.storage_key).open("rb")
     try:
         digest, size = hashlib.sha256(), 0

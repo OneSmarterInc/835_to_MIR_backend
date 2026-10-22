@@ -18,6 +18,8 @@ from .partner_auth import machine_request, allowed_workflows, permitted
 from .intake_receipts import receipt_detail
 from .intake_storage import open_verified
 from .models import InboundTransfer, IntakeOutput, SubmissionKey
+from .intake_access import grants, permitted_staff, audit_access
+from .partner_auth import client_ids, client_permitted, resolve_client, consume_rate, PartnerClientDenied
 from .transfer_service import (
     SubmissionConflict, SubmissionPending, key_digest, retry_blocker, retry_transfer, submit,
 )
@@ -40,8 +42,8 @@ def error(message, status=400, code="INVALID_REQUEST"):
 def scoped(request, partner):
     rows = InboundTransfer.objects.select_related("dispatch", "client", "partner", "canonical_transfer")
     if partner:
-        return rows.filter(client=partner.client, partner=partner, workflow__in=allowed_workflows(partner, "READ"))
-    clients = scope_client_queryset(Client.objects.exclude(stage="offboarded"), request.user, field="pk")
+        return rows.filter(client_id__in=client_ids(partner), partner=partner, workflow__in=allowed_workflows(partner, "READ"))
+    clients = Client.objects.filter(pk__in=grants(request.user).values("client_id")).exclude(stage="offboarded")
     return rows.filter(client__in=clients)
 
 
@@ -91,7 +93,7 @@ def listing(request, partner):
             client = Client.objects.get(pk=client_id)
         except (Client.DoesNotExist, ValueError, ValidationError):
             return error("Client not found.", 404, "NOT_FOUND")
-        if (partner and partner.client_id != client.pk) or (not partner and not can_access_client(request.user, client.pk)):
+        if (partner and not client_permitted(partner, client.pk)) or (not partner and not permitted_staff(request.user, client.pk)):
             return error("Client not found.", 404, "NOT_FOUND")
         rows = rows.filter(client=client)
     try:
@@ -119,6 +121,7 @@ def listing(request, partner):
         page = Paginator(rows.order_by("-received_at", "-pk"), size).page(number)
     except (ValueError, OverflowError, EmptyPage):
         return error("Invalid filter or page. Dates use YYYY-MM-DD in UTC; page size is 1–100.")
+    audit_access(request, "RECEIPT_LIST", count=len(page.object_list))
     return _response({"transfers": [summary(item) for item in page], "page": page.number,
         "page_size": size, "pages": page.paginator.num_pages, "total": page.paginator.count})
 
@@ -133,7 +136,9 @@ def upload(request, partner):
         return error("Workflow is not permitted.", 403, "FORBIDDEN")
     try:
         digest = key_digest(request.headers.get("Idempotency-Key", ""), user=request.user, partner=partner)
-        client = partner.client if partner else Client.objects.get(pk=request.POST.get("client_id"))
+        client = resolve_client(partner, request.POST.get("client_id")) if partner else Client.objects.get(pk=request.POST.get("client_id"))
+    except PartnerClientDenied:
+        return error("Client not found.", 404, "NOT_FOUND")
     except (ValueError, TypeError, ValidationError, Client.DoesNotExist):
         return error("Supply a valid Idempotency-Key and authorized client_id.")
     if partner and request.POST.get("client_id") and request.POST["client_id"] != str(client.pk):
@@ -144,6 +149,9 @@ def upload(request, partner):
         return error("Client is not active.", 403, "FORBIDDEN")
     if file.size > settings.INTAKE_MAX_BYTES:
         return error("File exceeds the intake size limit.", 413, "UPLOAD_TOO_LARGE")
+    if (partner and file.size > partner.storage_limit_bytes
+            and not SubmissionKey.objects.filter(pk=digest).exists()):
+        return error("File exceeds the partner storage quota.", 429, "PARTNER_STORAGE_LIMIT")
     try:
         receipt, reused = submit(client=client, user=None if partner else request.user,
             partner=partner, workflow=workflow, upload=file, digest=digest,
@@ -154,6 +162,9 @@ def upload(request, partner):
             response["Retry-After"] = "2"
         return response
     except ValueError as exc:
+        from .intake_control import QuotaExceeded
+        if isinstance(exc, QuotaExceeded):
+            return error(str(exc), 429, "PARTNER_STORAGE_LIMIT")
         return error(str(exc), 400)
     except (DatabaseError, OSError):
         response = error("Receipt could not be confirmed. Recover or retry with the same key.", 503, "INTAKE_UNAVAILABLE")
@@ -183,14 +194,16 @@ def handle(request, partner=None, receipt_id=None, action=None, output_id=None):
         key = SubmissionKey.objects.filter(pk=digest, receipt__in=scoped(request, partner)).first()
         if not key:
             return error("No committed receipt is visible for this key. Retry the upload with the same key.", 404, "NOT_FOUND")
+        audit_access(request, "RECEIPT_RECOVER", receipt=key.receipt)
         return _response(summary(key.receipt))
     if not receipt_id:
         return upload(request, partner) if request.method == "POST" else listing(request, partner)
     receipt = scoped(request, partner).filter(pk=receipt_id).first()
     if not receipt:
+        audit_access(request, "RECEIPT_ACCESS", result="DENIED")
         return error("Transfer not found.", 404, "NOT_FOUND")
     if action == "retry":
-        if partner:
+        if partner or not permitted_staff(request.user, receipt.client_id, "RETRY"):
             return error("Operator session required.", 403, "FORBIDDEN")
         try:
             if request.content_type != "application/json":
@@ -208,7 +221,9 @@ def handle(request, partner=None, receipt_id=None, action=None, output_id=None):
             return error("Retry could not be confirmed. Check receipt status before trying again.", 503, "RETRY_UNAVAILABLE")
         return _response({**summary(receipt), "retry_id": str(audit.pk)}, 202)
     if action in {"source", "output"}:
-        if partner and not permitted(partner, "DOWNLOAD", receipt.workflow):
+        if ((partner and not permitted(partner, "DOWNLOAD", receipt.workflow))
+                or (not partner and not permitted_staff(request.user, receipt.client_id, "DOWNLOAD"))):
+            audit_access(request, "FILE_DOWNLOAD", receipt=receipt, result="DENIED")
             return error("Download permission required.", 403, "FORBIDDEN")
         source = receipt if action == "source" else outputs_for(receipt).filter(pk=output_id).first()
         if not source:
@@ -217,13 +232,29 @@ def handle(request, partner=None, receipt_id=None, action=None, output_id=None):
             handle = open_verified(source)
         except (ValueError, OSError):
             return error("File is unavailable or failed its integrity check.", 503, "FILE_UNAVAILABLE")
+        try:
+            audit_access(request, "FILE_DOWNLOAD", receipt=receipt, kind=action,
+                         output_id=str(output_id) if output_id else None)
+        except Exception:
+            handle.close()
+            raise
         response = FileResponse(handle, as_attachment=True,
             filename=receipt.original_filename if action == "source" else f"{source.pk}.mir",
             content_type="application/octet-stream")
         response["Cache-Control"] = "private, no-store"
         response["X-Content-Type-Options"] = "nosniff"
         return response
-    return _response(detail(receipt, operator=partner is None))
+    audit_access(request, "RECEIPT_DETAIL", receipt=receipt)
+    value = detail(receipt, operator=partner is None and permitted_staff(request.user, receipt.client_id, "RETRY"))
+    if partner is None:
+        value["recovery_reviews"] = list(receipt.recovery_reviews.order_by("-created_at").values(
+            "id", "decision", "evidence_reference", "created_at")[:20])
+    download = permitted(partner, "DOWNLOAD", receipt.workflow) if partner else permitted_staff(request.user, receipt.client_id, "DOWNLOAD")
+    if not download:
+        value.pop("source_url", None)
+        for output in value["outputs"]:
+            output.pop("download_url", None)
+    return _response(value)
 
 
 @csrf_protect
@@ -244,5 +275,9 @@ def transfers(request, **kwargs):
         partner = _partner(request)
         if not partner:
             return error("Valid partner credentials over HTTPS are required.", 401, "AUTHENTICATION_REQUIRED")
+        if not consume_rate(partner):
+            response = error("Partner request quota exceeded.", 429, "PARTNER_RATE_LIMIT")
+            response["Retry-After"] = "60"
+            return response
         return handle(request, partner=partner, **kwargs)
     return staff_view(request, **kwargs)

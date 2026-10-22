@@ -51,6 +51,7 @@ from .views import (
 )
 from .step_upload_view import api_admin_step_upload
 from project835.drf_compat import admin_api
+from edi835.intake_control_api import intake_control
 
 # Every endpoint in this URL module is an administrator API.  Wrapping the
 # established functions keeps their exact request/response contract and
@@ -83,6 +84,7 @@ for _api_name in _ADMIN_API_NAMES:
 del _api_name
 
 urlpatterns = [
+    path("api/intake-control/", admin_api(intake_control), name="intake-control"),
     path("api/clients/", api_admin_clients, name="admin_api_clients"),
     path("api/clients", api_admin_clients),
     path("api/download/<uuid:client_id>/<str:step_key>/", api_admin_template_download, name="admin_api_template_download"),

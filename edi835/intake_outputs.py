@@ -35,6 +35,14 @@ def checkpoint_output(source, mir, archive_path, out_path) -> None:
     if digest.hexdigest() != stored.checksum:
         raise ValueError("MIR outbound copy differs from the archive.")
     with transaction.atomic():
+        if receipt.partner_id:
+            from .models import IntakePartner
+            from .intake_control import partner_storage_bytes, QuotaExceeded
+            partner = IntakePartner.objects.select_for_update().get(pk=receipt.partner_id)
+            if not IntakeOutput.objects.filter(dispatch_id=receipt.dispatch_id, source_835=source).exists():
+                if partner_storage_bytes(partner) + stored.size > partner.storage_limit_bytes:
+                    # No checkpoint or remote delivery is acknowledged on quota failure.
+                    raise QuotaExceeded("Partner output storage quota exceeded; review before retry.")
         dispatch = BatchDispatch.objects.select_for_update().get(pk=receipt.dispatch_id)
         job = current_attempt.get()
         attempt = owned_attempt(job, lock=True) if job else None

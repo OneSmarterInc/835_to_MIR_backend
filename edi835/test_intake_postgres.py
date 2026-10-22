@@ -17,6 +17,37 @@ from .models import ProcessingAttempt
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row locks and separate connections")
 class IntakePostgresConcurrencyTests(TransactionTestCase):
+    def test_partner_concurrency_limit_is_shared_across_clients(self):
+        from .partner_management import create_partner, change_partner
+        with tempfile.TemporaryDirectory() as directory, override_settings(
+            INTAKE_STORAGE_ROOT=Path(directory) / "private", MEDIA_ROOT=Path(directory) / "media",
+        ):
+            clients = [Client.objects.create(client_code=f"QUOTA-{i}", name="Synthetic", status="ACTIVE") for i in range(2)]
+            partner = create_partner(client=clients[0], name="Shared quota", workflows=["837"], mode="TOKEN",
+                routing_required=False, actor="synthetic", reason="Concurrency acceptance")
+            change_partner(partner.pk, action="CLIENTS", actor="synthetic", reason="Concurrency acceptance",
+                data={"client_ids": [str(c.pk) for c in clients]})
+            change_partner(partner.pk, action="PERMISSIONS", actor="synthetic", reason="Concurrency acceptance",
+                data={"permissions": [{"action": "SUBMIT", "workflow": "837"}]})
+            partner.concurrent_jobs = 1
+            partner.save()
+            receipts = [register_sources(client=c, actor=None, partner=partner, channel="PARTNER", workflow="837",
+                sources=[("source", io.BytesIO(b"synthetic source"))], asynchronous=True)[0][0] for c in clients]
+            barrier = threading.Barrier(2)
+
+            def claim(receipt):
+                close_old_connections()
+                try:
+                    barrier.wait(timeout=10)
+                    return claim_job(str(receipt.dispatch_id)) is not None
+                finally:
+                    close_old_connections()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(claim, receipts))
+            self.assertEqual(sum(results), 1)
+            self.assertEqual(ProcessingAttempt.objects.filter(state="RUNNING").count(), 1)
+
     def test_rotated_credentials_share_one_submission_namespace(self):
         from django.core.files.uploadedfile import SimpleUploadedFile
         from .models import PartnerCredential, InboundTransfer, SubmissionKey
@@ -100,6 +131,11 @@ class IntakePostgresConcurrencyTests(TransactionTestCase):
         ):
             tenant = Client.objects.create(client_code="PG-RETRY", name="Synthetic", status="ACTIVE")
             user = User.objects.create_user(email="pg-retry@example.test", name="Test", mobile="+15550003333", is_staff=True, is_superuser=True)
+            from .models import IntakeStaffGrant
+            from django.utils import timezone
+            from datetime import timedelta
+            IntakeStaffGrant.objects.create(user=user, client=tenant, can_retry=True,
+                approved_by=user, reason="Synthetic retry grant", expires_at=timezone.now()+timedelta(days=1))
             receipt = register_sources(client=tenant, actor=user, channel="STAFF", workflow="837",
                 sources=[("source", io.BytesIO(b"source"))], asynchronous=True)[0][0]
             job = claim_job(str(receipt.dispatch_id))

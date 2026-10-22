@@ -153,6 +153,9 @@ def record_validation(receipt, raw: bytes, *, outcome="PENDING", code="") -> Non
     )
     from .intake_provenance import record_transactions
     record_transactions(receipt, raw)
+    if outcome == "REJECTED":
+        from .intake_control import ensure_quarantine
+        ensure_quarantine(InboundTransfer.objects.filter(pk=receipt.pk))
 
 
 @transaction.atomic
@@ -203,6 +206,8 @@ def finish_attempt(record: BatchDispatch, job: dict) -> None:
         state=state, safe_error_code=attempt.safe_error_code,
         source_reference=attempt.result["source_id"][:100], updated_at=timezone.now(),
     )
+    from .intake_control import ensure_quarantine
+    ensure_quarantine(record.transfers.all())
     if record.transfers.exists():
         from .intake_receipts import receipt_summary
         summaries = [receipt_summary(receipt) for receipt in record.transfers.all()]

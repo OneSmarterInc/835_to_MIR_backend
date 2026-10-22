@@ -483,6 +483,9 @@ def analysis_upload(request):
                 pk=request.GET.get("receipt_id")).select_related("dispatch").first()
         except (ValueError, ValidationError):
             receipt = None
+        from .intake_access import audit_access
+        audit_access(request, "ANALYSIS_RECEIPT_READ", receipt=receipt, client=client,
+                     result="ALLOWED" if receipt else "DENIED")
         response = JsonResponse(receipt_detail(receipt) if receipt else {"error": "Receipt not found."},
                                 status=200 if receipt else 404)
     elif request.method == "GET" and request.GET.get("view"):

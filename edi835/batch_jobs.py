@@ -110,6 +110,14 @@ def write_job(job: dict) -> None:
 def claim_job(job_id: str) -> dict | None:
     """Claim a still-queued job in a short transaction, then release the lock."""
     with transaction.atomic():
+        # Serialize partner concurrency across its clients before locking dispatch.
+        from .models import InboundTransfer, IntakePartner
+        partner_ids = list(InboundTransfer.objects.filter(dispatch_id=job_id, partner__isnull=False)
+                           .values_list("partner_id", flat=True).distinct())
+        for partner in IntakePartner.objects.select_for_update().filter(pk__in=partner_ids).order_by("pk"):
+            running = BatchDispatch.objects.filter(state="RUNNING", transfers__partner=partner).distinct().count()
+            if running >= partner.concurrent_jobs:
+                return None
         record = BatchDispatch.objects.select_for_update().filter(pk=job_id, state="QUEUED").first()
         if record is None:
             return None

@@ -21,7 +21,11 @@ from .transfer_service import SubmissionPending
 
 @override_settings(ROOT_URLCONF="project835.urls", INTAKE_PARTNER_ENABLED=True, MFA_ENFORCEMENT_ENABLED=False)
 class TransferAPITests(TestCase):
-    setUp = fixtures.IntakeTests.setUp
+    def setUp(self):
+        fixtures.IntakeTests.setUp(self)
+        from .models import IntakeStaffGrant
+        IntakeStaffGrant.objects.create(user=self.admin, client=self.tenant, approved_by=self.admin,
+            can_download=True, can_retry=True, expires_at=timezone.now()+timedelta(days=1), reason="Synthetic explicit grant")
     register = fixtures.IntakeTests.register
     output = recovery.IntakeRecoveryTests.output
 
@@ -34,7 +38,7 @@ class TransferAPITests(TestCase):
     def partner_get(self, path, **kwargs):
         return self.client.get(path, secure=True, HTTP_AUTHORIZATION=self.authorization, **kwargs)
 
-    def fail(self, receipt, effects=False):
+    def fail_receipt(self, receipt, effects=False):
         job = claim_job(str(receipt.dispatch_id))
         if effects:
             with execution(job):
@@ -137,7 +141,7 @@ class TransferAPITests(TestCase):
 
     def test_partner_cannot_retry_even_own_failed_transfer(self):
         receipt = InboundTransfer.objects.get(pk=self.submit().json()["receipt_id"])
-        self.fail(receipt)
+        self.fail_receipt(receipt)
         response = self.client.post(f"/api/v1/transfers/{receipt.pk}/retry", json.dumps({"reason": "repair"}),
             content_type="application/json", secure=True, HTTP_AUTHORIZATION=self.authorization)
         self.assertEqual(response.status_code, 403)
@@ -189,7 +193,7 @@ class TransferAPITests(TestCase):
     def test_safe_retry_is_audited_and_links_new_attempt_to_parent(self):
         self.client.force_login(self.admin)
         receipt = self.register()
-        previous = self.fail(receipt)
+        previous = self.fail_receipt(receipt)
         response = self.retry(receipt)
         self.assertEqual(response.status_code, 202, response.content)
         audit = TransferRetry.objects.get()
@@ -207,10 +211,10 @@ class TransferAPITests(TestCase):
         self.client.force_login(self.admin)
         receipt = self.register()
         self.assertEqual(self.retry(receipt).status_code, 409)
-        self.fail(receipt, effects=True)
+        self.fail_receipt(receipt, effects=True)
         self.assertEqual(self.retry(receipt).status_code, 409)
         other = self.register(raw=b"safe")
-        self.fail(other)
+        self.fail_receipt(other)
         with override_settings(INTAKE_MAX_ATTEMPTS=1):
             self.assertEqual(self.retry(other).status_code, 409)
         self.assertEqual(self.retry(other, reason="").status_code, 400)
@@ -223,7 +227,7 @@ class TransferAPITests(TestCase):
         strict.force_login(self.admin)
         self.assertEqual(strict.post("/api/v1/transfers", {}).status_code, 403)
         receipt = self.register()
-        self.fail(receipt)
+        self.fail_receipt(receipt)
         self.assertEqual(strict.post(f"/api/v1/transfers/{receipt.pk}/retry", {}).status_code, 403)
         with override_settings(MFA_ENFORCEMENT_ENABLED=True):
             self.assertEqual(strict.get("/api/v1/transfers").status_code, 403)
@@ -276,7 +280,12 @@ class TransferAPITests(TestCase):
         with CaptureQueriesContext(connection) as queries:
             response = self.client.get("/api/v1/transfers?page_size=12")
         self.assertEqual(response.json()["total"], 12)
-        self.assertLess(len(queries), 8)
+        # Append-only access auditing adds fixed transaction/hash-chain writes.
+        # Verify query count stays constant with page size, rather than dropping audit.
+        with CaptureQueriesContext(connection) as smaller:
+            self.client.get("/api/v1/transfers?page_size=1")
+        self.assertLessEqual(len(queries), len(smaller) + 1)
+        self.assertLess(len(queries), 20)
         self.assertFalse(any('"payload"' in item["sql"] for item in queries))
 
     def test_python_client_streams_multipart_through_real_api_and_worker(self):

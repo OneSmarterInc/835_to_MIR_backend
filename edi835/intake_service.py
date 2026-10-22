@@ -77,10 +77,10 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
         route_snapshots = {}
         if partner:
             from .models import IntakePartner, PartnerCredential
-            from .partner_auth import permitted
+            from .partner_auth import permitted, client_permitted
             from .partner_routing import authorize_routes
             partner = IntakePartner.objects.select_for_update().get(pk=partner.pk)
-            if not client or partner.client_id != client.pk or channel != "PARTNER" or not permitted(partner, "SUBMIT", workflow):
+            if not client or not client_permitted(partner, client.pk) or channel != "PARTNER" or not permitted(partner, "SUBMIT", workflow):
                 raise ValueError("Partner submission is not authorized.")
             if partner_credential:
                 partner_credential = PartnerCredential.objects.select_for_update().get(pk=partner_credential.pk)
@@ -92,7 +92,7 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
             elif partner.auth_mode == "MTLS" or partner.routing_required:
                 raise ValueError("Authenticated partner credential required.")
             for _, source in stored:
-                route_snapshots[source.key] = authorize_routes(partner, workflow, source)
+                route_snapshots[source.key] = authorize_routes(partner, workflow, source, client)
         if key_digest:
             existing = InboundTransfer.objects.select_related("dispatch").filter(idempotency_digest=key_digest).first()
             if existing:
@@ -103,6 +103,10 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
                 if candidate.key in owned_keys:
                     source_path(candidate.key).unlink(missing_ok=True)
                 return [existing], True
+        if partner:
+            from .intake_control import partner_storage_bytes, QuotaExceeded
+            if partner_storage_bytes(partner) + total_bytes > partner.storage_limit_bytes:
+                raise QuotaExceeded("Partner storage quota exceeded. Contact the intake administrator.")
         if asynchronous:
             if locked.status != "ACTIVE":
                 raise ValueError("The selected client is inactive.")
