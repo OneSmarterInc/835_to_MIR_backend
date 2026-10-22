@@ -47,6 +47,67 @@ class IntakeControlTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertNotIn('synthetic-secret', response.content.decode())
 
+    def preview(self, raw, client=None):
+        return (client or self.client).post(self.url, {'action': 'route_preview',
+            'partner_id': str(self.partner.pk), 'file': SimpleUploadedFile('extensionless', raw)})
+
+    def test_route_preview_extracts_both_workflows_without_intake_or_route_writes(self):
+        from django.conf import settings
+        from .models import PartnerRoute, BatchDispatch
+        self.partner.workflows = ['835', '837']
+        self.partner.save()
+        for workflow, filename in [('837', 'synthetic_claim.837'), ('835', 'synthetic_payment.835')]:
+            response = self.preview((settings.BASE_DIR / 'examples' / filename).read_bytes())
+            self.assertEqual(response.status_code, 200, response.content)
+            route = response.json()['routes'][0]
+            self.assertEqual(route['workflow'], workflow)
+            self.assertEqual(route['isa_sender'], 'SYNTHETIC')
+            self.assertEqual(route['isa_receiver'], 'TESTONLY')
+            self.assertEqual(response['Cache-Control'], 'private, no-store')
+            self.assertNotIn('CLM*', response.content.decode())
+            self.assertNotIn('CLP*', response.content.decode())
+        self.assertFalse(PartnerRoute.objects.exists())
+        self.assertFalse(InboundTransfer.objects.exists())
+        self.assertFalse(BatchDispatch.objects.exists())
+        self.assertEqual(AuditLog.objects.filter(action='ROUTE_PREVIEW').count(), 2)
+
+    def test_route_preview_deduplicates_headers_and_returns_all_distinct_routes(self):
+        from django.conf import settings
+        raw = (settings.BASE_DIR / 'examples/synthetic_claim.837').read_bytes()
+        response = self.preview(raw + raw)
+        self.assertEqual(response.status_code, 200, response.content)
+        self.assertEqual(len(response.json()['routes']), 1)
+        self.assertEqual(response.json()['transaction_set_count'], 2)
+        response = self.preview(raw + raw.replace(b'TESTONLY', b'OTHERTEN'))
+        self.assertEqual(len(response.json()['routes']), 2)
+
+    def test_route_preview_rejects_truncated_mixed_and_unsupported_workflows(self):
+        from django.conf import settings
+        raw = (settings.BASE_DIR / 'examples/synthetic_claim.837').read_bytes()
+        payment = (settings.BASE_DIR / 'examples/synthetic_payment.835').read_bytes()
+        for invalid in [b'', b'not edi', raw[:-25], raw+b'extra', raw+payment]:
+            self.assertEqual(self.preview(invalid).status_code, 400)
+        self.partner.workflows = ['835']
+        self.partner.save()
+        self.assertEqual(self.preview(raw).status_code, 400)
+
+    def test_route_preview_requires_screen_access_and_csrf(self):
+        self.assertEqual(self.preview(b'sample', HttpClient()).status_code, 403)
+        csrf_client = HttpClient(enforce_csrf_checks=True)
+        csrf_client.force_login(self.admin)
+        self.assertEqual(self.preview(b'sample', csrf_client).status_code, 403)
+        self.admin.is_superuser = False
+        self.admin.admin_screens = ['ops']
+        self.admin.save()
+        self.assertEqual(self.preview(b'sample').status_code, 403)
+
+    def test_route_preview_enforces_size_before_reading(self):
+        from .route_preview import extract_routes, MAX_PREVIEW_BYTES
+        from types import SimpleNamespace
+        oversized = SimpleNamespace(size=MAX_PREVIEW_BYTES+1, read=lambda *_: self.fail('Oversized file read'))
+        with self.assertRaisesMessage(ValueError, '10 MiB'):
+            extract_routes(oversized, ['835', '837'])
+
     def test_non_admin_and_unassigned_screen_denied(self):
         self.admin.is_superuser = False
         self.admin.admin_screens = ['ops']

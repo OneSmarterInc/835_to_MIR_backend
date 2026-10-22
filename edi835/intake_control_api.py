@@ -231,6 +231,16 @@ def intake_control(request):
             return response(result)
         if request.method != "POST":
             return response({"error": "Use GET or POST."}, 405)
+        if request.content_type == "multipart/form-data":
+            if (request.POST.get("action") != "route_preview" or len(request.FILES) != 1
+                    or len(request.FILES.getlist("file")) != 1):
+                raise ValueError("Choose one file to extract route fields.")
+            from .route_preview import extract_routes
+            from .intake_access import audit_access
+            partner = IntakePartner.objects.get(pk=request.POST.get("partner_id"))
+            result = extract_routes(request.FILES["file"], partner.workflows)
+            audit_access(request, "ROUTE_PREVIEW", partner_id=str(partner.pk), route_count=len(result["routes"]))
+            return response(result)
         if request.content_type != "application/json" or len(request.body) > 65536:
             return response({"error": "Use a JSON body up to 64 KiB."}, 400)
         data = json.loads(request.body)

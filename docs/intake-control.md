@@ -33,6 +33,10 @@ Operator-entered reasons and references must not contain patient data. The UI pr
 
 ## Multi-client partners and quotas
 
+In **Partners → Manage → Add route**, choose an 835 or 837 sample to fill envelope fields automatically, then review the client, workflow and identifiers and save with a reason. A sole approved client is preselected; multiple clients require an explicit selection. Extensionless files are supported. Repeated envelope routes are collapsed; a file with several distinct routes asks which route to review. Each route is approved separately.
+
+The preview checks complete envelopes using the existing routing parser, with a 10 MiB sample limit and at most 100 distinct routes. It detects the transaction type and requires it to be configured for the partner. Mixed 835/837 samples or malformed envelopes are rejected. Inspection does not create an intake receipt, enqueue processing, persist the source as an intake file or approve a route. Only safe preview metadata is audited. Manual entry remains available, and the normal route validation runs when Save is clicked. Preview is not full claim validation.
+
 An identity retains its historical primary-client foreign key and can have several approved clients. The primary client can be removed from current authorization without reassigning any historical receipt. Removing a scope hides its receipts from the partner and blocks queued execution under the withdrawn scope. In-flight side effects cannot be undone.
 
 When several active clients are approved, submissions must specify `client_id`. The selected client must match an active approved envelope route; a filename is never a routing authority. Identical active route keys cannot route ambiguously to different clients. Workflow/action permissions apply across the identity's approved client set; per-client action overrides are not part of this model.
