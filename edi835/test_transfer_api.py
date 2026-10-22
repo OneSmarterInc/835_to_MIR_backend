@@ -227,8 +227,7 @@ class TransferAPITests(TestCase):
         self.assertEqual(strict.post(f"/api/v1/transfers/{receipt.pk}/retry", {}).status_code, 403)
         with override_settings(MFA_ENFORCEMENT_ENABLED=True):
             self.assertEqual(strict.get("/api/v1/transfers").status_code, 403)
-        self.partner.expires_at = timezone.now() - timedelta(seconds=1)
-        self.partner.save()
+        self.partner.credentials.update(not_before=timezone.now() - timedelta(days=2), expires_at=timezone.now() - timedelta(seconds=1))
         self.assertEqual(self.submit().status_code, 401)
         self.assertEqual(strict.get("/api/v1/transfers", HTTP_AUTHORIZATION="Bearer bad", secure=True).status_code, 401)
         strict.logout()
@@ -346,7 +345,7 @@ class TransferAPITests(TestCase):
         self.assertEqual(response.status_code, 200)
         schema = json.loads(b"".join(response.streaming_content))
         response.close()
-        self.assertEqual(schema["openapi"], "3.0.3")
+        self.assertEqual(schema["openapi"], "3.1.0")
         self.assertIn("/api/v1/transfers/{receipt_id}/retry", schema["paths"])
         for filename, kind in (("synthetic_claim.837", "837"), ("synthetic_payment.835", "835")):
             raw = (Path(settings.BASE_DIR) / "examples" / filename).read_bytes()

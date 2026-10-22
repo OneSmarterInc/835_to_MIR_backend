@@ -10,7 +10,7 @@ their existing behavior and response contracts.
 | Requirement | Implementation | Evidence / remaining verification |
 | --- | --- | --- |
 | Paginated unified history | `/api/v1/transfers`, client/status/channel/inclusive UTC date filters, 1–100 rows, stable timestamp/UUID ordering; client/channel/date and client/state/date indexes | API filter/pagination tests; portal history uses selected client and these filters |
-| Lost-response/session recovery | Principal-scoped key lookup and idempotent resubmission; reauthenticate as the same staff account or use the same partner credential | Lost-response, expired-session and restored-session tests |
+| Lost-response/session recovery | Principal-scoped key lookup and idempotent resubmission; reauthenticate as the same staff account or use a valid credential for the same stable partner identity | Lost-response, expired-session and restored-session tests |
 | Private downloads | Scoped source/output handlers, authorization every request, attachment/no-store/nosniff, SHA-256/length verification with bounded memory | Download, tamper, foreign-output and cross-client denial tests; production nginx/filesystem review still required |
 | Audited eligible retry | Staff-only POST with reason; immutable retry audit links original attempt and next worker attempt | Safe retry, effects/attempt-limit denial, duplicate POST and audit linkage tests |
 | Authorization/input matrix | Upload/list/detail/retry/download scope; session, MFA, CSRF, expired bearer, size, executable/archive content checks | `edi835.test_transfer_api`; PostgreSQL race tests added separately |
@@ -62,9 +62,10 @@ key and unchanged file. Storage/database failures return 503, never a false succ
 
 Keys remain for the retained lifetime of their receipt. No arbitrary expiry lets
 a delayed retry silently convert the source again. Approved client deletion
-cascades key/audit records through the existing client-deletion process. A rotated
-partner credential has a new key scope; do not switch credentials and blindly
-resubmit an uncertain operation. An authorized operator can inspect client history.
+cascades key/audit records through the existing client-deletion process. Credential rotation preserves the stable partner identity and key scope after
+migration 0066. Recover with a valid replacement credential for that same partner.
+Creating a different partner identity still creates a different key scope. See
+[partner security rollout](phase4-partner-security.md) for mTLS and rotation.
 
 ## Retry safety
 

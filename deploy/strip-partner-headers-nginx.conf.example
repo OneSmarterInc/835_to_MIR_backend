@@ -1,0 +1,7 @@
+# Include INSIDE EVERY non-partner proxy location, not only at server{} level:
+# proxy_set_header inheritance stops when a child defines any proxy_set_header.
+proxy_set_header X-FileX-Gateway "";
+proxy_set_header X-FileX-Client-Verify "";
+proxy_set_header X-FileX-Client-Cert "";
+# Also overwrite forwarded host/protocol in each public proxy location according
+# to its actual trusted TLS topology. Never forward client-supplied identity.

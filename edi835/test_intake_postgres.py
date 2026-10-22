@@ -17,6 +17,46 @@ from .models import ProcessingAttempt
 
 @skipUnless(connection.vendor == "postgresql", "Requires PostgreSQL row locks and separate connections")
 class IntakePostgresConcurrencyTests(TransactionTestCase):
+    def test_rotated_credentials_share_one_submission_namespace(self):
+        from django.core.files.uploadedfile import SimpleUploadedFile
+        from .models import PartnerCredential, InboundTransfer, SubmissionKey
+        from .partner_management import create_partner, change_partner
+        from .transfer_service import key_digest, submit, SubmissionPending
+        with tempfile.TemporaryDirectory() as directory, override_settings(
+            INTAKE_STORAGE_ROOT=Path(directory) / "private", MEDIA_ROOT=Path(directory) / "media",
+        ):
+            tenant = Client.objects.create(client_code="PG-PARTNER", name="Synthetic", status="ACTIVE")
+            partner = create_partner(client=tenant, name="Rotation", workflows=["837"], mode="TOKEN",
+                routing_required=False, actor="synthetic", reason="Concurrency acceptance")
+            change_partner(partner.pk, action="PERMISSIONS", actor="synthetic", reason="Concurrency acceptance",
+                data={"permissions": [{"action": "SUBMIT", "workflow": "837"}]})
+            credentials = [change_partner(partner.pk, action="TOKEN", actor="synthetic", reason="Concurrency acceptance")
+                           ["credential_id"] for _ in range(2)]
+            barrier = threading.Barrier(2)
+            digest = key_digest("same-partner-key", partner=partner)
+
+            def send(identifier, wait=True):
+                close_old_connections()
+                try:
+                    credential = PartnerCredential.objects.select_related("partner").get(pk=identifier)
+                    if wait:
+                        barrier.wait(timeout=10)
+                    receipt, _ = submit(client=tenant, user=None, partner=credential.partner,
+                        partner_credential=credential, workflow="837",
+                        upload=SimpleUploadedFile("synthetic", b"identical source"), digest=digest)
+                    return str(receipt.pk)
+                except SubmissionPending:
+                    return None
+                finally:
+                    close_old_connections()
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                results = list(pool.map(send, credentials))
+            canonical = send(credentials[1], wait=False)
+            self.assertEqual({value for value in results if value}, {canonical})
+            self.assertEqual(InboundTransfer.objects.count(), 1)
+            self.assertEqual(SubmissionKey.objects.count(), 1)
+
     def test_v1_concurrent_key_recovers_one_receipt(self):
         from accounts.models import User
         from django.core.files.uploadedfile import SimpleUploadedFile

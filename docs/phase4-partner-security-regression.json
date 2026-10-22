@@ -1,0 +1,88 @@
+{
+  "schema_version": 1,
+  "environment": "isolated SQLite, synthetic fixtures",
+  "generated_at_utc": "2026-10-22T12:00:13.480304+00:00",
+  "git_head": "0e5a8f4bb4149b9ac3d74519ca2b3a2f25b99871",
+  "working_tree_changed": true,
+  "source_fingerprint_sha256": "0b6ceb396e40c90a9490696f2990ed3c2d70a1a42751a95b2ad62b70a4a874c3",
+  "test_modules": [
+    "edi835.test_partner_security",
+    "edi835.test_transfer_api",
+    "edi835.test_intake",
+    "edi835.test_intake_duplicates",
+    "edi835.test_sftp_intake",
+    "edi835.test_sftp_invalid_file",
+    "edi835.test_sftp_automation",
+    "edi835.test_sftp_sequential_hhss",
+    "edi835.test_sftp_source_independence",
+    "edi835.test_intake_recovery",
+    "edi835.test_intake_postgres",
+    "edi835.test_phase1_baseline",
+    "edi835.test_phase1_controls",
+    "project835.tests_csrf",
+    "project835.test_release_requests",
+    "project835.test_release_configuration",
+    "project835.test_database_guard",
+    "project835.test_demo_access",
+    "project835.test_drf_contract",
+    "accounts.tests",
+    "admin_panel.test_client_role_creation",
+    "admin_panel.test_security_review",
+    "edi835.test_listing_query_efficiency",
+    "edi835.test_tracked_file_performance_api",
+    "edi835.test_client_user_portal",
+    "edi835.test_client_portal_financials",
+    "edi835.test_client_portal_period",
+    "edi835.test_client_portal_analysis",
+    "edi835.test_analysis_queries",
+    "edi835.test_client_portal_conversion",
+    "edi835.test_full_sftp_combined_835",
+    "edi835.test_storage",
+    "edi835.test_client_portal_actions",
+    "edi835.test_client_portal_835_837",
+    "edi835.test_client_claim_slice",
+    "edi835.test_client_claim_sources",
+    "edi835.test_conversion_download_summary",
+    "edi835.test_edi837_service",
+    "admin_panel.mir_mapper_logic.test_financial_validation",
+    "admin_panel.mir_mapper_logic.test_business_rules",
+    "admin_panel.mir_mapper_logic.test_held_claims"
+  ],
+  "tests_run": 438,
+  "failures": 0,
+  "errors": 0,
+  "skipped": [
+    {
+      "test": "edi835.test_analysis_queries.AnalysisQueryTests.test_postgres_maximum_precision_and_sign",
+      "reason": "Exact maximum NUMERIC precision requires PostgreSQL"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_manual_and_scheduled_adapters_share_one_source_claim",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_rotated_credentials_share_one_submission_namespace",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_simultaneous_cross_channel_submissions_have_one_canonical_job",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_two_workers_can_only_claim_one_execution",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_v1_concurrent_key_recovers_one_receipt",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    },
+    {
+      "test": "edi835.test_intake_postgres.IntakePostgresConcurrencyTests.test_v1_concurrent_operator_retries_create_one_audit",
+      "reason": "Requires PostgreSQL row locks and separate connections"
+    }
+  ],
+  "duration_seconds": 35.094,
+  "successful": true,
+  "production_approval": false,
+  "limitations": "No PostgreSQL, AWS, partner, load, trust or backup/restore certification."
+}

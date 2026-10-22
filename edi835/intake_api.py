@@ -1,48 +1,25 @@
 """Client-scoped asynchronous intake. Partner authentication never uses cookies."""
-import hashlib
-import hmac
 import uuid
 
 from django.conf import settings
 from django.core.exceptions import ValidationError
 from django.db import DatabaseError, transaction
 from django.http import JsonResponse
-from django.utils import timezone
 from django.views.decorators.csrf import csrf_exempt, csrf_protect
 from django.views.decorators.http import require_http_methods
 
 from accounts.models import Client
 from admin_panel.access_control import can_access_client
 from .intake_service import register_sources
-from .models import InboundTransfer, IntakePartner
+from .models import InboundTransfer
 from .intake_receipts import receipt_detail, receipt_summary
+from .partner_auth import authenticate_partner as _partner, allowed_workflows, permitted
 
 
 def _response(payload, status=200):
     response = JsonResponse(payload, status=status)
     response["Cache-Control"] = "private, no-store"
     return response
-
-
-def _partner(request):
-    if not settings.INTAKE_PARTNER_ENABLED or not request.is_secure():
-        return None
-    authorization = request.headers.get("Authorization", "")
-    if not authorization.startswith("Bearer ") or len(authorization) > 200:
-        return None
-    try:
-        identifier, secret = authorization[7:].split(".", 1)
-        identifier = uuid.UUID(identifier)
-    except ValueError:
-        return None
-    partner = IntakePartner.objects.select_related("client").filter(
-        pk=identifier, active=True, expires_at__gt=timezone.now(),
-    ).first()
-    if not partner or not hmac.compare_digest(partner.token_digest, hashlib.sha256(secret.encode()).hexdigest()):
-        return None
-    if partner.client.status != "ACTIVE" or partner.client.stage == "offboarded":
-        return None
-    return partner
 
 
 def _handle(request, partner=None):
@@ -63,7 +40,7 @@ def _handle(request, partner=None):
                 return _response({"error": "Select an authorized client and a valid page."}, 400)
             rows = InboundTransfer.objects.filter(client=client)
             if partner:
-                rows = rows.filter(partner=partner)
+                rows = rows.filter(partner=partner, workflow__in=allowed_workflows(partner, "READ"))
             if request.GET.get("state"):
                 rows = rows.filter(state=request.GET["state"])
             page = Paginator(rows.order_by("-received_at", "-pk").values(
@@ -75,7 +52,7 @@ def _handle(request, partner=None):
         except ValueError:
             return _response({"error": "A valid receipt_id is required."}, 400)
         receipt = InboundTransfer.objects.select_related("dispatch").filter(pk=identifier).first()
-        allowed = receipt and (receipt.partner_id == partner.pk if partner else can_access_client(user, receipt.client_id))
+        allowed = receipt and ((receipt.partner_id == partner.pk and receipt.client_id == partner.client_id and permitted(partner, "READ", receipt.workflow)) if partner else can_access_client(user, receipt.client_id))
         if not allowed:
             return _response({"error": "Receipt not found."}, 404)
         result = receipt_detail(receipt)
@@ -87,7 +64,7 @@ def _handle(request, partner=None):
     key = request.headers.get("Idempotency-Key", "").strip()
     if workflow not in {"835", "837"} or len(request.FILES) != 1 or len(request.FILES.getlist("file")) != 1 or not upload or not 1 <= len(key) <= 200:
         return _response({"error": "Supply one file, workflow 835/837 and an Idempotency-Key header."}, 400)
-    if partner and workflow not in partner.workflows:
+    if partner and not permitted(partner, "SUBMIT", workflow):
         return _response({"error": "Workflow is not permitted for this credential."}, 403)
     try:
         client = partner.client if partner else Client.objects.get(pk=request.POST.get("client_id"))
@@ -100,7 +77,8 @@ def _handle(request, partner=None):
     try:
         receipts, reused = register_sources(client=client, actor=None if partner else user,
             channel="PARTNER" if partner else "STAFF", workflow=workflow,
-            sources=[(upload.name, upload)], partner=partner, idempotency_key=key, asynchronous=True)
+            sources=[(upload.name, upload)], partner=partner, partner_credential=getattr(request, "partner_credential", None),
+            idempotency_key=key, asynchronous=True)
     except ValueError as exc:
         return _response({"error": str(exc)}, 409)
     except (DatabaseError, OSError):

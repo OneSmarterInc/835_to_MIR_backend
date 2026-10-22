@@ -1,5 +1,4 @@
 """Dispatch accepted sources through the existing production processors."""
-from django.utils import timezone
 
 from admin_panel.access_control import can_access_client
 from .intake_service import current_transfer
@@ -13,8 +12,8 @@ def process_intake(job, user, client):
     if receipt.client_id != client.pk or client.stage == "offboarded" or client.status != "ACTIVE":
         raise ValueError("Client is not available for processing.")
     if receipt.partner_id:
-        partner = receipt.partner
-        if not partner.active or partner.expires_at <= timezone.now() or partner.client_id != client.pk or receipt.workflow not in partner.workflows:
+        from .partner_auth import accepted_authorization_valid
+        if not accepted_authorization_valid(receipt):
             raise ValueError("Partner authorization has expired or was revoked.")
     elif not (getattr(user, "is_active", False) and getattr(user, "is_staff", False) and can_access_client(user, client.pk)):
         raise ValueError("Staff authorization has expired or was revoked.")

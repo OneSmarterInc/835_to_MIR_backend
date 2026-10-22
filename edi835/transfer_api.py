@@ -14,6 +14,7 @@ from django.views.decorators.http import require_GET
 from accounts.models import Client
 from admin_panel.access_control import can_access_client, scope_client_queryset
 from .intake_api import _partner, _response
+from .partner_auth import machine_request, allowed_workflows, permitted
 from .intake_receipts import receipt_detail
 from .intake_storage import open_verified
 from .models import InboundTransfer, IntakeOutput, SubmissionKey
@@ -39,7 +40,7 @@ def error(message, status=400, code="INVALID_REQUEST"):
 def scoped(request, partner):
     rows = InboundTransfer.objects.select_related("dispatch", "client", "partner", "canonical_transfer")
     if partner:
-        return rows.filter(client=partner.client, partner=partner, workflow__in=partner.workflows)
+        return rows.filter(client=partner.client, partner=partner, workflow__in=allowed_workflows(partner, "READ"))
     clients = scope_client_queryset(Client.objects.exclude(stage="offboarded"), request.user, field="pk")
     return rows.filter(client__in=clients)
 
@@ -128,7 +129,7 @@ def upload(request, partner):
     workflow, file = request.POST.get("workflow"), request.FILES.get("file")
     if workflow not in {"835", "837"} or not file or len(request.FILES) != 1 or len(request.FILES.getlist("file")) != 1:
         return error("Supply one file and workflow 835 or 837.")
-    if partner and workflow not in partner.workflows:
+    if partner and not permitted(partner, "SUBMIT", workflow):
         return error("Workflow is not permitted.", 403, "FORBIDDEN")
     try:
         digest = key_digest(request.headers.get("Idempotency-Key", ""), user=request.user, partner=partner)
@@ -145,7 +146,8 @@ def upload(request, partner):
         return error("File exceeds the intake size limit.", 413, "UPLOAD_TOO_LARGE")
     try:
         receipt, reused = submit(client=client, user=None if partner else request.user,
-            partner=partner, workflow=workflow, upload=file, digest=digest)
+            partner=partner, workflow=workflow, upload=file, digest=digest,
+            partner_credential=getattr(request, "partner_credential", None))
     except SubmissionConflict as exc:
         response = error(str(exc), 409, exc.code)
         if isinstance(exc, SubmissionPending):
@@ -164,14 +166,14 @@ def upload(request, partner):
 
 def handle(request, partner=None, receipt_id=None, action=None, output_id=None):
     if action == "retry":
-        permitted = {"POST"}
+        methods = {"POST"}
     elif action or receipt_id:
-        permitted = {"GET"}
+        methods = {"GET"}
     else:
-        permitted = {"GET", "POST"}
-    if request.method not in permitted:
+        methods = {"GET", "POST"}
+    if request.method not in methods:
         response = error("Method not allowed.", 405, "METHOD_NOT_ALLOWED")
-        response["Allow"] = ", ".join(sorted(permitted))
+        response["Allow"] = ", ".join(sorted(methods))
         return response
     if action == "recover":
         try:
@@ -206,6 +208,8 @@ def handle(request, partner=None, receipt_id=None, action=None, output_id=None):
             return error("Retry could not be confirmed. Check receipt status before trying again.", 503, "RETRY_UNAVAILABLE")
         return _response({**summary(receipt), "retry_id": str(audit.pk)}, 202)
     if action in {"source", "output"}:
+        if partner and not permitted(partner, "DOWNLOAD", receipt.workflow):
+            return error("Download permission required.", 403, "FORBIDDEN")
         source = receipt if action == "source" else outputs_for(receipt).filter(pk=output_id).first()
         if not source:
             return error("Output not found.", 404, "NOT_FOUND")
@@ -236,7 +240,7 @@ def staff_view(request, **kwargs):
 @csrf_exempt
 def transfers(request, **kwargs):
     # A bad bearer token must never fall back to a privileged browser session.
-    if request.headers.get("Authorization"):
+    if machine_request(request):
         partner = _partner(request)
         if not partner:
             return error("Valid partner credentials over HTTPS are required.", 401, "AUTHENTICATION_REQUIRED")

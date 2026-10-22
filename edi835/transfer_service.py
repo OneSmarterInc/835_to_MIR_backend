@@ -3,7 +3,6 @@ import hashlib
 
 from django.conf import settings
 from django.db import connection, transaction
-from django.utils import timezone
 
 from .intake_service import register_sources
 from .intake_storage import open_verified, source_path, store_stream
@@ -26,7 +25,7 @@ def key_digest(key: str, *, user=None, partner=None) -> str:
     return hashlib.sha256(f"transfers:v1:{principal}:{key}".encode()).hexdigest()
 
 
-def submit(*, client, user, partner, workflow: str, upload, digest: str):
+def submit(*, client, user, partner, workflow: str, upload, digest: str, partner_credential=None):
     source = store_stream(upload, client.pk, max_bytes=settings.INTAKE_MAX_BYTES)
     check_source(upload.name, source)
     with transaction.atomic():
@@ -49,7 +48,7 @@ def submit(*, client, user, partner, workflow: str, upload, digest: str):
             return receipt, True
         receipts, _ = register_sources(client=client, actor=user, partner=partner,
             channel="PARTNER" if partner else "STAFF", workflow=workflow,
-            sources=[(upload.name, source)], asynchronous=True)
+            sources=[(upload.name, source)], asynchronous=True, partner_credential=partner_credential)
         receipt = receipts[0]
         SubmissionKey.objects.create(digest=digest, receipt=receipt)
     return receipt, False
@@ -70,9 +69,8 @@ def retry_blocker(receipt) -> str:
     if receipt.client.status != "ACTIVE" or receipt.client.stage == "offboarded":
         return "The client is not active."
     if receipt.partner_id:
-        partner = receipt.partner
-        if (not partner.active or partner.expires_at <= timezone.now()
-                or partner.client_id != receipt.client_id or receipt.workflow not in partner.workflows):
+        from .partner_auth import accepted_authorization_valid
+        if not accepted_authorization_valid(receipt):
             return "The original partner authorization is no longer valid."
     return ""
 

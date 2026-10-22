@@ -1,0 +1,47 @@
+# Dedicated partner hostname. Review topology before installing; this assumes
+# Nginx terminates client TLS directly and Gunicorn listens on loopback TCP.
+# Replace every example hostname/path. Include at nginx http{} level.
+limit_req_zone $binary_remote_addr zone=partner_intake:10m rate=5r/s;
+log_format partner_safe '$time_iso8601 $status $request_method $uri $request_time';
+
+server {
+    listen 443 ssl;
+    server_name partners.example.com;
+    ssl_certificate /etc/filex-pki/server-fullchain.pem;
+    ssl_certificate_key /etc/filex-pki/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_client_certificate /etc/filex-pki/partner-ca-bundle.pem;
+    ssl_crl /etc/filex-pki/partner-crls.pem;
+    ssl_verify_client on;
+    ssl_verify_depth 3;
+    # Recheck certificates on new handshakes rather than resume old sessions.
+    ssl_session_cache off;
+    ssl_session_tickets off;
+    keepalive_timeout 15s;
+    client_max_body_size 128m;
+    client_body_timeout 60s;
+    access_log /var/log/nginx/filex-partner-access.log partner_safe;
+
+    location ~ ^/api/v1/transfers(?:/|$) {
+        limit_req zone=partner_intake burst=20 nodelay;
+        limit_req_status 429;
+        proxy_request_buffering on;
+        proxy_connect_timeout 5s;
+        proxy_send_timeout 120s;
+        proxy_read_timeout 120s;
+        proxy_pass http://127.0.0.1:8000;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        # No cookie or bearer fallback on this machine-only listener.
+        proxy_set_header Authorization "";
+        proxy_set_header Cookie "";
+        proxy_set_header X-FileX-Client-Verify $ssl_client_verify;
+        proxy_set_header X-FileX-Client-Cert $ssl_client_escaped_cert;
+        # Root-owned 0600 file containing ONE directive:
+        # proxy_set_header X-FileX-Gateway "<same random secret as Django env>";
+        include /etc/nginx/secrets/filex-partner-gateway.conf;
+    }
+    location / { return 404; }
+}

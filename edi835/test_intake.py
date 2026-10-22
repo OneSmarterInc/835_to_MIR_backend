@@ -42,6 +42,11 @@ class IntakeTests(TestCase):
         self.partner = IntakePartner.objects.create(client=self.tenant, name="Synthetic partner",
             token_digest=hashlib.sha256(b"synthetic-secret").hexdigest(), workflows=["837"],
             expires_at=timezone.now() + timedelta(days=1))
+        from .models import PartnerCredential, PartnerPermission
+        PartnerCredential.objects.create(id=self.partner.pk, partner=self.partner, kind="TOKEN",
+            digest=self.partner.token_digest, expires_at=self.partner.expires_at)
+        PartnerPermission.objects.bulk_create([PartnerPermission(partner=self.partner, action=action, workflow=workflow)
+            for action in ("SUBMIT", "READ", "DOWNLOAD") for workflow in ("835", "837")])
         self.authorization = f"Bearer {self.partner.pk}.synthetic-secret"
 
     def register(self, raw=b"source", **kwargs):
@@ -158,8 +163,7 @@ class IntakeTests(TestCase):
         self.assertEqual(receipt.dispatch.state, "FAILED")
         self.assertFalse(EDI837File.objects.exists())
         self.partner.active = True
-        self.partner.expires_at = timezone.now() - timedelta(seconds=1)
-        self.partner.save()
+        self.partner.credentials.update(not_before=timezone.now() - timedelta(days=2), expires_at=timezone.now() - timedelta(seconds=1))
         self.assertEqual(self.submit().status_code, 401)
 
     def test_workflow_restriction_and_tenant_status_scope(self):
@@ -398,6 +402,16 @@ call_command("migrate", "edi835", "0065_transfer_api_contract", verbosity=0)
 from edi835.models import SubmissionKey, TransferRetry
 assert SubmissionKey.objects.count() == 0
 assert TransferRetry.objects.count() == 0
+assert InboundTransfer.objects.count() == 4
+apps = MigrationExecutor(connection).loader.project_state([("edi835", "0065_transfer_api_contract")]).apps
+from datetime import timedelta
+partner = apps.get_model("edi835", "IntakePartner").objects.create(client_id=client.pk, name="Legacy partner", token_digest="b" * 64,
+    workflows=["835", "837"], expires_at=timezone.now() + timedelta(days=1))
+call_command("migrate", "edi835", "0066_partner_security", verbosity=0)
+call_command("migrate", "edi835", "0066_partner_security", verbosity=0)
+from edi835.models import PartnerCredential, PartnerPermission
+assert PartnerCredential.objects.get(pk=partner.pk).digest == partner.token_digest
+assert PartnerPermission.objects.filter(partner_id=partner.pk).count() == 6
 assert InboundTransfer.objects.count() == 4
 MigrationExecutor(connection).loader.check_consistent_history(connection)
 '''

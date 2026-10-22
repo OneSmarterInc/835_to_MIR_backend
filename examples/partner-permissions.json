@@ -1,0 +1,7 @@
+{
+  "permissions": [
+    {"action": "SUBMIT", "workflow": "837", "channel": "PARTNER"},
+    {"action": "READ", "workflow": "837", "channel": "PARTNER"},
+    {"action": "DOWNLOAD", "workflow": "837", "channel": "PARTNER"}
+  ]
+}

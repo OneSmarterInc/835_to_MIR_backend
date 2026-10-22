@@ -22,7 +22,7 @@ class BatchDispatch(models.Model):
 
 
 class IntakePartner(models.Model):
-    """A revocable, expiring machine credential restricted to one client."""
+    """Stable machine identity; credentials rotate without changing ownership."""
 
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
@@ -32,6 +32,64 @@ class IntakePartner(models.Model):
     active = models.BooleanField(default=True)
     expires_at = models.DateTimeField()
     created_at = models.DateTimeField(auto_now_add=True)
+    auth_mode = models.CharField(max_length=10, choices=[("TOKEN", "Token"), ("MTLS", "mTLS")], default="TOKEN")
+    routing_required = models.BooleanField(default=False)
+
+
+class PartnerCredential(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    partner = models.ForeignKey(IntakePartner, on_delete=models.CASCADE, related_name="credentials")
+    kind = models.CharField(max_length=12, choices=[("TOKEN", "Token"), ("CERTIFICATE", "Certificate")])
+    # SHA-256 of the token secret or DER leaf certificate; no private keys stored.
+    digest = models.CharField(max_length=64, unique=True)
+    reference = models.CharField(max_length=150, blank=True)
+    not_before = models.DateTimeField(default=timezone.now)
+    expires_at = models.DateTimeField()
+    active = models.BooleanField(default=True)
+    revoked_at = models.DateTimeField(null=True, blank=True)
+    revocation_reason = models.CharField(max_length=500, blank=True)
+    replaces = models.ForeignKey("self", null=True, blank=True, on_delete=models.SET_NULL)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.CheckConstraint(condition=models.Q(expires_at__gt=models.F("not_before")), name="partner_credential_dates"),
+            models.CheckConstraint(condition=models.Q(kind__in=["TOKEN", "CERTIFICATE"]), name="partner_credential_kind"),
+        ]
+
+
+class PartnerPermission(models.Model):
+    partner = models.ForeignKey(IntakePartner, on_delete=models.CASCADE, related_name="permissions")
+    action = models.CharField(max_length=10, choices=[(v, v) for v in ("SUBMIT", "READ", "DOWNLOAD")])
+    workflow = models.CharField(max_length=3, choices=[("835", "835"), ("837", "837")])
+    channel = models.CharField(max_length=10, default="PARTNER", choices=[("PARTNER", "Partner API")])
+
+    class Meta:
+        constraints = [models.UniqueConstraint(fields=["partner", "action", "workflow", "channel"], name="partner_permission_unique")]
+
+
+class PartnerRoute(models.Model):
+    partner = models.ForeignKey(IntakePartner, on_delete=models.CASCADE, related_name="routes")
+    client = models.ForeignKey("accounts.Client", on_delete=models.PROTECT)
+    workflow = models.CharField(max_length=3, choices=[("835", "835"), ("837", "837")])
+    # Exact, qualified envelope identifiers. Clinical data never decides routing.
+    isa_sender_qualifier = models.CharField(max_length=2)
+    isa_sender = models.CharField(max_length=15)
+    isa_receiver_qualifier = models.CharField(max_length=2)
+    isa_receiver = models.CharField(max_length=15)
+    isa_version = models.CharField(max_length=5)
+    gs_sender = models.CharField(max_length=15)
+    gs_receiver = models.CharField(max_length=15)
+    gs_version = models.CharField(max_length=35)
+    st_version = models.CharField(max_length=35, blank=True)
+    active = models.BooleanField(default=True)
+    approved_by = models.CharField(max_length=255)
+    approved_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        constraints = [models.UniqueConstraint(
+            fields=["partner", "workflow", "isa_sender_qualifier", "isa_sender", "isa_receiver_qualifier", "isa_receiver", "isa_version", "gs_sender", "gs_receiver", "gs_version", "st_version"],
+            condition=models.Q(active=True), name="partner_active_route_unique")]
 
 
 class InboundTransfer(models.Model):
@@ -43,6 +101,8 @@ class InboundTransfer(models.Model):
     actor = models.ForeignKey("accounts.User", null=True, on_delete=models.SET_NULL)
     actor_reference = models.CharField(max_length=100)
     partner = models.ForeignKey(IntakePartner, null=True, on_delete=models.PROTECT)
+    partner_credential = models.ForeignKey(PartnerCredential, null=True, on_delete=models.SET_NULL)
+    partner_authorization = models.JSONField(default=dict)
     channel = models.CharField(max_length=20)
     workflow = models.CharField(max_length=30)
     original_filename = models.CharField(max_length=255)

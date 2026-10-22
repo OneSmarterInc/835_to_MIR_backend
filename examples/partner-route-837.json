@@ -1,0 +1,12 @@
+{
+  "workflow": "837",
+  "isa_sender_qualifier": "ZZ",
+  "isa_sender": "SYNTHETIC",
+  "isa_receiver_qualifier": "ZZ",
+  "isa_receiver": "TESTONLY",
+  "isa_version": "00501",
+  "gs_sender": "SYNTHETIC",
+  "gs_receiver": "TESTONLY",
+  "gs_version": "005010X222A1",
+  "st_version": "005010X222A1"
+}

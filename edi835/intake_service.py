@@ -17,7 +17,7 @@ current_transfer = ContextVar("current_intake_transfer", default=None)
 
 
 def register_sources(*, client, actor, channel, workflow, sources, partner=None,
-                     idempotency_key=None, asynchronous=False, max_bytes=None):
+                     idempotency_key=None, asynchronous=False, max_bytes=None, partner_credential=None):
     """Finalize bytes, then atomically commit every receipt and its dispatch intent.
 
     On a DB rollback finalized objects remain private and unreferenced. They are
@@ -74,6 +74,25 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
             locked = Client.objects.select_for_update().get(pk=client.pk)
             if str(locked.stage).lower() == "offboarded":
                 raise ValueError("The selected client is offboarded.")
+        route_snapshots = {}
+        if partner:
+            from .models import IntakePartner, PartnerCredential
+            from .partner_auth import permitted
+            from .partner_routing import authorize_routes
+            partner = IntakePartner.objects.select_for_update().get(pk=partner.pk)
+            if not client or partner.client_id != client.pk or channel != "PARTNER" or not permitted(partner, "SUBMIT", workflow):
+                raise ValueError("Partner submission is not authorized.")
+            if partner_credential:
+                partner_credential = PartnerCredential.objects.select_for_update().get(pk=partner_credential.pk)
+                now = timezone.now()
+                if (partner_credential.partner_id != partner.pk or not partner_credential.active
+                        or partner_credential.revoked_at or not partner_credential.not_before <= now < partner_credential.expires_at
+                        or partner_credential.kind != ("CERTIFICATE" if partner.auth_mode == "MTLS" else "TOKEN")):
+                    raise ValueError("Partner credential is no longer valid.")
+            elif partner.auth_mode == "MTLS" or partner.routing_required:
+                raise ValueError("Authenticated partner credential required.")
+            for _, source in stored:
+                route_snapshots[source.key] = authorize_routes(partner, workflow, source)
         if key_digest:
             existing = InboundTransfer.objects.select_related("dispatch").filter(idempotency_digest=key_digest).first()
             if existing:
@@ -125,6 +144,10 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
                     scope_key=duplicate_job["scope_key"], priority=0, payload=duplicate_job)
             receipts.append(InboundTransfer.objects.create(
                 client=client, actor_id=actor_id, actor_reference=actor_ref, partner=partner,
+                partner_credential=partner_credential,
+                partner_authorization=({"credential_id": str(partner_credential.pk),
+                    "credential_digest": partner_credential.digest, "mode": partner.auth_mode,
+                    "routes": route_snapshots.get(source.key, [])} if partner_credential else {}),
                 channel=channel, workflow=workflow, original_filename=name,
                 storage_key=source.key, checksum=source.checksum, byte_count=source.size,
                 idempotency_digest=key_digest, received_started_at=started, dispatch=target,

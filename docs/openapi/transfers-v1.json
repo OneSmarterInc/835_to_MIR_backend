@@ -1,9 +1,9 @@
 {
-  "openapi": "3.0.3",
+  "openapi": "3.1.0",
   "info": {
     "title": "FileX Transfer API",
-    "version": "1.0.0",
-    "description": "202 confirms durable source, receipt, submission key and dispatch commit, not validation or processing. All timestamps are UTC."
+    "version": "1.1.0",
+    "description": "202 confirms durable source, receipt, submission key and dispatch commit, not validation or processing. All timestamps are UTC. Partner identity survives credential rotation. mTLS is served only on the separately provisioned partner origin; internal gateway headers are never client API parameters."
   },
   "servers": [
     {
@@ -11,6 +11,9 @@
     }
   ],
   "security": [
+    {
+      "partnerMTLS": []
+    },
     {
       "partnerBearer": []
     },
@@ -1063,13 +1066,17 @@
       "partnerBearer": {
         "type": "http",
         "scheme": "bearer",
-        "description": "Expiring UUID.secret credential, restricted by client/workflow; HTTPS required."
+        "description": "Rotatable credential UUID.secret for TOKEN-mode partners only; stable partner UUID scopes receipt ownership and submission keys. HTTPS and explicit permissions required."
       },
       "staffSession": {
         "type": "apiKey",
         "in": "cookie",
         "name": "sessionid",
         "description": "Active staff session, MFA and client permission. Staff POSTs also require X-CSRFToken."
+      },
+      "partnerMTLS": {
+        "type": "mutualTLS",
+        "description": "Approved leaf certificate on the dedicated partner TLS gateway. Stable partner/client/workflow/action permissions apply. No bearer or session fallback for mTLS identities."
       }
     },
     "schemas": {
@@ -1139,9 +1146,11 @@
             "format": "int64"
           },
           "canonical_receipt_id": {
-            "type": "string",
-            "format": "uuid",
-            "nullable": true
+            "type": [
+              "string",
+              "null"
+            ],
+            "format": "uuid"
           },
           "reused": {
             "type": "boolean"
@@ -1184,8 +1193,10 @@
                 "type": "string"
               },
               "transaction_set_count": {
-                "type": "integer",
-                "nullable": true
+                "type": [
+                  "integer",
+                  "null"
+                ]
               },
               "retry_eligible": {
                 "type": "boolean"

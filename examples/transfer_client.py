@@ -1,6 +1,7 @@
 """Python 3.12+ streaming partner client; no third-party dependencies.
 
-Set FILEX_BASE_URL and FILEX_PARTNER_TOKEN in the environment.
+Set FILEX_BASE_URL and either FILEX_PARTNER_TOKEN or FILEX_CLIENT_CERT +
+FILEX_CLIENT_KEY. Optional FILEX_CA_BUNDLE verifies the server; never disable TLS checks.
 Supply and retain --key before the first upload; reuse it after uncertainty.
 """
 import argparse
@@ -14,13 +15,19 @@ from urllib.parse import urlsplit
 
 
 class PartnerClient:
-    def __init__(self, base_url: str, token: str, timeout: int = 60):
+    def __init__(self, base_url: str, token: str = "", timeout: int = 60, *,
+                 certificate: str | None = None, private_key: str | None = None, ca_bundle: str | None = None):
         url = urlsplit(base_url)
         if (url.scheme != "https" or not url.hostname or url.username or url.password
                 or url.query or url.fragment or url.path not in {"", "/"}):
             raise ValueError("FILEX_BASE_URL must be an HTTPS origin without credentials or a path.")
-        if not token or any(ord(c) < 33 or ord(c) > 126 for c in token):
-            raise ValueError("Set FILEX_PARTNER_TOKEN to your issued credential.")
+        if bool(certificate) != bool(private_key) or bool(token) == bool(certificate):
+            raise ValueError("Configure either a token OR a client certificate and private key.")
+        if any(ord(c) < 33 or ord(c) > 126 for c in token):
+            raise ValueError("Invalid token format.")
+        self.context = ssl.create_default_context(cafile=ca_bundle)
+        if certificate:
+            self.context.load_cert_chain(certificate, private_key)
         self.host, self.port, self.token, self.timeout = url.hostname, url.port, token, timeout
 
     def request(self, path: str, *, key: str | None = None, file: Path | None = None,
@@ -28,8 +35,10 @@ class PartnerClient:
         if key is not None and (not 1 <= len(key) <= 200 or any(ord(c) < 33 or ord(c) > 126 for c in key)):
             raise ValueError("Use a printable non-space submission key, at most 200 characters.")
         connection = http.client.HTTPSConnection(self.host, self.port, timeout=self.timeout,
-                                                 context=ssl.create_default_context())
-        headers = {"Authorization": f"Bearer {self.token}", "Accept": "application/json"}
+                                                 context=self.context)
+        headers = {"Accept": "application/json"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
         if key:
             headers["Idempotency-Key"] = key
         try:
@@ -93,7 +102,9 @@ def main() -> int:
     if args.file and not args.workflow:
         parser.error("--workflow is required for upload")
     try:
-        client = PartnerClient(os.environ.get("FILEX_BASE_URL", ""), os.environ.get("FILEX_PARTNER_TOKEN", ""))
+        client = PartnerClient(os.environ.get("FILEX_BASE_URL", ""), os.environ.get("FILEX_PARTNER_TOKEN", ""),
+            certificate=os.environ.get("FILEX_CLIENT_CERT"), private_key=os.environ.get("FILEX_CLIENT_KEY"),
+            ca_bundle=os.environ.get("FILEX_CA_BUNDLE"))
         path = "/api/v1/transfers"
         if args.recover:
             path += "/recover"
