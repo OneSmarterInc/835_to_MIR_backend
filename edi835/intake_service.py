@@ -135,10 +135,7 @@ def register_sources(*, client, actor, channel, workflow, sources, partner=None,
                     # A failed, rolled-back save may be submitted again safely.
                     if not AnalysisUpload.objects.filter(client=client, kind=workflow[-3:],
                                                          content_sha256=source.checksum).exists():
-                        # Deleted Analysis data must not be blocked by retained
-                        # historical intake receipts. Other workflows retain
-                        # their normal durable deduplication behavior.
-                        candidates = candidates.none()
+                        candidates = candidates.exclude(state="FAILED")
                 canonical = (candidates.exclude(state="FAILED").order_by("received_at", "pk").first()
                              or candidates.order_by("received_at", "pk").first())
             target = dispatch
