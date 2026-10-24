@@ -36,6 +36,7 @@ def certificate(*, expired=False, ca=False, client_usage=True):
 
 
 @override_settings(INTAKE_PARTNER_ENABLED=True, MFA_ENFORCEMENT_ENABLED=False,
+    INTAKE_ENFORCE_PARTNER_ROUTES=True,
     INTAKE_MTLS_ENABLED=True, INTAKE_MTLS_GATEWAY_SECRET="synthetic-gateway-secret-never-use-in-production",
     INTAKE_MTLS_TRUSTED_PEERS=["127.0.0.1"])
 class PartnerSecurityTests(TestCase):
@@ -187,6 +188,63 @@ class PartnerSecurityTests(TestCase):
         route = self.partner.routes.get()
         self.change("RETIRE_ROUTE", {"route_id": route.pk})
         self.assertEqual(self.submit().status_code, 400)
+
+    @override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=False)
+    def test_informational_routes_do_not_block_either_upload_api_or_workflow(self):
+        self.partner.workflows = ["835", "837"]
+        self.partner.save(update_fields=["workflows"])
+        self.change("PERMISSIONS", {"permissions": [
+            {"action": "SUBMIT", "workflow": workflow} for workflow in ("835", "837")
+        ]})
+        for mode in ("MTLS", "TOKEN"):
+            self.change("POLICY", {"auth_mode": mode, "routing_required": True})
+            headers = self.headers() if mode == "MTLS" else {
+                "secure": True, "HTTP_AUTHORIZATION": "Bearer " + self.change("TOKEN")["token"]}
+            for route_state in ("different_client", "retired", "absent"):
+                if route_state == "different_client":
+                    PartnerRoute.objects.filter(partner=self.partner).update(client=self.other)
+                elif route_state == "retired":
+                    PartnerRoute.objects.filter(partner=self.partner).update(active=False)
+                else:
+                    PartnerRoute.objects.filter(partner=self.partner).delete()
+                for workflow, filename in (("837", "synthetic_claim.837"), ("835", "synthetic_payment.835")):
+                    raw = (settings.BASE_DIR / "examples" / filename).read_bytes()
+                    raw = raw.replace(b"SYNTHETIC", b"UNLISTEDX")
+                    for path in ("/api/v1/transfers", "/edi835/api/intake/partner/"):
+                        with self.subTest(mode=mode, route_state=route_state, workflow=workflow, path=path):
+                            response = self.client.post(path, {"workflow": workflow,
+                                "file": SimpleUploadedFile(filename, raw)},
+                                HTTP_IDEMPOTENCY_KEY=f"{mode}-{route_state}-{workflow}-{path}", **headers)
+                            self.assertIn(response.status_code, (200, 202), response.content)
+                            receipt = InboundTransfer.objects.get(pk=response.json()["receipt_id"])
+                            self.assertEqual(receipt.client_id, self.tenant.pk)
+                            self.assertEqual(receipt.partner_authorization["routes"], [])
+                            self.assertIsNotNone(receipt.partner_credential_id)
+
+    @override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=False)
+    def test_informational_mode_preserves_auth_permissions_scope_and_validation(self):
+        self.assertEqual(self.submit(HTTP_X_FILEX_GATEWAY="wrong").status_code, 401)
+        malformed = self.submit(raw=self.raw[:-20])
+        self.assertEqual(malformed.status_code, 400)
+        self.assertNotIn("approved route", malformed.json()["error"])
+        self.assertEqual(self.submit(raw=self.raw.replace(b"ST*837", b"ST*835")).status_code, 400)
+        response = self.client.post("/api/v1/transfers", {"workflow": "837",
+            "client_id": str(self.other.pk), "file": SimpleUploadedFile("claim.837", self.raw)},
+            HTTP_IDEMPOTENCY_KEY="wrong-client", **self.headers())
+        self.assertEqual(response.status_code, 404)
+        self.change("PERMISSIONS", {"permissions": []})
+        self.assertEqual(self.submit().status_code, 403)
+        self.assertFalse(InboundTransfer.objects.exists())
+
+    @override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=False)
+    def test_readiness_allows_missing_informational_routes(self):
+        PartnerRoute.objects.filter(partner=self.partner).delete()
+        output = io.StringIO()
+        call_command("check_partner_security", require_mtls=True, stdout=output)
+        self.assertIn("route matching is disabled", output.getvalue())
+        with override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=True):
+            with self.assertRaises(CommandError):
+                call_command("check_partner_security", require_mtls=True, stdout=io.StringIO())
 
     def test_management_is_audited_and_never_records_tokens_or_certificates(self):
         token = self.change("TOKEN")["token"]

@@ -17,6 +17,7 @@ from .models import (
 from .intake_control import dashboard, control_audit, eligible_artifacts, partner_storage_totals
 from .intake_access import permitted_staff
 from .partner_management import create_partner, change_partner, validate_reason
+from .partner_routing import route_enforcement_enabled
 
 
 def response(data, status=200):
@@ -36,6 +37,7 @@ def partner_value(partner, stored_bytes):
         "client_ids": [*([str(partner.client_id)] if partner.primary_client_enabled else []), *[str(c.pk) for c in partner.additional_clients.all()]],
         "active": partner.active, "workflows": partner.workflows, "auth_mode": partner.auth_mode,
         "routing_required": partner.routing_required,
+        "route_enforcement_enabled": route_enforcement_enabled(),
         "requests_per_minute": partner.requests_per_minute, "concurrent_jobs": partner.concurrent_jobs,
         "storage_limit_bytes": partner.storage_limit_bytes, "stored_bytes": stored_bytes,
         "permissions": [{key: getattr(p, key) for key in ("action", "workflow", "channel")} for p in partner.permissions.all()],
@@ -130,7 +132,7 @@ def mutate(request, data):
             # mutate is atomic: a failed route rolls back the entire approval and its audits.
             approved = [change_partner(data.get("partner_id"), action="ROUTE", actor=actor,
                 reason=reason, data={**route, "client_id": payload.get("client_id")}) for route in routes]
-            return {"routes": approved, "message": f"Approved {len(approved)} envelope routes and recorded their audit history."}
+            return {"routes": approved, "message": f"Saved {len(approved)} envelope route records and their audit history."}
         if operation == "CERTIFICATE":
             pem = payload.get("certificate")
             if not isinstance(pem, str) or len(pem) > 16384:

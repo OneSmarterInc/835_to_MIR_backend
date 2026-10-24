@@ -3,7 +3,15 @@
 This checks every interchange/group/set, not claim identifiers or filenames.
 Existing full validators and converter rules still run in the worker.
 """
+from django.conf import settings
+
 from .intake_storage import source_path
+
+
+def route_enforcement_enabled() -> bool:
+    """Header allow-list matching is under development and disabled by default."""
+    return getattr(settings, "INTAKE_ENFORCE_PARTNER_ROUTES", False)
+
 
 ROUTE_FIELDS = ("isa_sender_qualifier", "isa_sender", "isa_receiver_qualifier",
                 "isa_receiver", "isa_version", "gs_sender", "gs_receiver", "gs_version", "st_version")
@@ -11,7 +19,10 @@ ROUTE_FIELDS = ("isa_sender_qualifier", "isa_sender", "isa_receiver_qualifier",
 
 class EnvelopeError(ValueError):
     def __init__(self):
-        super().__init__("Partner routing requires complete, consistent X12 envelopes and an approved route for every transaction set.")
+        message = "Partner uploads require complete, consistent X12 envelopes for the selected workflow."
+        if route_enforcement_enabled():
+            message += " Every transaction set must match an approved route."
+        super().__init__(message)
 
 
 class Reader:
@@ -109,6 +120,13 @@ def envelope_routes(stream, workflow):
 
 def authorize_routes(partner, workflow, source, client=None):
     if partner.auth_mode != "MTLS" and not partner.routing_required:
+        return []
+    if not route_enforcement_enabled():
+        # Saved routes are informational while matching is under development.
+        # Still validate envelope structure/workflow; never invent approval proof.
+        with source_path(source.key).open("rb") as stream:
+            for _ in envelope_routes(stream, workflow):
+                pass
         return []
     routes = {}
     for route in partner.routes.filter(active=True, workflow=workflow):

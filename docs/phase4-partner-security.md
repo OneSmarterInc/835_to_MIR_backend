@@ -1,5 +1,30 @@
 # Phase 4 partner identity and trusted gateway implementation
 
+## Current route mode — 24 October 2026
+
+`INTAKE_ENFORCE_PARTNER_ROUTES` now defaults to `false`. Add route, manual
+entry, 835/837 envelope extraction and audited route storage remain available
+for reference. Missing, retired or mismatched saved routes do not reject partner
+uploads in this mode, including mTLS uploads. The admin UI reports "Details only
+— under development" and hides the ineffective per-partner enforcement checkbox.
+The readiness command reports this mode without requiring saved routes.
+
+This disables only the saved-header allow-list check. HTTPS, certificate/token
+authentication, explicit client authorization, workflow permissions, quotas,
+idempotency and file validation still apply. Envelope structure/workflow checks
+still run where they previously ran. Receipt route proofs are empty when matching
+is disabled; saved records must not be interpreted as verified submission routes.
+The caller's authorized `client_id` determines client assignment; headers are no
+longer checked against that assignment. Multi-client integrations must supply the
+correct client ID explicitly.
+
+No migration or dependency change is required. Deploy both repositories and
+restart API and worker services. Existing route records and per-partner routing
+preferences are retained. A future deliberate server configuration change to
+`INTAKE_ENFORCE_PARTNER_ROUTES=true` restores the tested enforcement path; review
+all saved routes before doing so. The enforcement descriptions below apply only
+when that switch is enabled.
+
 Implemented 22 October 2026. Additive migration: `edi835.0066_partner_security`.
 Production activation is a separate infrastructure change; it has not been performed.
 

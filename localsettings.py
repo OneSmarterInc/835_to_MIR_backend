@@ -417,6 +417,8 @@ SFTP_KNOWN_HOSTS_FILE = os.getenv("SFTP_KNOWN_HOSTS_FILE", "").strip()
 SFTP_STABILITY_SECONDS = max(1, int(os.getenv("SFTP_STABILITY_SECONDS", "30")))
 SFTP_SOURCE_LEASE_SECONDS = max(30, int(os.getenv("SFTP_SOURCE_LEASE_SECONDS", "300")))
 
+# Route extraction/storage remain available, but header matching is under development.
+INTAKE_ENFORCE_PARTNER_ROUTES = os.environ.get("INTAKE_ENFORCE_PARTNER_ROUTES", "false").lower() == "true"
 # Enable only after the dedicated partner TLS gateway is verified.
 INTAKE_MTLS_ENABLED = os.environ.get("INTAKE_MTLS_ENABLED", "false").lower() == "true"
 INTAKE_MTLS_GATEWAY_SECRET = os.environ.get("INTAKE_MTLS_GATEWAY_SECRET", "")

@@ -47,6 +47,19 @@ class IntakeControlTests(TestCase):
         self.assertEqual(response.status_code, 200, response.content)
         self.assertNotIn('synthetic-secret', response.content.decode())
 
+    def test_partner_metadata_reports_route_enforcement_switch(self):
+        for enabled in (False, True):
+            with override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=enabled):
+                response = self.client.get(self.url, {'tab': 'partners'})
+                self.assertIs(response.json()['rows'][0]['route_enforcement_enabled'], enabled)
+
+    def test_authentication_edit_preserves_saved_routing_preference(self):
+        self.partner.routing_required = False
+        self.partner.save(update_fields=['routing_required'])
+        self.post('partner', partner_id=str(self.partner.pk), operation='POLICY', data={'auth_mode': 'TOKEN'})
+        self.partner.refresh_from_db()
+        self.assertFalse(self.partner.routing_required)
+
     def preview(self, raw, client=None):
         return (client or self.client).post(self.url, {'action': 'route_preview',
             'partner_id': str(self.partner.pk), 'file': SimpleUploadedFile('extensionless', raw)})
@@ -308,6 +321,7 @@ class IntakeControlTests(TestCase):
         receipt.refresh_from_db()
         self.assertEqual(receipt.client_id, self.tenant.pk)
 
+    @override_settings(INTAKE_ENFORCE_PARTNER_ROUTES=True)
     def test_multi_client_envelope_route_must_match_requested_client(self):
         from django.conf import settings
         from .partner_routing import ROUTE_FIELDS, envelope_routes, authorize_routes, EnvelopeError

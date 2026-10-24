@@ -7,6 +7,7 @@ from django.core.management.base import BaseCommand, CommandError
 from django.utils import timezone
 
 from edi835.models import IntakePartner
+from edi835.partner_routing import route_enforcement_enabled
 
 
 class Command(BaseCommand):
@@ -35,6 +36,8 @@ class Command(BaseCommand):
             except ValueError:
                 failures.append("Configure explicit gateway peer IP addresses, never a wildcard or CIDR.")
         now = timezone.now()
+        if not route_enforcement_enabled():
+            self.stdout.write("Envelope route matching is disabled (under development); saved routes are informational.")
         for partner in IntakePartner.objects.filter(active=True, auth_mode="MTLS").prefetch_related("credentials", "permissions", "routes"):
             credentials = [c for c in partner.credentials.all() if c.kind == "CERTIFICATE" and c.active
                            and not c.revoked_at and c.not_before <= now < c.expires_at]
@@ -43,7 +46,7 @@ class Command(BaseCommand):
             elif max(c.expires_at for c in credentials) < now + timedelta(days=14):
                 self.stderr.write(f"WARNING partner {partner.pk}: certificates expire within 14 days.")
             for permission in partner.permissions.all():
-                if permission.action == "SUBMIT" and permission.workflow in partner.workflows and not any(r.active and r.workflow == permission.workflow
+                if route_enforcement_enabled() and permission.action == "SUBMIT" and permission.workflow in partner.workflows and not any(r.active and r.workflow == permission.workflow
                         and r.client_id == partner.client_id for r in partner.routes.all()):
                     failures.append(f"Partner {partner.pk}: SUBMIT {permission.workflow} has no approved route.")
         if failures:

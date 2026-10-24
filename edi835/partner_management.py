@@ -59,9 +59,9 @@ def change_partner(partner_id, *, action, actor, reason, data=None):
         partner.save(update_fields=["active"])
     elif action == "POLICY":
         mode = data.get("auth_mode", partner.auth_mode)
-        if mode not in {"TOKEN", "MTLS"} or not isinstance(data.get("routing_required", True), bool):
+        if mode not in {"TOKEN", "MTLS"} or not isinstance(data.get("routing_required", partner.routing_required), bool):
             raise ValueError("Invalid authentication policy.")
-        partner.auth_mode, partner.routing_required = mode, data.get("routing_required", True)
+        partner.auth_mode, partner.routing_required = mode, data.get("routing_required", partner.routing_required)
         if mode == "MTLS" and not partner.credentials.filter(kind="CERTIFICATE", active=True,
                 revoked_at__isnull=True, not_before__lte=timezone.now(), expires_at__gt=timezone.now()).exists():
             raise ValueError("Register a currently valid client certificate before requiring mTLS.")
