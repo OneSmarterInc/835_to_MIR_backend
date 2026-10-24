@@ -1267,6 +1267,17 @@ class ClientPortalAction(models.Model):
         ]
 
 
+class ClaimAdjustmentReason(models.Model):
+    """Shared CAS reason-code reference, seeded from the supplied code list."""
+
+    code = models.CharField(max_length=10, primary_key=True)
+    description = models.TextField()
+    source_metadata = models.TextField(blank=True, default="")
+
+    class Meta:
+        db_table = "claim_adjustment_reason"
+
+
 class Analysis835Claim(models.Model):
     """Analysis-only mirror of EDI835Claim; never linked to live intake tables."""
 

@@ -13,7 +13,7 @@ from django.test.utils import CaptureQueriesContext
 from accounts.models import Client, User
 from .analysis_queries import claim_detail, comparison_csv, comparison_page, query_options
 from .client_portal_analysis import analysis_upload
-from .models import AnalysisClaim, AnalysisClaimRejection, AnalysisUpload, Analysis835Claim
+from .models import AnalysisClaim, AnalysisClaimRejection, AnalysisUpload, Analysis835Claim, ClaimAdjustmentReason
 
 
 class AnalysisQueryTests(TestCase):
@@ -47,6 +47,13 @@ class AnalysisQueryTests(TestCase):
         return analysis_upload(request)
 
     def test_denial_codes_include_claim_and_service_cas_without_tenant_leakage(self):
+        from importlib import import_module
+        from django.apps import apps
+        seed = import_module("edi835.migrations.0070_claim_adjustment_reasons").seed_reasons
+        from types import SimpleNamespace
+        seed(apps, SimpleNamespace(connection=connection))
+        seed(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(ClaimAdjustmentReason.objects.count(), 407)
         self.upload("837", [("CAS-CLAIM", "100"), ("MISSING", "100")])
         source = self.upload("835", [(" cas-claim ", "100", "0", "0")])
         source.normalized_835_claims.update(segment_data={
@@ -59,10 +66,18 @@ class AnalysisQueryTests(TestCase):
         foreign.normalized_835_claims.update(segment_data={"segments": ["CAS*OA*23*100"]})
         row = self.page()["rows"][0]
         self.assertEqual(row["denial_codes"], ["CO-45", "CO-97", "PR-1"])
+        self.assertEqual(row["denial_reasons"][-1], {"code": "PR-1", "reason": "Deductible Amount"})
+        self.assertEqual(row["denial_reasons"][0]["reason"], ClaimAdjustmentReason.objects.get(pk="45").description)
         self.assertEqual(claim_detail(self.client_record, "CAS-CLAIM")["denial_codes"], row["denial_codes"])
         self.assertEqual(self.page(category="837-only")["rows"][0]["denial_codes"], [])
         source.normalized_835_claims.update(segment_data={})
         self.assertEqual(self.page()["rows"][0]["denial_codes"], [])
+        source.normalized_835_claims.update(segment_data={"segments": ["CAS*CO*B11*10", "CAS*OA*99999*90"]})
+        reasons = self.page()["rows"][0]["denial_reasons"]
+        self.assertEqual(reasons, [
+            {"code": "CO-B11", "reason": ClaimAdjustmentReason.objects.get(pk="B11").description},
+            {"code": "OA-99999", "reason": None},
+        ])
 
     def test_signed_comparisons_unknowns_and_complete_group_pagination(self):
         self.upload("837", [("MATCH", "657"), ("BILLED", "100"), ("ALLOWED", "657"), ("SIGNED", "100"),

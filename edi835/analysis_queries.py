@@ -14,7 +14,7 @@ from django.db.models import Count
 from django.db.models.functions import Trim, Upper
 
 from accounts.models import Client
-from .models import AnalysisClaim, AnalysisUpload
+from .models import AnalysisClaim, AnalysisUpload, ClaimAdjustmentReason
 
 
 AMOUNTS = {
@@ -214,8 +214,8 @@ def dictionaries(cursor, rows):
 def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
     """Read CAS codes for the visible claims only, including service-level CAS.
 
-    Keep the adjustment group with each reason code; descriptions will be added
-    separately. Existing normalized uploads work without reprocessing.
+    Keep the adjustment group for display, but resolve the reason independently
+    of that group. Existing normalized uploads work without reprocessing.
     """
     by_number = {row["claim"]: set() for row in rows}
     if not by_number:
@@ -237,8 +237,14 @@ def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
                 reason = fields[index].strip()
                 if group and reason:
                     by_number[number].add(f"{group}-{reason}")
+    reason_codes = {code.split("-", 1)[1] for codes in by_number.values() for code in codes}
+    reasons = dict(ClaimAdjustmentReason.objects.filter(code__in=reason_codes).values_list("code", "description"))
     for row in rows:
         row["denial_codes"] = sorted(by_number[row["claim"]])
+        row["denial_reasons"] = [
+            {"code": code, "reason": reasons.get(code.split("-", 1)[1])}
+            for code in row["denial_codes"]
+        ]
 
 
 def selection(options: dict[str, Any]) -> str:
