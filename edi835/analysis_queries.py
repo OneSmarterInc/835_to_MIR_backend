@@ -10,11 +10,11 @@ from typing import Any
 from decimal import Decimal
 
 from django.db import connection
-from django.db.models import Count
+from django.db.models import Count, Q
 from django.db.models.functions import Trim, Upper
 
 from accounts.models import Client
-from .models import AnalysisClaim, AnalysisUpload, ClaimAdjustmentReason
+from .models import AnalysisClaim, AnalysisUpload, ClaimAdjustmentReason, RemittanceCodeCrosswalk
 
 
 AMOUNTS = {
@@ -218,6 +218,7 @@ def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
     of that group. Existing normalized uploads work without reprocessing.
     """
     by_number = {row["claim"]: set() for row in rows}
+    remarks = {number: set() for number in by_number}
     if not by_number:
         return
     records = (AnalysisClaim.objects.filter(upload__client=client, upload__kind="835")
@@ -230,6 +231,10 @@ def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
         separator = data.get("element_separator") or "*"
         for segment in data.get("segments", []):
             fields = segment.strip().split(separator)
+            remark_positions = ((2,) if fields[0] == "LQ" and len(fields) > 1 and fields[1] == "HE" else
+                                (5, 20, 21, 22, 23) if fields[0] == "MIA" else
+                                (3, 4, 5, 6, 7) if fields[0] == "MOA" else ())
+            remarks[number].update(fields[i].strip() for i in remark_positions if i < len(fields) and fields[i].strip())
             if fields[0] != "CAS" or len(fields) < 4:
                 continue
             group = fields[1].strip()
@@ -239,11 +244,35 @@ def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
                     by_number[number].add(f"{group}-{reason}")
     reason_codes = {code.split("-", 1)[1] for codes in by_number.values() for code in codes}
     reasons = dict(ClaimAdjustmentReason.objects.filter(code__in=reason_codes).values_list("code", "description"))
+    remark_codes = set().union(*remarks.values())
+    carc_descriptions, rarc_descriptions = {}, {}
+    references = RemittanceCodeCrosswalk.objects.filter(Q(carc_code__in=reason_codes) | Q(rarc_code__in=remark_codes)).order_by("source_row")
+    for reference in references:
+        for mapping, code, description in (
+            (carc_descriptions, reference.carc_code, reference.carc_description),
+            (rarc_descriptions, reference.rarc_code, reference.rarc_description),
+        ):
+            if code and description and description not in mapping.setdefault(code, []):
+                mapping[code].append(description)
+
+    def description(mapping, code, fallback=None):
+        variants = mapping.get(code, [])
+        if not variants:
+            return fallback
+        return variants[0] if len(variants) == 1 else "Source descriptions:\n" + "\n\n".join(variants)
     for row in rows:
         row["denial_codes"] = sorted(by_number[row["claim"]])
         row["denial_reasons"] = [
             {"code": code, "reason": reasons.get(code.split("-", 1)[1])}
             for code in row["denial_codes"]
+        ]
+        row["carc_codes"] = [
+            {"code": code, "description": description(carc_descriptions, code, reasons.get(code))}
+            for code in sorted({value.split("-", 1)[1] for value in row["denial_codes"]})
+        ]
+        row["rarc_codes"] = [
+            {"code": code, "description": description(rarc_descriptions, code)}
+            for code in sorted(remarks[row["claim"]])
         ]
 
 

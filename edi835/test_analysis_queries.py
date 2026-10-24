@@ -79,6 +79,36 @@ class AnalysisQueryTests(TestCase):
             {"code": "OA-99999", "reason": None},
         ])
 
+    def test_crosswalk_preserves_rows_and_only_resolves_observed_rarcs(self):
+        from importlib import import_module
+        from types import SimpleNamespace
+        from django.apps import apps
+        from .models import RemittanceCodeCrosswalk
+        migration = import_module("edi835.migrations.0071_remittance_code_crosswalk")
+        for _ in range(2):
+            migration.seed_crosswalk(apps, SimpleNamespace(connection=connection))
+        self.assertEqual(RemittanceCodeCrosswalk.objects.count(), 124)
+        for values in migration.ROWS:
+            saved = RemittanceCodeCrosswalk.objects.get(pk=values["source_row"])
+            self.assertTrue(all(getattr(saved, key) == value for key, value in values.items()))
+        self.upload("837", [("REMARK", "100")])
+        source = self.upload("835", [("REMARK", "100", "0", "0")])
+        source.normalized_835_claims.update(segment_data={"segments": ["CAS*CO*96*100"]})
+        self.assertEqual(self.page()["rows"][0]["rarc_codes"], [])
+        mia = ["MIA"] + [""] * 24
+        mia[5], mia[20], mia[23], mia[24] = "N30", "N23", "N95", "123.45"
+        source.normalized_835_claims.update(segment_data={"element_separator": "|", "segments": [
+            "CAS|CO|96|100", "LQ|HE|N643", "LQ|HE|N643", "LQ|RX|NOT-RARC",
+            "MOA|90|100|MA04|N99999", "|".join(mia)]})
+        row = self.page()["rows"][0]
+        self.assertEqual([item["code"] for item in row["carc_codes"]], ["96"])
+        self.assertEqual([item["code"] for item in row["rarc_codes"]], ["MA04", "N23", "N30", "N643", "N95", "N99999"])
+        self.assertIsNone(row["rarc_codes"][-1]["description"])
+        workbook = self.excel()
+        self.assertEqual(workbook["Mismatch amount"]["L4"].value, "\n".join(item["code"] for item in row["rarc_codes"]))
+        self.assertEqual(workbook["Mismatch amount"]["M4"].value, "\n".join(item["description"] or "—" for item in row["rarc_codes"]))
+        workbook.close()
+
     def test_signed_comparisons_unknowns_and_complete_group_pagination(self):
         self.upload("837", [("MATCH", "657"), ("BILLED", "100"), ("ALLOWED", "657"), ("SIGNED", "100"),
                             ("UNKNOWN", "100"), ("MISSING", "1"), ("CENTS", ".30")])
@@ -209,13 +239,13 @@ class AnalysisQueryTests(TestCase):
             is_mismatch = sheet.title == "Mismatch amount"
             self.assertEqual(tuple(cell.value for cell in sheet[3]), HEADERS + (DENIAL_HEADERS if is_mismatch else ()))
             self.assertEqual(sheet.max_row, 4)
-            self.assertEqual(sheet.max_column, 11 if is_mismatch else 9)
+            self.assertEqual(sheet.max_column, 13 if is_mismatch else 9)
             self.assertEqual(sheet.freeze_panes, "C4")
             self.assertFalse(sheet.sheet_view.showGridLines)
             self.assertTrue(all(cell.border.left.style == "thin" and cell.border.bottom.style == "thin"
                                 for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertIsNone(sheet["A1"].border.left.style)
-            self.assertEqual(sheet.auto_filter.ref, "A3:K4" if is_mismatch else "A3:I4")
+            self.assertEqual(sheet.auto_filter.ref, "A3:M4" if is_mismatch else "A3:I4")
             self.assertTrue(all(cell.fill.patternType is None for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
         matched = workbook["Matched amount"]
@@ -237,12 +267,13 @@ class AnalysisQueryTests(TestCase):
         source.normalized_835_claims.update(segment_data={"segments": ["CAS*PR*1*10", "CAS*OA*99999*90"]})
         workbook = self.excel(category="matched")
         mismatch = workbook["Mismatch amount"]
-        self.assertEqual([mismatch.cell(3, col).value for col in (10, 11)], ["Denial code", "Denial reason"])
-        self.assertEqual(mismatch["J4"].value, "OA-99999\nPR-1")
-        self.assertEqual(mismatch["K4"].value, "—\nDeductible Amount")
+        self.assertEqual([mismatch.cell(3, col).value for col in range(10, 14)], ["CARC code", "CARC description", "RARC code", "RARC description"])
+        self.assertEqual(mismatch["J4"].value, "1\n99999")
+        self.assertEqual(mismatch["K4"].value, "Deductible Amount\n—")
+        self.assertEqual(mismatch["L4"].value, "—")
         for name in ("Matched amount", "Missing in 835"):
             self.assertEqual(workbook[name].max_column, 9)
-            self.assertNotIn("Denial code", [cell.value for cell in workbook[name][3]])
+            self.assertNotIn("CARC code", [cell.value for cell in workbook[name][3]])
         workbook.close()
 
     def test_excel_exports_all_pages_search_tenant_boundary_and_literal_ids(self):

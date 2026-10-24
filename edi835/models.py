@@ -1267,6 +1267,21 @@ class ClientPortalAction(models.Model):
         ]
 
 
+class RemittanceCodeCrosswalk(models.Model):
+    """Reference rows, not evidence that a paired RARC occurred on a claim."""
+
+    source_row = models.PositiveIntegerField(primary_key=True)
+    cas_code = models.CharField(max_length=20)
+    carc_code = models.CharField(max_length=10, db_index=True)
+    carc_description = models.TextField()
+    rarc_code = models.CharField(max_length=20, blank=True, db_index=True)
+    rarc_description = models.TextField(blank=True)
+    source_metadata = models.JSONField(default=dict)
+
+    class Meta:
+        db_table = "remittance_code_crosswalk"
+
+
 class ClaimAdjustmentReason(models.Model):
     """Shared CAS reason-code reference, seeded from the supplied code list."""
 
