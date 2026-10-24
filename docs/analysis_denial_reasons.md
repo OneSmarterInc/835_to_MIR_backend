@@ -31,15 +31,16 @@ no arbitrary first-match description replaces them. The older 407-code reference
 remains the fallback for CARCs absent from the crosswalk.
 
 The mismatch table shows a separate CAS column (for example `CO-288`), followed
-by CARC and RARC code columns, with descriptions on hover
-and accessible labels for keyboard focus. Actual RARCs are read from LQ02 with
+by Denial reason and RARC code columns. Denial reasons display the resolved CARC
+descriptions directly; RARC descriptions appear on hover with accessible labels
+for keyboard focus. Actual RARCs are read from LQ02 with
 HE, MIA05/20/21/22/23, and MOA03 through MOA07, never inferred from the workbook's
 reference pairings. See the [Indiana Medicaid 835 guide](https://www.in.gov/medicaid/providers/files/modules/financial-transactions-and-remittance-advice.pdf).
 Unknown codes remain visible with an unavailable description. Old API denial
 fields remain for compatibility; new `carc_codes` and `rarc_codes` arrays contain
 code/description objects.
 
-Excel adds CAS, CARC code, CARC description, RARC code and RARC description only to
+Excel adds CAS, Denial reason, RARC code and RARC description only to
 Mismatch amount. Matched amount and Missing in 835 retain their existing columns.
 Descriptions follow code order with a dash for unknown descriptions. Lookups are
 batched per page/export batch, not per claim. Apply both migrations before serving

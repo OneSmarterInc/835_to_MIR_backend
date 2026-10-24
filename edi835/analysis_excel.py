@@ -28,8 +28,8 @@ HEADERS = (
 )
 SHEETS = ("Mismatch amount", "Matched amount", "Missing in 835")
 COLUMN_WIDTHS = (26, 24, 42, 19, 25, 28, 16, 42, 52)
-DENIAL_HEADERS = ("CAS", "CARC code", "CARC description", "RARC code", "RARC description")
-DENIAL_WIDTHS = (18, 18, 80, 18, 80)
+DENIAL_HEADERS = ("CAS", "Denial reason", "RARC code", "RARC description")
+DENIAL_WIDTHS = (18, 80, 18, 80)
 CURRENCY = '"$"#,##0.00;-"$"#,##0.00'
 
 
@@ -138,11 +138,11 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                                   "\n".join(json_values(record["sources_835"])) or "—", note]
                     if index == 0:
                         raw_values.append("\n".join(row["denial_codes"]) or "—")
-                        for key in ("carc_codes", "rarc_codes"):
-                            raw_values.extend([
-                                "\n".join(item["code"] for item in row[key]) or "—",
-                                "\n".join(item["description"] or "—" for item in row[key]) or "—",
-                            ])
+                        raw_values.extend([
+                            "\n".join(item["description"] or "—" for item in row["carc_codes"]) or "—",
+                            "\n".join(item["code"] for item in row["rarc_codes"]) or "—",
+                            "\n".join(item["description"] or "—" for item in row["rarc_codes"]) or "—",
+                        ])
                     values = [cell(sheet, value if value is not None else "—", currency=isinstance(value, Decimal))
                               for value in raw_values]
                     lines = max(sum(max(1, ceil(len(line) / (width - 2))) for line in str(value or "").split("\n"))
