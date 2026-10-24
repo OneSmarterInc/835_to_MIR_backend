@@ -105,8 +105,8 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual([item["code"] for item in row["rarc_codes"]], ["MA04", "N23", "N30", "N643", "N95", "N99999"])
         self.assertIsNone(row["rarc_codes"][-1]["description"])
         workbook = self.excel()
-        self.assertEqual(workbook["Mismatch amount"]["L4"].value, "\n".join(item["code"] for item in row["rarc_codes"]))
-        self.assertEqual(workbook["Mismatch amount"]["M4"].value, "\n".join(item["description"] or "—" for item in row["rarc_codes"]))
+        self.assertEqual(workbook["Mismatch amount"]["M4"].value, "\n".join(item["code"] for item in row["rarc_codes"]))
+        self.assertEqual(workbook["Mismatch amount"]["N4"].value, "\n".join(item["description"] or "—" for item in row["rarc_codes"]))
         workbook.close()
 
     def test_signed_comparisons_unknowns_and_complete_group_pagination(self):
@@ -239,13 +239,13 @@ class AnalysisQueryTests(TestCase):
             is_mismatch = sheet.title == "Mismatch amount"
             self.assertEqual(tuple(cell.value for cell in sheet[3]), HEADERS + (DENIAL_HEADERS if is_mismatch else ()))
             self.assertEqual(sheet.max_row, 4)
-            self.assertEqual(sheet.max_column, 13 if is_mismatch else 9)
+            self.assertEqual(sheet.max_column, 14 if is_mismatch else 9)
             self.assertEqual(sheet.freeze_panes, "C4")
             self.assertFalse(sheet.sheet_view.showGridLines)
             self.assertTrue(all(cell.border.left.style == "thin" and cell.border.bottom.style == "thin"
                                 for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertIsNone(sheet["A1"].border.left.style)
-            self.assertEqual(sheet.auto_filter.ref, "A3:M4" if is_mismatch else "A3:I4")
+            self.assertEqual(sheet.auto_filter.ref, "A3:N4" if is_mismatch else "A3:I4")
             self.assertTrue(all(cell.fill.patternType is None for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
         matched = workbook["Matched amount"]
@@ -267,13 +267,15 @@ class AnalysisQueryTests(TestCase):
         source.normalized_835_claims.update(segment_data={"segments": ["CAS*PR*1*10", "CAS*OA*99999*90"]})
         workbook = self.excel(category="matched")
         mismatch = workbook["Mismatch amount"]
-        self.assertEqual([mismatch.cell(3, col).value for col in range(10, 14)], ["CARC code", "CARC description", "RARC code", "RARC description"])
-        self.assertEqual(mismatch["J4"].value, "1\n99999")
-        self.assertEqual(mismatch["K4"].value, "Deductible Amount\n—")
-        self.assertEqual(mismatch["L4"].value, "—")
+        self.assertEqual([mismatch.cell(3, col).value for col in range(10, 15)], ["CAS", "CARC code", "CARC description", "RARC code", "RARC description"])
+        self.assertEqual(mismatch["J4"].value, "OA-99999\nPR-1")
+        self.assertEqual(mismatch["K4"].value, "1\n99999")
+        self.assertEqual(mismatch["L4"].value, "Deductible Amount\n—")
+        self.assertEqual(mismatch["M4"].value, "—")
         for name in ("Matched amount", "Missing in 835"):
             self.assertEqual(workbook[name].max_column, 9)
             self.assertNotIn("CARC code", [cell.value for cell in workbook[name][3]])
+            self.assertNotIn("CAS", [cell.value for cell in workbook[name][3]])
         workbook.close()
 
     def test_excel_exports_all_pages_search_tenant_boundary_and_literal_ids(self):

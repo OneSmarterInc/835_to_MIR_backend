@@ -28,8 +28,8 @@ HEADERS = (
 )
 SHEETS = ("Mismatch amount", "Matched amount", "Missing in 835")
 COLUMN_WIDTHS = (26, 24, 42, 19, 25, 28, 16, 42, 52)
-DENIAL_HEADERS = ("CARC code", "CARC description", "RARC code", "RARC description")
-DENIAL_WIDTHS = (18, 80, 18, 80)
+DENIAL_HEADERS = ("CAS", "CARC code", "CARC description", "RARC code", "RARC description")
+DENIAL_WIDTHS = (18, 18, 80, 18, 80)
 CURRENCY = '"$"#,##0.00;-"$"#,##0.00'
 
 
@@ -137,6 +137,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                                   billed, payment, difference, record["n835"],
                                   "\n".join(json_values(record["sources_835"])) or "—", note]
                     if index == 0:
+                        raw_values.append("\n".join(row["denial_codes"]) or "—")
                         for key in ("carc_codes", "rarc_codes"):
                             raw_values.extend([
                                 "\n".join(item["code"] for item in row[key]) or "—",
