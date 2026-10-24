@@ -46,6 +46,24 @@ class AnalysisQueryTests(TestCase):
         request.user = self.user
         return analysis_upload(request)
 
+    def test_denial_codes_include_claim_and_service_cas_without_tenant_leakage(self):
+        self.upload("837", [("CAS-CLAIM", "100"), ("MISSING", "100")])
+        source = self.upload("835", [(" cas-claim ", "100", "0", "0")])
+        source.normalized_835_claims.update(segment_data={
+            "element_separator": "|", "segments": [
+                "CLP|CAS-CLAIM|4|100|0", "CAS|CO|45|10||97|20|1",
+                "SVC|HC:99213|70|0", "CAS|CO|45|10", "CAS|PR|1|60",
+            ]})
+        other = Client.objects.create(name="Other", client_code="CAS-OTHER", email="cas-other@example.com")
+        foreign = self.upload("835", [("CAS-CLAIM", "100", "0", "0")], tenant=other)
+        foreign.normalized_835_claims.update(segment_data={"segments": ["CAS*OA*23*100"]})
+        row = self.page()["rows"][0]
+        self.assertEqual(row["denial_codes"], ["CO-45", "CO-97", "PR-1"])
+        self.assertEqual(claim_detail(self.client_record, "CAS-CLAIM")["denial_codes"], row["denial_codes"])
+        self.assertEqual(self.page(category="837-only")["rows"][0]["denial_codes"], [])
+        source.normalized_835_claims.update(segment_data={})
+        self.assertEqual(self.page()["rows"][0]["denial_codes"], [])
+
     def test_signed_comparisons_unknowns_and_complete_group_pagination(self):
         self.upload("837", [("MATCH", "657"), ("BILLED", "100"), ("ALLOWED", "657"), ("SIGNED", "100"),
                             ("UNKNOWN", "100"), ("MISSING", "1"), ("CENTS", ".30")])
@@ -366,7 +384,7 @@ class AnalysisQueryTests(TestCase):
         self.upload("835", [(f"C{i:03}", "99", "90", "0") for i in range(51)])
         with CaptureQueriesContext(connection) as queries:
             result = self.page(page="2", sort="billed_837", direction="desc")
-        self.assertEqual(len(queries), 2)
+        self.assertEqual(len(queries), 3)
         self.assertEqual(len(result["rows"]), 10)
         self.assertEqual(result["total"], 51)
         self.assertEqual(result["rows"][0]["claim"], "C040")

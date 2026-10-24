@@ -211,6 +211,36 @@ def dictionaries(cursor, rows):
     return [dict(zip(names, row)) for row in rows]
 
 
+def add_denial_codes(client: Client, rows: list[dict[str, Any]]) -> None:
+    """Read CAS codes for the visible claims only, including service-level CAS.
+
+    Keep the adjustment group with each reason code; descriptions will be added
+    separately. Existing normalized uploads work without reprocessing.
+    """
+    by_number = {row["claim"]: set() for row in rows}
+    if not by_number:
+        return
+    records = (AnalysisClaim.objects.filter(upload__client=client, upload__kind="835")
+               .annotate(number=Upper(Trim("claim_number")))
+               .filter(number__in=by_number)
+               .values_list("number", "normalized_835__segment_data"))
+    for number, data in records.iterator(chunk_size=1000):
+        if not isinstance(data, dict):
+            continue
+        separator = data.get("element_separator") or "*"
+        for segment in data.get("segments", []):
+            fields = segment.strip().split(separator)
+            if fields[0] != "CAS" or len(fields) < 4:
+                continue
+            group = fields[1].strip()
+            for index in range(2, len(fields) - 1, 3):
+                reason = fields[index].strip()
+                if group and reason:
+                    by_number[number].add(f"{group}-{reason}")
+    for row in rows:
+        row["denial_codes"] = sorted(by_number[row["claim"]])
+
+
 def selection(options: dict[str, Any]) -> str:
     where = {"both": MISMATCH, "matched": MATCH, "837-only": "n835 = 0"}[options["category"]]
     # All identifiers come from the allowlist in query_options, never request SQL.
@@ -247,6 +277,7 @@ def comparison_page(client: Client, options: dict[str, Any]) -> dict[str, Any]:
         records = dictionaries(cursor, cursor.fetchall())
     metadata = records[0]
     rows = [summary_row(record, counts["835"] > 0) for record in records if record["claim"] is not None]
+    add_denial_codes(client, rows)
     return {"rows": rows, "total": metadata["total"],
             "counts": {"both": metadata["count_both"], "matched": metadata["count_matched"], "837-only": metadata["count_missing"]},
             "file_counts": counts, "page": metadata["page"], "pages": metadata["pages"], "category": options["category"]}
@@ -308,6 +339,7 @@ def claim_detail(client: Client, number: str) -> dict[str, Any] | None:
     if len(records) > 1:
         raise ValueError("Select a specific internal claim from the Analysis table.")
     row = summary_row(records[0], AnalysisUpload.objects.filter(client=client, kind="835").exists())
+    add_denial_codes(client, [row])
     row["occurrences"] = group_occurrences(row, claim_occurrences(client, [row["claim"]]).get(row["claim"], []))
     return row
 
