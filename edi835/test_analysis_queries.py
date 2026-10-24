@@ -189,7 +189,7 @@ class AnalysisQueryTests(TestCase):
             response.close()
 
     def test_excel_contains_all_categories_numeric_totals_and_table_headings(self):
-        from .analysis_excel import HEADERS, SHEETS
+        from .analysis_excel import HEADERS, SHEETS, DENIAL_HEADERS
         self.assertEqual(HEADERS, ("Claim ID", "Internal claim number", "837 source", "Billed ($)",
                                    "Paid in supplied 835s ($)", "Unconfirmed / difference ($)",
                                    "Remit records", "835 sources", "Notes"))
@@ -199,22 +199,23 @@ class AnalysisQueryTests(TestCase):
         # UI selection and pagination must not suppress other export sheets.
         with CaptureQueriesContext(connection) as queries:
             workbook = self.excel(category="837-only", page="999", page_size="10")
-        self.assertEqual(len(queries), 2)
+        self.assertEqual(len(queries), 3)
         self.assertEqual(workbook.sheetnames, list(SHEETS))
         self.assertEqual(workbook.properties.creator, "Filex OS")
         self.assertEqual(workbook.properties.lastModifiedBy, "Filex OS")
         self.assertEqual(workbook.properties.title, "FileX Claims Reconciliation")
         for sheet in workbook:
             self.assertEqual(sheet["A1"].value.strip(), "FileX")
-            self.assertEqual(tuple(cell.value for cell in sheet[3]), HEADERS)
+            is_mismatch = sheet.title == "Mismatch amount"
+            self.assertEqual(tuple(cell.value for cell in sheet[3]), HEADERS + (DENIAL_HEADERS if is_mismatch else ()))
             self.assertEqual(sheet.max_row, 4)
-            self.assertEqual(sheet.max_column, 9)
+            self.assertEqual(sheet.max_column, 11 if is_mismatch else 9)
             self.assertEqual(sheet.freeze_panes, "C4")
             self.assertFalse(sheet.sheet_view.showGridLines)
             self.assertTrue(all(cell.border.left.style == "thin" and cell.border.bottom.style == "thin"
                                 for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertIsNone(sheet["A1"].border.left.style)
-            self.assertEqual(sheet.auto_filter.ref, "A3:I4")
+            self.assertEqual(sheet.auto_filter.ref, "A3:K4" if is_mismatch else "A3:I4")
             self.assertTrue(all(cell.fill.patternType is None for row in sheet.iter_rows(min_row=3) for cell in row))
             self.assertTrue(all(cell.data_type != "f" for row in sheet for cell in row))
         matched = workbook["Matched amount"]
@@ -227,6 +228,21 @@ class AnalysisQueryTests(TestCase):
         self.assertEqual(workbook["Missing in 835"]["E4"].value, "—")
         self.assertEqual(workbook["Missing in 835"]["F4"].value, 39)
         self.assertEqual(workbook["Missing in 835"]["I4"].value, "No matching CLP01 in supplied 835 files; payment unconfirmed.")
+        workbook.close()
+
+    def test_excel_denial_columns_only_on_mismatch_sheet(self):
+        ClaimAdjustmentReason.objects.create(code="1", description="Deductible Amount")
+        self.upload("837", [("MISMATCH", "100"), ("MATCHED", "100"), ("MISSING", "100")])
+        source = self.upload("835", [("MISMATCH", "100", "0", "0"), ("MATCHED", "100", "100", "0")])
+        source.normalized_835_claims.update(segment_data={"segments": ["CAS*PR*1*10", "CAS*OA*99999*90"]})
+        workbook = self.excel(category="matched")
+        mismatch = workbook["Mismatch amount"]
+        self.assertEqual([mismatch.cell(3, col).value for col in (10, 11)], ["Denial code", "Denial reason"])
+        self.assertEqual(mismatch["J4"].value, "OA-99999\nPR-1")
+        self.assertEqual(mismatch["K4"].value, "—\nDeductible Amount")
+        for name in ("Matched amount", "Missing in 835"):
+            self.assertEqual(workbook[name].max_column, 9)
+            self.assertNotIn("Denial code", [cell.value for cell in workbook[name][3]])
         workbook.close()
 
     def test_excel_exports_all_pages_search_tenant_boundary_and_literal_ids(self):

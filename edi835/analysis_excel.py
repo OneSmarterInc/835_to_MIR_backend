@@ -17,7 +17,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.utils.units import pixels_to_EMU
 
 from accounts.models import Client
-from .analysis_queries import comparison_sql, dictionaries, json_values, summary_row
+from .analysis_queries import add_denial_codes, comparison_sql, dictionaries, json_values, summary_row
 from .models import AnalysisUpload
 
 
@@ -28,6 +28,8 @@ HEADERS = (
 )
 SHEETS = ("Mismatch amount", "Matched amount", "Missing in 835")
 COLUMN_WIDTHS = (26, 24, 42, 19, 25, 28, 16, 42, 52)
+DENIAL_HEADERS = ("Denial code", "Denial reason")
+DENIAL_WIDTHS = (18, 80)
 CURRENCY = '"$"#,##0.00;-"$"#,##0.00'
 
 
@@ -74,7 +76,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
             sheet.row_dimensions[1].height = 34
             sheet.row_dimensions[2].height = 24
             sheet.row_dimensions[3].height = 46
-            for index, width in enumerate(COLUMN_WIDTHS, 1):
+            for index, width in enumerate(COLUMN_WIDTHS + (DENIAL_WIDTHS if title == SHEETS[0] else ()), 1):
                 sheet.column_dimensions[get_column_letter(index)].width = width
             # Transparent portal mark and a reserved three-character logo slot.
             # Literal spacing also renders correctly in viewers that ignore indent.
@@ -93,7 +95,7 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
             section = cell(sheet, title)
             section.font = Font(size=12, bold=True)
             sheet.append([section])
-            headers = [cell(sheet, title) for title in HEADERS]
+            headers = [cell(sheet, heading) for heading in HEADERS + (DENIAL_HEADERS if title == SHEETS[0] else ())]
             for header in headers:
                 header.font = header_font
                 header.border = grid
@@ -106,8 +108,10 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
         with connection.cursor() as cursor:
             cursor.execute(sql + "SELECT * FROM compared" + order, params)
             while batch := cursor.fetchmany(500):
-                for record in dictionaries(cursor, batch):
-                    row = summary_row(record, has835)
+                records = dictionaries(cursor, batch)
+                rows = [summary_row(record, has835) for record in records]
+                add_denial_codes(client, [row for row in rows if row["category"] == "both" and row["allowed_status"] != "Match"])
+                for record, row in zip(records, rows):
                     matched = row["allowed_status"] == "Match"
                     index = 2 if record["n835"] == 0 else 1 if matched else 0
                     counts[index] += 1
@@ -132,16 +136,22 @@ def comparison_workbook(client: Client, options: dict[str, Any]) -> BinaryIO:
                     raw_values = [row["claim"], reference, "\n".join(json_values(record["sources_837"])),
                                   billed, payment, difference, record["n835"],
                                   "\n".join(json_values(record["sources_835"])) or "—", note]
+                    if index == 0:
+                        raw_values.extend([
+                            "\n".join(row["denial_codes"]) or "—",
+                            "\n".join(item["reason"] or "—" for item in row["denial_reasons"]) or "—",
+                        ])
                     values = [cell(sheet, value if value is not None else "—", currency=isinstance(value, Decimal))
                               for value in raw_values]
                     lines = max(sum(max(1, ceil(len(line) / (width - 2))) for line in str(value or "").split("\n"))
-                                for value, width in zip(raw_values, COLUMN_WIDTHS))
+                                for value, width in zip(raw_values, COLUMN_WIDTHS + (DENIAL_WIDTHS if index == 0 else ())))
                     sheet.row_dimensions[counts[index]].height = min(409, max(44, 15 * lines + 8))
                     for value_cell in values:
                         value_cell.border = grid
                     sheet.append(values)
         for sheet, count in zip(sheets, counts):
-            sheet.auto_filter.ref = f"A3:{get_column_letter(len(HEADERS))}{count}"
+            column_count = len(HEADERS) + (len(DENIAL_HEADERS) if sheet.title == SHEETS[0] else 0)
+            sheet.auto_filter.ref = f"A3:{get_column_letter(column_count)}{count}"
         workbook.save(output)
         output.seek(0)
         return output

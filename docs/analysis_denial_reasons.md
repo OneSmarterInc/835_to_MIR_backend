@@ -20,7 +20,11 @@ python manage.py migrate --noinput
 
 Then restart the backend and deploy the frontend. Pushing Git commits alone does
 not populate a running deployment's database. No production database was changed
-during implementation. CSV/Excel export formats are unchanged.
+during implementation. CSV export is unchanged. The Analysis UI shows separate
+Denial code and Denial reason columns only for Mismatch amount. Download Excel
+includes those adjacent columns only on the Mismatch amount sheet; Matched amount
+and Missing in 835 retain their existing columns. Codes and reasons use the same
+order, with a dash for an unknown reason. Excel lookups are batched, not per claim.
 
 Validation: frontend Analysis regression and production build passed. Isolated
 SQLite checks exercised the actual migration forward, reverse and reapply;
